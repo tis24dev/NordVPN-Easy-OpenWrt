@@ -1,0 +1,206 @@
+#!/bin/sh /etc/rc.common
+
+START=95
+STOP=10
+
+. /lib/functions.sh
+
+SERVICE_NAME='nordvpn-easy'
+UCI_CONFIG='nordvpn_easy'
+UCI_SECTION='main'
+RUNTIME_CONFIG='/var/etc/nordvpn-easy.conf'
+CORE_SCRIPT='/usr/libexec/nordvpn-easy/core.sh'
+CRON_PATH='/etc/cron.d/nordvpn-easy'
+HOTPLUG_PATH='/etc/hotplug.d/iface/95-nordvpn-easy'
+EXTRA_COMMANDS='setup check rotate install_hooks remove_hooks render_runtime_config'
+EXTRA_HELP='  setup                 Run setup immediately
+  check                 Run one health check immediately
+  rotate                Force server rotation immediately
+  install_hooks         Install cron and hotplug hooks
+  remove_hooks          Remove cron and hotplug hooks
+  render_runtime_config Render the temporary shell config'
+
+cfg_enabled='1'
+cfg_nordvpn_basic_token=''
+cfg_nordvpn_token=''
+cfg_wan_if='wan'
+cfg_vpn_if='wg0'
+cfg_vpn_country=''
+cfg_vpn_port='51820'
+cfg_vpn_addr='10.5.0.2/32'
+cfg_vpn_dns1='103.86.99.99'
+cfg_vpn_dns2='103.86.96.96'
+cfg_check_cron_schedule='* * * * *'
+cfg_enable_hotplug='1'
+cfg_failure_retry_delay='6'
+cfg_server_rotate_threshold='5'
+cfg_interface_restart_threshold='10'
+cfg_interface_restart_delay='10'
+cfg_post_restart_delay='60'
+
+load_service_config() {
+	config_load "$UCI_CONFIG"
+	config_get_bool cfg_enabled "$UCI_SECTION" enabled 1
+	config_get cfg_nordvpn_basic_token "$UCI_SECTION" nordvpn_basic_token ''
+	config_get cfg_nordvpn_token "$UCI_SECTION" nordvpn_token ''
+	config_get cfg_wan_if "$UCI_SECTION" wan_if 'wan'
+	config_get cfg_vpn_if "$UCI_SECTION" vpn_if 'wg0'
+	config_get cfg_vpn_country "$UCI_SECTION" vpn_country ''
+	config_get cfg_vpn_port "$UCI_SECTION" vpn_port '51820'
+	config_get cfg_vpn_addr "$UCI_SECTION" vpn_addr '10.5.0.2/32'
+	config_get cfg_vpn_dns1 "$UCI_SECTION" vpn_dns1 '103.86.99.99'
+	config_get cfg_vpn_dns2 "$UCI_SECTION" vpn_dns2 '103.86.96.96'
+	config_get cfg_check_cron_schedule "$UCI_SECTION" check_cron_schedule '* * * * *'
+	config_get_bool cfg_enable_hotplug "$UCI_SECTION" enable_hotplug 1
+	config_get cfg_failure_retry_delay "$UCI_SECTION" failure_retry_delay '6'
+	config_get cfg_server_rotate_threshold "$UCI_SECTION" server_rotate_threshold '5'
+	config_get cfg_interface_restart_threshold "$UCI_SECTION" interface_restart_threshold '10'
+	config_get cfg_interface_restart_delay "$UCI_SECTION" interface_restart_delay '10'
+	config_get cfg_post_restart_delay "$UCI_SECTION" post_restart_delay '60'
+}
+
+shell_quote() {
+	printf "%s" "$1" | sed "s/'/'\\\\''/g"
+}
+
+write_runtime_option() {
+	local key="$1"
+	local value="$2"
+
+	printf "%s='%s'\n" "$key" "$(shell_quote "$value")" >> "$RUNTIME_CONFIG"
+}
+
+render_runtime_config() {
+	load_service_config
+	umask 077
+	mkdir -p /var/etc
+	: > "$RUNTIME_CONFIG" || return 1
+
+	write_runtime_option NORDVPN_BASIC_TOKEN "$cfg_nordvpn_basic_token"
+	write_runtime_option NORDVPN_TOKEN "$cfg_nordvpn_token"
+	write_runtime_option WAN_IF "$cfg_wan_if"
+	write_runtime_option VPN_IF "$cfg_vpn_if"
+	write_runtime_option VPN_COUNTRY "$cfg_vpn_country"
+	write_runtime_option VPN_PORT "$cfg_vpn_port"
+	write_runtime_option VPN_ADDR "$cfg_vpn_addr"
+	write_runtime_option VPN_DNS1 "$cfg_vpn_dns1"
+	write_runtime_option VPN_DNS2 "$cfg_vpn_dns2"
+	write_runtime_option CHECK_CRON_SCHEDULE "$cfg_check_cron_schedule"
+	write_runtime_option ENABLE_HOTPLUG "$cfg_enable_hotplug"
+	write_runtime_option FAILURE_RETRY_DELAY "$cfg_failure_retry_delay"
+	write_runtime_option SERVER_ROTATE_THRESHOLD "$cfg_server_rotate_threshold"
+	write_runtime_option INTERFACE_RESTART_THRESHOLD "$cfg_interface_restart_threshold"
+	write_runtime_option INTERFACE_RESTART_DELAY "$cfg_interface_restart_delay"
+	write_runtime_option POST_RESTART_DELAY "$cfg_post_restart_delay"
+}
+
+run_core_action() {
+	local action="$1"
+
+	[ -x "$CORE_SCRIPT" ] || {
+		echo "Missing executable core script: $CORE_SCRIPT" >&2
+		return 1
+	}
+
+	render_runtime_config || return 1
+	"$CORE_SCRIPT" "$action" "$RUNTIME_CONFIG"
+}
+
+restart_cron_service() {
+	/etc/init.d/cron restart >/dev/null 2>&1 ||
+	/etc/init.d/cron reload >/dev/null 2>&1 ||
+	true
+}
+
+install_cron_hook() {
+	load_service_config
+	mkdir -p /etc/cron.d
+
+	if [ "$cfg_enabled" -eq 1 ] && [ -n "$cfg_check_cron_schedule" ]; then
+		cat > "$CRON_PATH" <<EOF
+$cfg_check_cron_schedule /etc/init.d/$SERVICE_NAME check 2>&1 | logger -t $SERVICE_NAME-cron
+EOF
+	else
+		rm -f "$CRON_PATH"
+	fi
+
+	restart_cron_service
+}
+
+install_hotplug_hook() {
+	load_service_config
+	mkdir -p /etc/hotplug.d/iface
+
+	if [ "$cfg_enabled" -ne 1 ] || [ "$cfg_enable_hotplug" -ne 1 ]; then
+		rm -f "$HOTPLUG_PATH"
+		return 0
+	fi
+
+	cat > "$HOTPLUG_PATH" <<EOF
+#!/bin/sh
+WAN_IF='$(shell_quote "$cfg_wan_if")'
+VPN_IF='$(shell_quote "$cfg_vpn_if")'
+
+case "\$ACTION" in
+	ifup|ifupdate|ifdown) ;;
+	*) exit 0 ;;
+esac
+
+[ "\$INTERFACE" = "\$WAN_IF" ] || [ "\$INTERFACE" = "\$VPN_IF" ] || exit 0
+
+/etc/init.d/$SERVICE_NAME check 2>&1 | logger -t $SERVICE_NAME-hotplug
+EOF
+
+	chmod 755 "$HOTPLUG_PATH"
+}
+
+install_hooks() {
+	install_cron_hook || return 1
+	install_hotplug_hook || return 1
+}
+
+remove_hooks() {
+	rm -f "$CRON_PATH" "$HOTPLUG_PATH"
+	restart_cron_service
+}
+
+start() {
+	load_service_config
+
+	if [ "$cfg_enabled" -ne 1 ]; then
+		remove_hooks
+		echo "$SERVICE_NAME is disabled in UCI; hooks removed."
+		return 0
+	fi
+
+	install_hooks || return 1
+
+	if ! run_core_action check; then
+		echo "Initial check failed. Hooks are installed; future cron/hotplug runs will retry."
+	fi
+}
+
+stop() {
+	remove_hooks
+}
+
+restart() {
+	stop
+	start
+}
+
+reload() {
+	restart
+}
+
+setup() {
+	run_core_action setup
+}
+
+check() {
+	run_core_action check
+}
+
+rotate() {
+	run_core_action rotate
+}
