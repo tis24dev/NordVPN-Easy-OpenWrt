@@ -18,6 +18,7 @@ env:
   OPENWRT_SUBTARGET: '64'
   OPENWRT_TOOLCHAIN: 'gcc-14.3.0_musl'
   PACKAGE_NAME: 'luci-app-nordvpn-easy'
+  PACKAGE_INDEX_NAME: 'luci-app-nordvpn-easy.adb'
   PACKAGE_LICENSE: 'Unlicense'
   PACKAGE_DEPENDS: 'ca-certificates curl jq luci-base kmod-wireguard wireguard-tools'
   PACKAGE_DESCRIPTION: 'NordVPN Easy LuCI app with bundled backend for OpenWrt'
@@ -241,7 +242,7 @@ jobs:
               --allow-untrusted \
               --sign-key "$APK_SIGNING_KEY_PATH" \
               --description "${PACKAGE_INDEX_DESCRIPTION}" \
-              --output packages.adb \
+              --output "${PACKAGE_INDEX_NAME}" \
               "$(basename "$ARTIFACT_PATH")"
           )
 
