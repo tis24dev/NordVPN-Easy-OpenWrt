@@ -413,7 +413,9 @@ valid_country_code () {
 }
 
 get_public_ip () {
-  local curl_out curl_rc
+  local curl_out curl_rc valid_ip_check
+
+  log "get_public_ip: starting IPv4-only public IP lookup (system DNS: $(grep '^nameserver' /etc/resolv.conf 2>/dev/null | awk '{print $2}' | tr '\n' ' ' | sed 's/ $//'))"
 
   for PUBLIC_IP_URL in \
     'https://api.ipify.org' \
@@ -421,20 +423,32 @@ get_public_ip () {
     'https://ipv4.icanhazip.com' \
     'https://ifconfig.me/ip'
   do
-    curl_out=$(curl -fsS --connect-timeout 3 --max-time 5 "$PUBLIC_IP_URL" 2>/dev/null | tr -d '\r\n')
+    log "get_public_ip: trying $PUBLIC_IP_URL"
+    curl_out=$(curl -4 -fsS --connect-timeout 3 --max-time 5 "$PUBLIC_IP_URL" 2>/dev/null | tr -d '\r\n')
     curl_rc=$?
 
-    if [ -n "$curl_out" ] && valid_public_ip "$curl_out"; then
-      log "get_public_ip: got '$curl_out' from $PUBLIC_IP_URL"
-      PUBLIC_IP="$curl_out"
-      printf '%s\n' "$PUBLIC_IP"
-      return 0
+    if [ "$curl_rc" -ne 0 ]; then
+      log "get_public_ip: curl failed for $PUBLIC_IP_URL (curl_rc=$curl_rc: $(curl_rc_meaning "$curl_rc"))"
+      continue
     fi
 
-    log "get_public_ip: attempt failed for $PUBLIC_IP_URL (curl_rc=$curl_rc: $(curl_rc_meaning "$curl_rc"), response='${curl_out:-empty}')"
+    if [ -z "$curl_out" ]; then
+      log "get_public_ip: curl succeeded (rc=0) but response body is empty for $PUBLIC_IP_URL — possible VPN transparent proxy interference"
+      continue
+    fi
+
+    if ! valid_public_ip "$curl_out"; then
+      log "get_public_ip: response from $PUBLIC_IP_URL is not a valid IP address (got '${curl_out}')"
+      continue
+    fi
+
+    log "get_public_ip: got '$curl_out' from $PUBLIC_IP_URL"
+    PUBLIC_IP="$curl_out"
+    printf '%s\n' "$PUBLIC_IP"
+    return 0
   done
 
-  log 'ERROR: COULD NOT RETRIEVE PUBLIC IP'
+  log 'ERROR: COULD NOT RETRIEVE PUBLIC IP — all endpoints failed'
   return 1
 }
 
@@ -447,12 +461,44 @@ lookup_public_country_by_ip () {
     return 1
   }
 
-  log "lookup_public_country_by_ip: querying ${PUBLIC_COUNTRY_API}/${LOOKUP_IP} (IPv4-only to avoid IPv6 unreachable on OpenWRT)"
-  curl_raw=$(curl -4 -fsS --connect-timeout 5 --max-time 10 "${PUBLIC_COUNTRY_API}/${LOOKUP_IP}" 2>/dev/null)
+  # NordVPN's Threat Protection Lite DNS (103.86.99.99) may block api.country.is.
+  # Resolve it via Quad9 DNS (9.9.9.9) first to bypass VPN DNS filtering, then
+  # pass the result to curl via --resolve so no system DNS query is needed.
+  local api_host
+  api_host=$(printf '%s' "$PUBLIC_COUNTRY_API" | sed 's|https://||')
+
+  log "lookup_public_country_by_ip: system DNS servers: $(grep '^nameserver' /etc/resolv.conf 2>/dev/null | awk '{print $2}' | tr '\n' ' ' | sed 's/ $//')"
+  log "lookup_public_country_by_ip: resolving $api_host via Quad9 DNS (9.9.9.9) to bypass VPN DNS filtering"
+
+  local nslookup_out resolved_ip
+  nslookup_out=$(nslookup "$api_host" 9.9.9.9 2>&1)
+  resolved_ip=$(printf '%s\n' "$nslookup_out" \
+    | awk '/^Address/ && !/9\.9\.9\.9/ && /[0-9]\.[0-9]/ {print $NF; exit}')
+
+  log "lookup_public_country_by_ip: Quad9 nslookup output: $(printf '%s' "$nslookup_out" | tr '\n' '|')"
+
+  if [ -n "$resolved_ip" ]; then
+    log "lookup_public_country_by_ip: resolved $api_host → $resolved_ip via Quad9 DNS — will use --resolve to bypass system DNS"
+  else
+    log "lookup_public_country_by_ip: Quad9 DNS resolution failed for $api_host — falling back to system DNS (may fail if VPN DNS blocks it)"
+  fi
+
+  log "lookup_public_country_by_ip: querying ${PUBLIC_COUNTRY_API}/${LOOKUP_IP} (IPv4-only$([ -n "$resolved_ip" ] && printf ', resolve hint: %s' "$resolved_ip"))"
+
+  if [ -n "$resolved_ip" ]; then
+    curl_raw=$(curl -4 --resolve "${api_host}:443:${resolved_ip}" -fsS --connect-timeout 5 --max-time 10 "${PUBLIC_COUNTRY_API}/${LOOKUP_IP}" 2>/dev/null)
+  else
+    curl_raw=$(curl -4 -fsS --connect-timeout 5 --max-time 10 "${PUBLIC_COUNTRY_API}/${LOOKUP_IP}" 2>/dev/null)
+  fi
   curl_rc=$?
 
-  if [ "$curl_rc" -ne 0 ] || [ -z "$curl_raw" ]; then
-    log "ERROR: COULD NOT LOOK UP COUNTRY FOR PUBLIC IP $LOOKUP_IP (curl_rc=$curl_rc, curl_rc_meaning=$(curl_rc_meaning "$curl_rc"), response='${curl_raw:-empty}')"
+  if [ "$curl_rc" -ne 0 ]; then
+    log "ERROR: COULD NOT LOOK UP COUNTRY FOR PUBLIC IP $LOOKUP_IP — curl failed (curl_rc=$curl_rc: $(curl_rc_meaning "$curl_rc")$([ -z "$resolved_ip" ] && printf '; system DNS was used, Quad9 bypass had failed'))"
+    return 1
+  fi
+
+  if [ -z "$curl_raw" ]; then
+    log "ERROR: COULD NOT LOOK UP COUNTRY FOR PUBLIC IP $LOOKUP_IP — curl succeeded (rc=0) but response body is empty"
     return 1
   fi
 
@@ -466,7 +512,7 @@ lookup_public_country_by_ip () {
 
   PUBLIC_COUNTRY=$(printf '%s' "$country_raw" | tr '[:lower:]' '[:upper:]')
   valid_country_code "$PUBLIC_COUNTRY" || {
-    log "ERROR: INVALID COUNTRY LOOKUP RESPONSE FOR PUBLIC IP $LOOKUP_IP (parsed='$PUBLIC_COUNTRY')"
+    log "ERROR: INVALID COUNTRY LOOKUP RESPONSE FOR PUBLIC IP $LOOKUP_IP (parsed='$PUBLIC_COUNTRY', raw='$curl_raw')"
     return 1
   }
 
@@ -476,7 +522,11 @@ lookup_public_country_by_ip () {
 
 get_public_country () {
   log 'get_public_country: starting public IP and country lookup'
-  PUBLIC_IP=$(get_public_ip) || return 1
+  PUBLIC_IP=$(get_public_ip) || {
+    log 'get_public_country: public IP lookup failed — cannot determine country'
+    return 1
+  }
+  log "get_public_country: public IP is $PUBLIC_IP — proceeding to country lookup"
   lookup_public_country_by_ip "$PUBLIC_IP"
 }
 
