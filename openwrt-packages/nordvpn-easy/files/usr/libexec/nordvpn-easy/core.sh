@@ -20,6 +20,9 @@ INTERFACE_RESTART_DELAY="${INTERFACE_RESTART_DELAY:-10}"
 POST_RESTART_DELAY="${POST_RESTART_DELAY:-60}"
 
 SERVER_LIST_FILE='/tmp/nordvpn.json'
+COUNTRIES_CACHE_FILE='/tmp/nordvpn-easy-countries.json'
+COUNTRIES_CACHE_TS_FILE='/tmp/nordvpn-easy-countries.timestamp'
+COUNTRIES_CACHE_TTL="${COUNTRIES_CACHE_TTL:-86400}"
 NORDVPN_API='https://api.nordvpn.com/v1'
 COUNTRIES_URL="${NORDVPN_API}/servers/countries"
 SERVER_RECOMMENDATIONS_URL_BASE="${NORDVPN_API}/servers/recommendations?filters\\[servers_technologies\\]\\[identifier\\]=wireguard_udp&limit=10"
@@ -61,12 +64,14 @@ log () {
 
 usage () {
   cat <<EOF
-Usage: $0 [check|setup|rotate|run|help] [config_file]
+Usage: $0 [check|setup|rotate|refresh_countries|refresh_countries_force|run|help] [config_file]
 
 Commands:
   check   Run one VPN health-check cycle (default)
   setup   Configure the WireGuard interface and firewall if needed
   rotate  Download a fresh server list and switch server
+  refresh_countries  Refresh the cached NordVPN country list if needed
+  refresh_countries_force  Force-refresh the cached NordVPN country list
   run     Backward-compatible alias for check
   help    Show this message
 
@@ -174,22 +179,87 @@ get_private_key () {
   }
 }
 
+countries_cache_is_fresh () {
+  [ -f "$COUNTRIES_CACHE_FILE" ] || return 1
+  [ -f "$COUNTRIES_CACHE_TS_FILE" ] || return 1
+
+  NOW_TS=$(date +%s 2>/dev/null) || return 1
+  CACHE_TS=$(cat "$COUNTRIES_CACHE_TS_FILE" 2>/dev/null) || return 1
+
+  case "$CACHE_TS" in
+    ''|*[!0-9]*)
+      return 1
+      ;;
+  esac
+
+  [ $((NOW_TS - CACHE_TS)) -lt "$COUNTRIES_CACHE_TTL" ]
+}
+
+refresh_countries_cache () {
+  FORCE_REFRESH="${1:-0}"
+  COUNTRIES_CACHE_TMP="${COUNTRIES_CACHE_FILE}.tmp.$$"
+  COUNTRIES_TS_TMP="${COUNTRIES_CACHE_TS_FILE}.tmp.$$"
+
+  if [ "$FORCE_REFRESH" -ne 1 ] && countries_cache_is_fresh; then
+    return 0
+  fi
+
+  curl -fsS --connect-timeout 15 --max-time 30 "$COUNTRIES_URL" | jq -ce '
+    [ .[] | select(
+        (.id != null) and
+        ((.name // "") != "") and
+        ((.code // "") != "")
+      ) | {
+        id: .id,
+        name: .name,
+        code: .code
+      }
+    ] | sort_by(.name | ascii_downcase)
+  ' > "$COUNTRIES_CACHE_TMP" 2>/dev/null || {
+    rm -f "$COUNTRIES_CACHE_TMP" "$COUNTRIES_TS_TMP"
+    [ -f "$COUNTRIES_CACHE_FILE" ] && return 0
+    log 'ERROR: COULD NOT REFRESH COUNTRY LIST CACHE'
+    return 1
+  }
+
+  date +%s > "$COUNTRIES_TS_TMP" || {
+    rm -f "$COUNTRIES_CACHE_TMP" "$COUNTRIES_TS_TMP"
+    [ -f "$COUNTRIES_CACHE_FILE" ] && return 0
+    log 'ERROR: COULD NOT WRITE COUNTRY CACHE TIMESTAMP'
+    return 1
+  }
+
+  mv "$COUNTRIES_CACHE_TMP" "$COUNTRIES_CACHE_FILE" || {
+    rm -f "$COUNTRIES_CACHE_TMP" "$COUNTRIES_TS_TMP"
+    [ -f "$COUNTRIES_CACHE_FILE" ] && return 0
+    log 'ERROR: COULD NOT UPDATE COUNTRY LIST CACHE'
+    return 1
+  }
+
+  mv "$COUNTRIES_TS_TMP" "$COUNTRIES_CACHE_TS_FILE" || {
+    rm -f "$COUNTRIES_TS_TMP"
+    [ -f "$COUNTRIES_CACHE_FILE" ] && return 0
+    log 'ERROR: COULD NOT UPDATE COUNTRY CACHE TIMESTAMP'
+    return 1
+  }
+}
+
 resolve_country_filter () {
   [ -n "$RESOLVED_COUNTRY_ID" ] && return 0
   [ -z "$VPN_COUNTRY" ] && return 0
 
-  COUNTRIES_JSON=$(curl -fsS --connect-timeout 15 --max-time 30 "$COUNTRIES_URL") || {
+  refresh_countries_cache || {
     log 'ERROR: COULD NOT RETRIEVE COUNTRY LIST'
     return 1
   }
 
-  COUNTRY_MATCH=$(printf '%s' "$COUNTRIES_JSON" | jq -er --arg query "$VPN_COUNTRY" '
+  COUNTRY_MATCH=$(jq -er --arg query "$VPN_COUNTRY" '
     [ .[] | select(
       ((.id | tostring) == $query) or
       ((.code // "" | ascii_downcase) == ($query | ascii_downcase)) or
       ((.name // "" | ascii_downcase) == ($query | ascii_downcase))
     ) ][0] | [.id, .name, .code] | @tsv
-  ' 2>/dev/null) || {
+  ' "$COUNTRIES_CACHE_FILE" 2>/dev/null) || {
     log "ERROR: COUNTRY '$VPN_COUNTRY' NOT FOUND"
     return 1
   }
@@ -471,6 +541,7 @@ configure_vpn_interface () {
 }
 
 bootstrap_if_needed () {
+  refresh_countries_cache || true
   resolve_country_filter || return 1
 
   if ! vpn_is_configured; then
@@ -549,7 +620,7 @@ ACTION='check'
 
 if [ $# -gt 0 ]; then
   case "$1" in
-    check|setup|rotate|run|help)
+    check|setup|rotate|refresh_countries|refresh_countries_force|run|help)
       ACTION="$1"
       shift
       ;;
@@ -586,6 +657,12 @@ case "$ACTION" in
     ;;
   rotate)
     rotate_action
+    ;;
+  refresh_countries)
+    refresh_countries_cache
+    ;;
+  refresh_countries_force)
+    refresh_countries_cache 1
     ;;
   *)
     usage
