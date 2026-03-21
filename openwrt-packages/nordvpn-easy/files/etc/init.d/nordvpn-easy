@@ -12,7 +12,7 @@ RUNTIME_CONFIG='/var/etc/nordvpn-easy.conf'
 CORE_SCRIPT='/usr/libexec/nordvpn-easy/core.sh'
 CRON_PATH='/etc/cron.d/nordvpn-easy'
 HOTPLUG_PATH='/etc/hotplug.d/iface/95-nordvpn-easy'
-EXTRA_COMMANDS='setup check rotate refresh_countries refresh_countries_force public_ip install_hooks remove_hooks render_runtime_config'
+EXTRA_COMMANDS='setup check rotate refresh_countries refresh_countries_force public_ip install_hooks remove_hooks disable_runtime render_runtime_config'
 EXTRA_HELP='  setup                 Run setup immediately
   check                 Run one health check immediately
   rotate                Force server rotation immediately
@@ -21,6 +21,7 @@ EXTRA_HELP='  setup                 Run setup immediately
   public_ip             Print the current public IP
   install_hooks         Install cron and hotplug hooks
   remove_hooks          Remove cron and hotplug hooks
+  disable_runtime       Disable the VPN interface and remove hooks
   render_runtime_config Render the temporary shell config'
 
 cfg_enabled='1'
@@ -208,12 +209,33 @@ remove_hooks() {
 	restart_cron_service
 }
 
+disable_vpn_runtime() {
+	load_service_config
+	remove_hooks
+
+	[ "$(uci -q get "network.${cfg_vpn_if}.proto" 2>/dev/null)" = 'wireguard' ] || return 0
+
+	uci set "network.${cfg_vpn_if}.disabled"='1'
+	uci commit network || {
+		log_service_error "failed to commit network while disabling ${cfg_vpn_if}"
+		return 1
+	}
+
+	ifdown "$cfg_vpn_if" >/dev/null 2>&1 || true
+
+	/etc/init.d/network reload >/dev/null 2>&1 ||
+	/etc/init.d/network restart >/dev/null 2>&1 || {
+		log_service_error "failed to reload network while disabling ${cfg_vpn_if}"
+		return 1
+	}
+}
+
 start() {
 	load_service_config
 
 	if [ "$cfg_enabled" -ne 1 ]; then
-		remove_hooks
-		echo "$SERVICE_NAME is disabled in UCI; hooks removed."
+		disable_vpn_runtime || return 1
+		echo "$SERVICE_NAME is disabled in UCI; hooks removed and VPN interface disabled."
 		return 0
 	fi
 
@@ -259,4 +281,8 @@ refresh_countries_force() {
 
 public_ip() {
 	run_core_action public_ip
+}
+
+disable_runtime() {
+	disable_vpn_runtime
 }
