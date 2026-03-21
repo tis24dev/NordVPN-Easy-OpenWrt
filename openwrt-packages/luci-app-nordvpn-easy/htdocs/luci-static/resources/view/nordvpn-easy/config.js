@@ -292,8 +292,14 @@ function updateVpnStatus() {
 			currentVpnState = 'active';
 			setVpnStatusIndicator('active', _('Active'));
 
-			if (previousVpnState !== 'active')
-				updatePublicCountry();
+			if (previousVpnState !== 'active') {
+				console.debug('[nordvpn-easy] VPN became active (was %s), scheduling public IP/country refresh in 5s', previousVpnState);
+				setTimeout(function() {
+					console.debug('[nordvpn-easy] VPN active transition: running deferred public IP/country refresh');
+					updatePublicIp();
+					updatePublicCountry();
+				}, 5000);
+			}
 		}
 		else {
 			currentVpnState = 'inactive';
@@ -390,18 +396,34 @@ function updatePublicIp() {
 }
 
 function updatePublicCountry() {
+	var t0 = Date.now();
+
+	console.debug('[nordvpn-easy] updatePublicCountry: requesting public_country');
+
 	return fs.exec('/etc/init.d/nordvpn-easy', [ 'public_country' ]).then(function(res) {
 		var statusEl = document.getElementById(PUBLIC_COUNTRY_STATUS_ID);
 		var publicCountry = normalizeCountryCode(res.stdout ? res.stdout.trim() : '');
+		var elapsed = Date.now() - t0;
+
+		console.debug('[nordvpn-easy] updatePublicCountry: code=%d elapsed=%dms stdout=%s stderr=%s',
+			res.code, elapsed,
+			JSON.stringify(res.stdout ? res.stdout.trim() : ''),
+			JSON.stringify(res.stderr ? res.stderr.trim() : ''));
 
 		currentPublicCountry = (res.code === 0 && publicCountry) ? publicCountry : '';
+
+		if (!currentPublicCountry)
+			console.warn('[nordvpn-easy] updatePublicCountry: result is empty/unavailable (code=%d, raw=%s)', res.code, JSON.stringify(res.stdout));
 
 		if (statusEl)
 			statusEl.textContent = currentPublicCountry || _('Unavailable');
 
 		updateCountryMatchStatus();
-	}).catch(function() {
+	}).catch(function(err) {
 		var statusEl = document.getElementById(PUBLIC_COUNTRY_STATUS_ID);
+		var elapsed = Date.now() - t0;
+
+		console.error('[nordvpn-easy] updatePublicCountry: exception after %dms: %s', elapsed, err);
 
 		currentPublicCountry = '';
 
@@ -547,7 +569,7 @@ return view.extend({
 
 			poll.add(function() {
 				return updatePublicCountry();
-			}, 300);
+			}, 30);
 
 			poll.add(function() {
 				return updateOperationStatus();
@@ -655,6 +677,9 @@ return view.extend({
 					}).finally(function() {
 						pendingOperationLabel = '';
 						updateOperationStatus();
+						console.debug('[nordvpn-easy] runServiceActions completed, refreshing public IP and country');
+						updatePublicIp();
+						updatePublicCountry();
 					});
 				}, this);
 

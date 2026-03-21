@@ -400,18 +400,25 @@ valid_country_code () {
 }
 
 get_public_ip () {
+  local curl_out curl_rc
+
   for PUBLIC_IP_URL in \
     'https://api.ipify.org' \
     'https://api64.ipify.org' \
     'https://ipv4.icanhazip.com' \
     'https://ifconfig.me/ip'
   do
-    PUBLIC_IP=$(curl -fsS --connect-timeout 3 --max-time 5 "$PUBLIC_IP_URL" 2>/dev/null | tr -d '\r\n')
+    curl_out=$(curl -fsS --connect-timeout 3 --max-time 5 "$PUBLIC_IP_URL" 2>/dev/null | tr -d '\r\n')
+    curl_rc=$?
 
-    if [ -n "$PUBLIC_IP" ] && valid_public_ip "$PUBLIC_IP"; then
+    if [ -n "$curl_out" ] && valid_public_ip "$curl_out"; then
+      log "get_public_ip: got '$curl_out' from $PUBLIC_IP_URL"
+      PUBLIC_IP="$curl_out"
       printf '%s\n' "$PUBLIC_IP"
       return 0
     fi
+
+    log "get_public_ip: attempt failed for $PUBLIC_IP_URL (curl_rc=$curl_rc, response='${curl_out:-empty}')"
   done
 
   log 'ERROR: COULD NOT RETRIEVE PUBLIC IP'
@@ -420,27 +427,42 @@ get_public_ip () {
 
 lookup_public_country_by_ip () {
   LOOKUP_IP="$1"
+  local curl_raw curl_rc country_raw
 
   [ -n "$LOOKUP_IP" ] || {
     log 'ERROR: PUBLIC IP IS EMPTY - CANNOT LOOK UP COUNTRY'
     return 1
   }
 
-  PUBLIC_COUNTRY=$(curl -fsS --connect-timeout 5 --max-time 10 "${PUBLIC_COUNTRY_API}/${LOOKUP_IP}" 2>/dev/null | jq -er '.country // empty' 2>/dev/null) || {
-    log "ERROR: COULD NOT LOOK UP COUNTRY FOR PUBLIC IP $LOOKUP_IP"
-    return 1
-  }
+  log "lookup_public_country_by_ip: querying ${PUBLIC_COUNTRY_API}/${LOOKUP_IP}"
+  curl_raw=$(curl -fsS --connect-timeout 5 --max-time 10 "${PUBLIC_COUNTRY_API}/${LOOKUP_IP}" 2>/dev/null)
+  curl_rc=$?
 
-  PUBLIC_COUNTRY=$(printf '%s' "$PUBLIC_COUNTRY" | tr '[:lower:]' '[:upper:]')
+  if [ "$curl_rc" -ne 0 ] || [ -z "$curl_raw" ]; then
+    log "ERROR: COULD NOT LOOK UP COUNTRY FOR PUBLIC IP $LOOKUP_IP (curl_rc=$curl_rc, response='${curl_raw:-empty}')"
+    return 1
+  fi
+
+  log "lookup_public_country_by_ip: raw response for $LOOKUP_IP: $curl_raw"
+
+  country_raw=$(printf '%s' "$curl_raw" | jq -er '.country // empty' 2>/dev/null)
+  if [ $? -ne 0 ] || [ -z "$country_raw" ]; then
+    log "ERROR: COULD NOT PARSE COUNTRY FROM RESPONSE FOR $LOOKUP_IP (raw='$curl_raw')"
+    return 1
+  fi
+
+  PUBLIC_COUNTRY=$(printf '%s' "$country_raw" | tr '[:lower:]' '[:upper:]')
   valid_country_code "$PUBLIC_COUNTRY" || {
-    log "ERROR: INVALID COUNTRY LOOKUP RESPONSE FOR PUBLIC IP $LOOKUP_IP"
+    log "ERROR: INVALID COUNTRY LOOKUP RESPONSE FOR PUBLIC IP $LOOKUP_IP (parsed='$PUBLIC_COUNTRY')"
     return 1
   }
 
+  log "lookup_public_country_by_ip: resolved $LOOKUP_IP → $PUBLIC_COUNTRY"
   printf '%s\n' "$PUBLIC_COUNTRY"
 }
 
 get_public_country () {
+  log 'get_public_country: starting public IP and country lookup'
   PUBLIC_IP=$(get_public_ip) || return 1
   lookup_public_country_by_ip "$PUBLIC_IP"
 }
