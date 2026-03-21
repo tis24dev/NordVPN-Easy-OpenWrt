@@ -578,6 +578,7 @@ esac
 
 require_commands || exit 1
 
+# Intentionally exit 0 on lock contention so cron/hotplug do not log an error when another instance already holds the lock.
 acquire_lock || exit 0
 
 case "$ACTION" in

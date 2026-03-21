@@ -30,6 +30,16 @@ function runAction(action) {
 	});
 }
 
+function requireOneToken(section_id, value, otherValue) {
+	var token = (value || '').trim();
+	var otherToken = (otherValue || '').trim();
+
+	if (token || otherToken)
+		return true;
+
+	return _('At least one of NordVPN Token or NordVPN Basic Token must be set.');
+}
+
 return view.extend({
 	load: function() {
 		return Promise.all([
@@ -58,11 +68,17 @@ return view.extend({
 		o.password = true;
 		o.rmempty = true;
 		o.description = _('At least one token is required; leave this empty if using the other token.');
+		o.validate = function(section_id, value) {
+			return requireOneToken(section_id, value, this.section.formvalue(section_id, 'nordvpn_basic_token'));
+		};
 
 		o = s.option(form.Value, 'nordvpn_basic_token', _('NordVPN Basic Token'));
 		o.password = true;
 		o.rmempty = true;
 		o.description = _('At least one token is required; leave this empty if using the other token.');
+		o.validate = function(section_id, value) {
+			return requireOneToken(section_id, value, this.section.formvalue(section_id, 'nordvpn_token'));
+		};
 
 		o = s.option(form.Value, 'wan_if', _('WAN Interface'));
 		o.placeholder = 'wan';
