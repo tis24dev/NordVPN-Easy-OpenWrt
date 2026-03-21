@@ -102,16 +102,16 @@ jobs:
             tar --zstd -xf "$WORKDIR/$SDK_ARCHIVE" -C "$WORKDIR"
           fi
 
-          echo "SDK_DIR=$WORKDIR/$SDK_BASENAME" >> "$GITHUB_ENV"
+          echo "SDK_DIR=$(realpath "$WORKDIR/$SDK_BASENAME")" >> "$GITHUB_ENV"
 
       - name: Validate SDK tools
         run: |
           set -euo pipefail
+          SDK_DIR="$(realpath "$SDK_DIR")"
           APK_BIN="${SDK_DIR}/staging_dir/host/bin/apk"
-          FAKEROOT_BIN="${SDK_DIR}/staging_dir/host/bin/fakeroot"
           MKHASH_BIN="${SDK_DIR}/staging_dir/host/bin/mkhash"
 
-          for tool in "$APK_BIN" "$FAKEROOT_BIN" "$MKHASH_BIN"; do
+          for tool in "$APK_BIN" "$MKHASH_BIN"; do
             if [ ! -x "$tool" ]; then
               echo "::error::Missing required SDK tool: $tool"
               exit 1
@@ -121,8 +121,8 @@ jobs:
       - name: Build APK
         run: |
           set -euo pipefail
+          SDK_DIR="$(realpath "$SDK_DIR")"
           APK_BIN="${SDK_DIR}/staging_dir/host/bin/apk"
-          FAKEROOT_BIN="${SDK_DIR}/staging_dir/host/bin/fakeroot"
           MKHASH_BIN="${SDK_DIR}/staging_dir/host/bin/mkhash"
           STAGING_DIR_HOST="${SDK_DIR}/staging_dir/host"
           STAGE_DIR=".build/pkgroot/${PACKAGE_NAME}"
@@ -179,7 +179,7 @@ jobs:
           # --- build apk ---
           mkdir -p "$OUTPUT_DIR"
 
-          STAGING_DIR_HOST="$STAGING_DIR_HOST" "$FAKEROOT_BIN" "$APK_BIN" mkpkg \
+          STAGING_DIR_HOST="$STAGING_DIR_HOST" "$APK_BIN" mkpkg \
             --info "name:${PACKAGE_NAME}" \
             --info "version:${PACKAGE_VERSION}" \
             --info "description:${PACKAGE_DESCRIPTION}" \
@@ -202,7 +202,7 @@ jobs:
 
           (
             cd "$OUTPUT_DIR"
-            STAGING_DIR_HOST="$STAGING_DIR_HOST" "$FAKEROOT_BIN" "$APK_BIN" mkndx \
+            STAGING_DIR_HOST="$STAGING_DIR_HOST" "$APK_BIN" mkndx \
               --allow-untrusted \
               --description "${PACKAGE_INDEX_DESCRIPTION}" \
               --output packages.adb \
