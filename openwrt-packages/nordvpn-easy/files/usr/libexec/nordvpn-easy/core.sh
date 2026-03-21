@@ -26,6 +26,7 @@ COUNTRIES_CACHE_TS_FILE='/tmp/nordvpn-easy-countries.timestamp'
 COUNTRIES_CACHE_TTL="${COUNTRIES_CACHE_TTL:-86400}"
 NORDVPN_API='https://api.nordvpn.com/v1'
 COUNTRIES_URL="${NORDVPN_API}/servers/countries"
+PUBLIC_COUNTRY_API='https://api.country.is'
 SERVER_RECOMMENDATIONS_URL_BASE="${NORDVPN_API}/servers/recommendations?filters[servers_technologies][identifier]=wireguard_udp&limit=10"
 CREDENTIALS_URL="${NORDVPN_API}/users/services/credentials"
 DEFAULT_CONFIG_FILE='/var/etc/nordvpn-easy.conf'
@@ -36,6 +37,7 @@ RESOLVED_COUNTRY_CODE=''
 CONFIG_PATH=''
 CONFIG_PATH_REQUIRED=0
 LOCK_ACQUIRED=0
+PUBLIC_COUNTRY_VERIFIED=0
 
 # List of IPs to randomly ping
 IP0='8.8.8.8'
@@ -66,7 +68,7 @@ log () {
 
 usage () {
   cat <<EOF
-Usage: $0 [check|setup|rotate|refresh_countries|refresh_countries_force|public_ip|run|help] [config_file]
+Usage: $0 [check|setup|rotate|refresh_countries|refresh_countries_force|public_ip|public_country|run|help] [config_file]
 
 Commands:
   check   Run one VPN health-check cycle (default)
@@ -75,6 +77,7 @@ Commands:
   refresh_countries  Refresh the cached NordVPN country list if needed
   refresh_countries_force  Force-refresh the cached NordVPN country list
   public_ip  Print the current public IP as seen from the router
+  public_country  Print the detected country code for the current public IP
   run     Backward-compatible alias for check
   help    Show this message
 
@@ -141,7 +144,7 @@ acquire_lock () {
     LOCK_PID=$(cat "$LOCK_PID_FILE" 2>/dev/null)
     if [ -n "$LOCK_PID" ] && kill -0 "$LOCK_PID" 2>/dev/null; then
       log "Execution lock is already held by PID $LOCK_PID"
-      return 1
+      return 2
     fi
   fi
 
@@ -392,6 +395,10 @@ valid_public_ip () {
   printf '%s' "$1" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$|^[0-9A-Fa-f:]+$'
 }
 
+valid_country_code () {
+  printf '%s' "$1" | grep -Eq '^[A-Z]{2}$'
+}
+
 get_public_ip () {
   for PUBLIC_IP_URL in \
     'https://api.ipify.org' \
@@ -409,6 +416,63 @@ get_public_ip () {
 
   log 'ERROR: COULD NOT RETRIEVE PUBLIC IP'
   return 1
+}
+
+lookup_public_country_by_ip () {
+  LOOKUP_IP="$1"
+
+  [ -n "$LOOKUP_IP" ] || {
+    log 'ERROR: PUBLIC IP IS EMPTY - CANNOT LOOK UP COUNTRY'
+    return 1
+  }
+
+  PUBLIC_COUNTRY=$(curl -fsS --connect-timeout 5 --max-time 10 "${PUBLIC_COUNTRY_API}/${LOOKUP_IP}" 2>/dev/null | jq -er '.country // empty' 2>/dev/null) || {
+    log "ERROR: COULD NOT LOOK UP COUNTRY FOR PUBLIC IP $LOOKUP_IP"
+    return 1
+  }
+
+  PUBLIC_COUNTRY=$(printf '%s' "$PUBLIC_COUNTRY" | tr '[:lower:]' '[:upper:]')
+  valid_country_code "$PUBLIC_COUNTRY" || {
+    log "ERROR: INVALID COUNTRY LOOKUP RESPONSE FOR PUBLIC IP $LOOKUP_IP"
+    return 1
+  }
+
+  printf '%s\n' "$PUBLIC_COUNTRY"
+}
+
+get_public_country () {
+  PUBLIC_IP=$(get_public_ip) || return 1
+  lookup_public_country_by_ip "$PUBLIC_IP"
+}
+
+verify_public_country_selection () {
+  PUBLIC_COUNTRY_VERIFIED=1
+
+  PUBLIC_IP=$(get_public_ip) || {
+    log 'WARNING: COULD NOT RETRIEVE PUBLIC IP FOR COUNTRY VERIFICATION'
+    return 0
+  }
+
+  PUBLIC_COUNTRY=$(lookup_public_country_by_ip "$PUBLIC_IP") || {
+    log "WARNING: COULD NOT GEOLOCATE PUBLIC IP $PUBLIC_IP"
+    return 0
+  }
+
+  if [ -z "$VPN_COUNTRY" ]; then
+    log "Public IP verification: $PUBLIC_IP geolocates to $PUBLIC_COUNTRY with automatic country selection"
+    return 0
+  fi
+
+  resolve_country_filter || {
+    log "WARNING: COULD NOT RESOLVE SELECTED COUNTRY '$VPN_COUNTRY' FOR PUBLIC IP VERIFICATION"
+    return 0
+  }
+
+  if [ "$PUBLIC_COUNTRY" = "$RESOLVED_COUNTRY_CODE" ]; then
+    log "Public IP verification passed: $PUBLIC_IP geolocates to $PUBLIC_COUNTRY and matches selected country $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
+  else
+    log "WARNING: Public IP verification mismatch: $PUBLIC_IP geolocates to $PUBLIC_COUNTRY while selected country is $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
+  fi
 }
 
 resolve_country_filter () {
@@ -673,12 +737,15 @@ change_vpn_server () {
     log "VPN server changed to $HOST_NAME ( $SERVER_IP )"
 
     if [ "$1" = 'reload' ]; then
-      /etc/init.d/network reload || {
+      log "Cycling VPN interface $VPN_IF to apply the new peer configuration"
+      ifdown "$VPN_IF" >/dev/null 2>&1 || true
+      sleep "$INTERFACE_RESTART_DELAY"
+      ifup "$VPN_IF" || {
         rm -f "$SERVER_CANDIDATES_FILE"
-        log 'ERROR: NETWORK RELOAD FAILED'
+        log "ERROR: IFUP FAILED AFTER CHANGING VPN SERVER ON $VPN_IF"
         return 1
       }
-      log "Waiting ${POST_RESTART_DELAY}s after network reload before validating VPN connectivity"
+      log "Waiting ${POST_RESTART_DELAY}s after cycling $VPN_IF before validating VPN connectivity"
     else
       /etc/init.d/network restart || {
         rm -f "$SERVER_CANDIDATES_FILE"
@@ -693,6 +760,7 @@ change_vpn_server () {
     if ping_interface "$VPN_IF"; then
       rm -f "$SERVER_CANDIDATES_FILE"
       log 'VPN connection restored'
+      verify_public_country_selection
       return 0
     fi
 
@@ -851,7 +919,7 @@ ACTION='check'
 
 if [ $# -gt 0 ]; then
   case "$1" in
-    check|setup|rotate|refresh_countries|refresh_countries_force|public_ip|run|help)
+    check|setup|rotate|refresh_countries|refresh_countries_force|public_ip|public_country|run|help)
       ACTION="$1"
       shift
       ;;
@@ -884,17 +952,29 @@ if [ "$ACTION" = 'public_ip' ]; then
   exit $?
 fi
 
+if [ "$ACTION" = 'public_country' ]; then
+  require_commands || exit 1
+  get_public_country
+  exit $?
+fi
+
 require_commands || exit 1
 
 log "Executing action '$ACTION' for VPN interface $VPN_IF"
 
 # Intentionally exit 0 on lock contention so cron/hotplug do not log an error when another instance already holds the lock.
-if ! acquire_lock; then
-  if lock_contention_is_nonfatal; then
+acquire_lock
+LOCK_STATUS=$?
+if [ "$LOCK_STATUS" -ne 0 ]; then
+  if [ "$LOCK_STATUS" -eq 2 ] && lock_contention_is_nonfatal; then
     exit 0
   fi
 
-  log "ERROR: ACTION '$ACTION' ABORTED BECAUSE ANOTHER NORDVPN-EASY OPERATION IS STILL RUNNING"
+  if [ "$LOCK_STATUS" -eq 2 ]; then
+    log "ERROR: ACTION '$ACTION' ABORTED BECAUSE ANOTHER NORDVPN-EASY OPERATION IS STILL RUNNING"
+  else
+    log "ERROR: ACTION '$ACTION' FAILED TO ACQUIRE EXECUTION LOCK AT $LOCK_DIR"
+  fi
   exit 1
 fi
 
@@ -903,7 +983,7 @@ case "$ACTION" in
     bootstrap_if_needed && check_once
     ;;
   setup)
-    bootstrap_if_needed && sync_server_selection && log 'NordVPN configuration is ready'
+    bootstrap_if_needed && sync_server_selection && { [ "$PUBLIC_COUNTRY_VERIFIED" -eq 1 ] || verify_public_country_selection; } && log 'NordVPN configuration is ready'
     ;;
   rotate)
     rotate_action

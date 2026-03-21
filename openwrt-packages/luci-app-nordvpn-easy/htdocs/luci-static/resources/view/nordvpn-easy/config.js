@@ -9,6 +9,8 @@
 var COUNTRIES_CACHE_PATH = '/tmp/nordvpn-easy-countries.json';
 var OPERATION_STATUS_ID = 'nordvpn-easy-operation-status';
 var PUBLIC_IP_STATUS_ID = 'nordvpn-easy-public-ip-status';
+var PUBLIC_COUNTRY_STATUS_ID = 'nordvpn-easy-public-country-status';
+var COUNTRY_MATCH_STATUS_ID = 'nordvpn-easy-country-match-status';
 var VPN_STATUS_ID = 'nordvpn-easy-vpn-status';
 var ENABLED_FIELD_ID = 'cbid.nordvpn_easy.main.enabled';
 var TOKEN_FIELD_ID = 'cbid.nordvpn_easy.main.nordvpn_token';
@@ -16,6 +18,8 @@ var COUNTRY_FIELD_ID = 'cbid.nordvpn_easy.main.vpn_country';
 var COUNTRY_REFRESH_BUTTON_ID = 'cbid.nordvpn_easy.main.vpn_country.refresh';
 var pendingOperationLabel = '';
 var currentOperationStatus = 'idle';
+var appliedCountryCode = '';
+var currentPublicCountry = '';
 
 function parseCountries(countriesRaw) {
 	var countries = [];
@@ -80,6 +84,10 @@ function formatActionsLabel(actions) {
 	return actions.map(humanizeAction).join(' + ');
 }
 
+function normalizeCountryCode(value) {
+	return String(value || '').trim().toUpperCase();
+}
+
 function setSetupControlsDisabled(disabled) {
 	[
 		ENABLED_FIELD_ID,
@@ -122,8 +130,75 @@ function setVpnStatusIndicator(state, label) {
 		break;
 	}
 
-	statusEl.innerHTML = '<span style="display:inline-block;width:0.75rem;height:0.75rem;border-radius:50%;background:%s;vertical-align:middle;margin-right:0.45rem;"></span>%s'
-		.format(color, label);
+	statusEl.replaceChildren(
+		E('span', {
+			'style': 'display:inline-block;width:0.75rem;height:0.75rem;border-radius:50%;background:' + color + ';vertical-align:middle;margin-right:0.45rem;'
+		}),
+		document.createTextNode(label)
+	);
+}
+
+function setCountryMatchIndicator(state, label) {
+	var statusEl = document.getElementById(COUNTRY_MATCH_STATUS_ID);
+	var color;
+
+	if (!statusEl)
+		return;
+
+	switch (state) {
+	case 'match':
+		color = '#2ea043';
+		break;
+	case 'checking':
+	case 'automatic':
+		color = '#d29922';
+		break;
+	case 'unavailable':
+	case 'inactive':
+		color = '#8c959f';
+		break;
+	default:
+		color = '#cf222e';
+		break;
+	}
+
+	statusEl.replaceChildren(
+		E('span', {
+			'style': 'display:inline-block;width:0.75rem;height:0.75rem;border-radius:50%;background:' + color + ';vertical-align:middle;margin-right:0.45rem;'
+		}),
+		document.createTextNode(label)
+	);
+}
+
+function updateCountryMatchStatus() {
+	var enabledEl = document.getElementById(ENABLED_FIELD_ID);
+	var busyAction;
+	var expectedCountry = normalizeCountryCode(appliedCountryCode);
+	var actualCountry = normalizeCountryCode(currentPublicCountry);
+
+	if (currentOperationStatus.indexOf('busy:') === 0) {
+		busyAction = currentOperationStatus.substring(5);
+
+		if (busyAction !== 'refresh_countries')
+			return setCountryMatchIndicator('checking', _('Checking'));
+	}
+	else if (currentOperationStatus === 'busy') {
+		return setCountryMatchIndicator('checking', _('Checking'));
+	}
+
+	if (enabledEl && !enabledEl.checked)
+		return setCountryMatchIndicator('inactive', _('Inactive'));
+
+	if (!expectedCountry)
+		return setCountryMatchIndicator('automatic', _('Automatic'));
+
+	if (!actualCountry)
+		return setCountryMatchIndicator('unavailable', _('Unavailable'));
+
+	if (actualCountry === expectedCountry)
+		return setCountryMatchIndicator('match', _('Match (%s)').format(actualCountry));
+
+	setCountryMatchIndicator('mismatch', _('Mismatch (%s)').format(actualCountry));
 }
 
 function updateOperationStatus() {
@@ -134,6 +209,7 @@ function updateOperationStatus() {
 		if (res.code !== 0) {
 			currentOperationStatus = 'unknown';
 			setOperationStatusText(_('Unknown'), false);
+			updateCountryMatchStatus();
 			return;
 		}
 
@@ -142,29 +218,35 @@ function updateOperationStatus() {
 		if (raw.indexOf('busy:') === 0) {
 			action = raw.substring(5);
 			setOperationStatusText(_('Applying (%s)...').format(humanizeAction(action)), true);
+			updateCountryMatchStatus();
 			return;
 		}
 
 		if (raw === 'busy') {
 			setOperationStatusText(_('Applying...'), true);
+			updateCountryMatchStatus();
 			return;
 		}
 
 		if (pendingOperationLabel) {
 			setOperationStatusText(_('Applying (%s)...').format(humanizeAction(pendingOperationLabel)), true);
+			updateCountryMatchStatus();
 			return;
 		}
 
 		setOperationStatusText(_('Idle'), false);
+		updateCountryMatchStatus();
 	}).catch(function() {
 		currentOperationStatus = pendingOperationLabel ? ('busy:' + pendingOperationLabel) : 'unknown';
 
 		if (pendingOperationLabel) {
 			setOperationStatusText(_('Applying (%s)...').format(humanizeAction(pendingOperationLabel)), true);
+			updateCountryMatchStatus();
 			return;
 		}
 
 		setOperationStatusText(_('Unknown'), false);
+		updateCountryMatchStatus();
 	});
 }
 
@@ -278,6 +360,29 @@ function updatePublicIp() {
 	});
 }
 
+function updatePublicCountry() {
+	return fs.exec('/etc/init.d/nordvpn-easy', [ 'public_country' ]).then(function(res) {
+		var statusEl = document.getElementById(PUBLIC_COUNTRY_STATUS_ID);
+		var publicCountry = normalizeCountryCode(res.stdout ? res.stdout.trim() : '');
+
+		currentPublicCountry = (res.code === 0 && publicCountry) ? publicCountry : '';
+
+		if (statusEl)
+			statusEl.textContent = currentPublicCountry || _('Unavailable');
+
+		updateCountryMatchStatus();
+	}).catch(function() {
+		var statusEl = document.getElementById(PUBLIC_COUNTRY_STATUS_ID);
+
+		currentPublicCountry = '';
+
+		if (statusEl)
+			statusEl.textContent = _('Unavailable');
+
+		updateCountryMatchStatus();
+	});
+}
+
 function runServiceAction(action) {
 	return fs.exec('/etc/init.d/nordvpn-easy', [ action ]).then(function(res) {
 		var lines = [];
@@ -344,6 +449,7 @@ return view.extend({
 
 		this.initialEnabled = (uci.get('nordvpn_easy', 'main', 'enabled') !== '0');
 		this.initialCountry = currentCountry;
+		appliedCountryCode = currentCountry;
 
 		m = new form.Map('nordvpn_easy', _('NordVPN Easy'),
 			_('Configure the minimum settings required to connect NordVPN Easy.'));
@@ -374,6 +480,18 @@ return view.extend({
 			return '<span id="%s">%s</span>'.format(PUBLIC_IP_STATUS_ID, _('Collecting data...'));
 		};
 
+		o = s.option(form.DummyValue, '_public_country', _('Public Country'));
+		o.rawhtml = true;
+		o.cfgvalue = function() {
+			return '<span id="%s">%s</span>'.format(PUBLIC_COUNTRY_STATUS_ID, _('Collecting data...'));
+		};
+
+		o = s.option(form.DummyValue, '_country_match', _('Country Match'));
+		o.rawhtml = true;
+		o.cfgvalue = function() {
+			return '<span id="%s">%s</span>'.format(COUNTRY_MATCH_STATUS_ID, _('Checking'));
+		};
+
 		o = s.option(form.Value, 'nordvpn_token', _('NordVPN Token'));
 		o.password = true;
 		o.rmempty = false;
@@ -398,6 +516,10 @@ return view.extend({
 			}, 5);
 
 			poll.add(function() {
+				return updatePublicCountry();
+			}, 15);
+
+			poll.add(function() {
 				return updateOperationStatus();
 			}, 2);
 
@@ -408,6 +530,7 @@ return view.extend({
 			updateOperationStatus();
 			updateVpnStatus();
 			updatePublicIp();
+			updatePublicCountry();
 			return node;
 		});
 	},
@@ -417,71 +540,102 @@ return view.extend({
 		var previousCountry = this.initialCountry || '';
 
 		return this.handleSave(ev).then(L.bind(function() {
-			if (this._uciAppliedHandler)
-				document.removeEventListener('uci-applied', this._uciAppliedHandler);
-
-			this._uciAppliedHandler = L.bind(function() {
-				document.removeEventListener('uci-applied', this._uciAppliedHandler);
-				this._uciAppliedHandler = null;
-
-				uci.unload('nordvpn_easy');
-				uci.load('nordvpn_easy').then(L.bind(function() {
-					var currentEnabled = (uci.get('nordvpn_easy', 'main', 'enabled') !== '0');
-					var currentCountry = uci.get('nordvpn_easy', 'main', 'vpn_country') || '';
-					var actions = [];
-					var successMessage = '';
-
-					this.initialEnabled = currentEnabled;
-					this.initialCountry = currentCountry;
-
-					if (!previousEnabled && currentEnabled) {
-						actions = [ 'setup', 'install_hooks' ];
-						successMessage = _('NordVPN Easy enabled: setup completed and hooks installed.');
+			return new Promise(L.bind(function(resolve, reject) {
+				var settled = false;
+				var cleanup = L.bind(function() {
+					if (this._uciAppliedHandler) {
+						document.removeEventListener('uci-applied', this._uciAppliedHandler);
+						this._uciAppliedHandler = null;
 					}
-					else if (previousEnabled && !currentEnabled) {
-						actions = [ 'disable_runtime' ];
-						successMessage = _('NordVPN Easy disabled: VPN interface stopped and hooks removed.');
-					}
-					else if (currentEnabled && previousCountry !== currentCountry) {
-						actions = [ 'setup' ];
-						successMessage = _('Server country updated: VPN server synchronized.');
-					}
-
-					if (!actions.length) {
-						pendingOperationLabel = '';
-						updateOperationStatus();
+				}, this);
+				var finishResolve = function(value) {
+					if (settled)
 						return;
-					}
 
-					pendingOperationLabel = formatActionsLabel(actions);
-					currentOperationStatus = 'busy:' + pendingOperationLabel;
-					setVpnStatusIndicator('activating', _('Activating'));
-					setOperationStatusText(_('Applying (%s)...').format(pendingOperationLabel), true);
+					settled = true;
+					cleanup();
+					resolve(value);
+				};
+				var finishReject = function(err) {
+					if (settled)
+						return;
 
-					return runServiceActions(actions).then(function(results) {
-						var failures = summarizeActionFailures(results);
+					settled = true;
+					cleanup();
+					reject(err);
+				};
 
-						if (failures) {
-							ui.addNotification(null, E('p', failures), 'error');
-							return;
+				cleanup();
+
+				this._uciAppliedHandler = L.bind(function() {
+					Promise.resolve().then(function() {
+						uci.unload('nordvpn_easy');
+						return uci.load('nordvpn_easy');
+					}).then(L.bind(function() {
+						var currentEnabled = (uci.get('nordvpn_easy', 'main', 'enabled') !== '0');
+						var currentCountry = uci.get('nordvpn_easy', 'main', 'vpn_country') || '';
+						var actions = [];
+						var successMessage = '';
+
+						this.initialEnabled = currentEnabled;
+						this.initialCountry = currentCountry;
+						appliedCountryCode = currentCountry;
+
+						if (!previousEnabled && currentEnabled) {
+							actions = [ 'setup', 'install_hooks' ];
+							successMessage = _('NordVPN Easy enabled: setup completed and hooks installed.');
+						}
+						else if (previousEnabled && !currentEnabled) {
+							actions = [ 'disable_runtime' ];
+							successMessage = _('NordVPN Easy disabled: VPN interface stopped and hooks removed.');
+						}
+						else if (currentEnabled && previousCountry !== currentCountry) {
+							actions = [ 'setup' ];
+							successMessage = _('Server country updated: VPN server synchronized.');
 						}
 
-						ui.addNotification(null, E('p', successMessage), 'info');
+						if (!actions.length) {
+							pendingOperationLabel = '';
+							return updateOperationStatus();
+						}
+
+						pendingOperationLabel = formatActionsLabel(actions);
+						currentOperationStatus = 'busy:' + pendingOperationLabel;
+						setVpnStatusIndicator('activating', _('Activating'));
+						setOperationStatusText(_('Applying (%s)...').format(pendingOperationLabel), true);
+
+						return runServiceActions(actions).then(function(results) {
+							var failures = summarizeActionFailures(results);
+
+							if (failures) {
+								ui.addNotification(null, E('p', failures), 'error');
+								return;
+							}
+
+							ui.addNotification(null, E('p', successMessage), 'info');
+						});
+					}, this)).then(function(value) {
+						finishResolve(value);
 					}).catch(function(err) {
-						ui.addNotification(null, E('p', _('Automatic runtime sync failed: ') + err.message), 'error');
+						var message = (err && err.message) ? err.message : String(err);
+
+						ui.addNotification(null, E('p', _('Automatic runtime sync failed: ') + message), 'error');
+						finishReject(err);
 					}).finally(function() {
 						pendingOperationLabel = '';
 						updateOperationStatus();
 					});
-				}, this));
-			}, this);
+				}, this);
 
-			document.addEventListener('uci-applied', this._uciAppliedHandler);
-			pendingOperationLabel = _('configuration');
-			currentOperationStatus = 'busy:configuration';
-			setVpnStatusIndicator('activating', _('Activating'));
-			setOperationStatusText(_('Applying configuration...'), true);
-			ui.changes.apply(mode == '0');
+				document.addEventListener('uci-applied', this._uciAppliedHandler);
+				pendingOperationLabel = _('configuration');
+				currentOperationStatus = 'busy:configuration';
+				setVpnStatusIndicator('activating', _('Activating'));
+				setOperationStatusText(_('Applying configuration...'), true);
+				Promise.resolve(ui.changes.apply(mode == '0')).catch(function(err) {
+					finishReject(err);
+				});
+			}, this));
 		}, this));
 	}
 });
