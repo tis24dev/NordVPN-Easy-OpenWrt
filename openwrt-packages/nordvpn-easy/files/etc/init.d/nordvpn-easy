@@ -12,13 +12,15 @@ RUNTIME_CONFIG='/var/etc/nordvpn-easy.conf'
 CORE_SCRIPT='/usr/libexec/nordvpn-easy/core.sh'
 CRON_PATH='/etc/cron.d/nordvpn-easy'
 HOTPLUG_PATH='/etc/hotplug.d/iface/95-nordvpn-easy'
-EXTRA_COMMANDS='setup check rotate refresh_countries refresh_countries_force public_ip diagnostics_log install_hooks remove_hooks disable_runtime render_runtime_config'
+LOCK_DIR='/tmp/nordvpn-easy.lock'
+EXTRA_COMMANDS='setup check rotate refresh_countries refresh_countries_force public_ip operation_status diagnostics_log install_hooks remove_hooks disable_runtime render_runtime_config'
 EXTRA_HELP='  setup                 Run setup immediately
   check                 Run one health check immediately
   rotate                Force server rotation immediately
   refresh_countries     Refresh the cached NordVPN country list
   refresh_countries_force Force-refresh the cached NordVPN country list
   public_ip             Print the current public IP
+  operation_status      Print whether a NordVPN Easy operation is running
   diagnostics_log       Print filtered NordVPN Easy log output
   install_hooks         Install cron and hotplug hooks
   remove_hooks          Remove cron and hotplug hooks
@@ -315,6 +317,39 @@ refresh_countries_force() {
 
 public_ip() {
 	run_core_action public_ip
+}
+
+operation_status() {
+	local lock_pid_file="${LOCK_DIR}/pid"
+	local lock_action_file="${LOCK_DIR}/action"
+	local lock_pid lock_action
+
+	if [ ! -f "$lock_pid_file" ]; then
+		printf '%s\n' 'idle'
+		return 0
+	fi
+
+	lock_pid="$(cat "$lock_pid_file" 2>/dev/null)"
+
+	case "$lock_pid" in
+		''|*[!0-9]*)
+			printf '%s\n' 'idle'
+			return 0
+			;;
+	esac
+
+	if ! kill -0 "$lock_pid" 2>/dev/null; then
+		printf '%s\n' 'idle'
+		return 0
+	fi
+
+	lock_action="$(cat "$lock_action_file" 2>/dev/null)"
+
+	if [ -n "$lock_action" ]; then
+		printf 'busy:%s\n' "$lock_action"
+	else
+		printf '%s\n' 'busy'
+	fi
 }
 
 diagnostics_log() {
