@@ -162,12 +162,7 @@ fetch_credentials_json () {
 }
 
 get_private_key () {
-  if [ -n "$NORDVPN_BASIC_TOKEN" ]; then
-    CREDENTIALS_JSON=$(fetch_credentials_json) || {
-      log 'ERROR: COULD NOT RETRIEVE PRIVATE_KEY'
-      return 1
-    }
-  elif [ -n "$NORDVPN_TOKEN" ]; then
+  if [ -n "$NORDVPN_BASIC_TOKEN" ] || [ -n "$NORDVPN_TOKEN" ]; then
     CREDENTIALS_JSON=$(fetch_credentials_json) || {
       log 'ERROR: COULD NOT RETRIEVE PRIVATE_KEY'
       return 1
@@ -497,6 +492,7 @@ rotate_action () {
 }
 
 check_once () {
+  # shellcheck disable=SC3043 # OpenWrt /bin/sh is BusyBox ash, which supports local.
   local failed_pings=0
   local restart_count=0
   local max_interface_restarts="${MAX_INTERFACE_RESTARTS:-3}"
