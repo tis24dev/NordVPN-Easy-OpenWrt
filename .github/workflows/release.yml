@@ -1,0 +1,222 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  OPENWRT_VERSION: '25.12.0'
+  OPENWRT_TARGET: 'x86'
+  OPENWRT_SUBTARGET: '64'
+  OPENWRT_TOOLCHAIN: 'gcc-14.3.0_musl'
+  PACKAGE_NAME: 'luci-app-nordvpn-easy'
+  PACKAGE_LICENSE: 'Unlicense'
+  PACKAGE_DEPENDS: 'ca-certificates curl jq luci-base kmod-wireguard wireguard-tools'
+  PACKAGE_DESCRIPTION: 'NordVPN Easy LuCI app with bundled backend for OpenWrt'
+  PACKAGE_INDEX_DESCRIPTION: 'NordVPN Easy local APK repository'
+
+jobs:
+  build-and-release:
+    name: Build APK and publish release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify tag is on main
+        run: |
+          set -euo pipefail
+          git fetch origin refs/heads/main:refs/remotes/origin/main --no-tags
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::Tag $GITHUB_REF_NAME is not on main — aborting."
+            exit 1
+          fi
+
+      - name: Validate tag format
+        run: |
+          set -euo pipefail
+          if ! printf '%s\n' "$GITHUB_REF_NAME" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Tag $GITHUB_REF_NAME must match vX.X.X"
+            exit 1
+          fi
+
+      - name: Set version from tag
+        run: |
+          set -euo pipefail
+          RAW="${GITHUB_REF_NAME#v}"
+          echo "PACKAGE_VERSION=${RAW}-r1" >> "$GITHUB_ENV"
+
+      - name: Cache OpenWrt SDK
+        uses: actions/cache@v4
+        with:
+          path: .build/openwrt-sdk
+          key: openwrt-sdk-${{ runner.os }}-${{ env.OPENWRT_VERSION }}-${{ env.OPENWRT_TARGET }}-${{ env.OPENWRT_SUBTARGET }}-${{ env.OPENWRT_TOOLCHAIN }}
+
+      - name: Download and extract OpenWrt SDK
+        run: |
+          set -euo pipefail
+          SDK_BASENAME="openwrt-sdk-${OPENWRT_VERSION}-${OPENWRT_TARGET}-${OPENWRT_SUBTARGET}_${OPENWRT_TOOLCHAIN}.Linux-x86_64"
+          SDK_ARCHIVE="${SDK_BASENAME}.tar.zst"
+          SDK_URL="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/${OPENWRT_TARGET}/${OPENWRT_SUBTARGET}/${SDK_ARCHIVE}"
+          SDK_BASE_URL="${SDK_URL%/*}"
+          WORKDIR=".build/openwrt-sdk"
+          CHECKSUMS_PATH="$WORKDIR/SHA256SUMS"
+
+          mkdir -p "$WORKDIR"
+
+          if [ ! -f "$WORKDIR/$SDK_ARCHIVE" ]; then
+            echo "Downloading SDK..."
+            curl -fL --retry 3 --output "$WORKDIR/$SDK_ARCHIVE" "$SDK_URL"
+          fi
+
+          echo "Downloading SDK checksums..."
+          if ! curl -fL --retry 3 --output "$CHECKSUMS_PATH" "${SDK_BASE_URL}/SHA256SUMS"; then
+            curl -fL --retry 3 --output "$CHECKSUMS_PATH" "${SDK_BASE_URL}/sha256sums"
+          fi
+
+          CHECKSUM_LINE="$(grep -E "([ *])${SDK_ARCHIVE}$" "$CHECKSUMS_PATH" || true)"
+          if [ -z "$CHECKSUM_LINE" ]; then
+            echo "::error::Unable to find checksum for $SDK_ARCHIVE in ${SDK_BASE_URL}/SHA256SUMS"
+            exit 1
+          fi
+
+          echo "Verifying SDK archive checksum..."
+          (
+            cd "$WORKDIR"
+            printf '%s\n' "$CHECKSUM_LINE" | sha256sum -c -
+          )
+
+          if [ ! -d "$WORKDIR/$SDK_BASENAME" ]; then
+            echo "Extracting SDK..."
+            tar --zstd -xf "$WORKDIR/$SDK_ARCHIVE" -C "$WORKDIR"
+          fi
+
+          echo "SDK_DIR=$WORKDIR/$SDK_BASENAME" >> "$GITHUB_ENV"
+
+      - name: Validate SDK tools
+        run: |
+          set -euo pipefail
+          APK_BIN="${SDK_DIR}/staging_dir/host/bin/apk"
+          FAKEROOT_BIN="${SDK_DIR}/staging_dir/host/bin/fakeroot"
+          MKHASH_BIN="${SDK_DIR}/staging_dir/host/bin/mkhash"
+
+          for tool in "$APK_BIN" "$FAKEROOT_BIN" "$MKHASH_BIN"; do
+            if [ ! -x "$tool" ]; then
+              echo "::error::Missing required SDK tool: $tool"
+              exit 1
+            fi
+          done
+
+      - name: Build APK
+        run: |
+          set -euo pipefail
+          APK_BIN="${SDK_DIR}/staging_dir/host/bin/apk"
+          FAKEROOT_BIN="${SDK_DIR}/staging_dir/host/bin/fakeroot"
+          MKHASH_BIN="${SDK_DIR}/staging_dir/host/bin/mkhash"
+          STAGING_DIR_HOST="${SDK_DIR}/staging_dir/host"
+          STAGE_DIR=".build/pkgroot/${PACKAGE_NAME}"
+          OUTPUT_DIR="dist"
+          ARTIFACT_PATH="${OUTPUT_DIR}/${PACKAGE_NAME}-${PACKAGE_VERSION}.apk"
+
+          # --- stage dir ---
+          rm -rf "$STAGE_DIR"
+          mkdir -p "$STAGE_DIR"
+
+          cp -R openwrt-packages/luci-app-nordvpn-easy/root/. "$STAGE_DIR/"
+
+          mkdir -p \
+            "$STAGE_DIR/etc/config" \
+            "$STAGE_DIR/etc/init.d" \
+            "$STAGE_DIR/usr/libexec/nordvpn-easy"
+
+          cp openwrt-packages/nordvpn-easy/files/etc/config/nordvpn_easy \
+            "$STAGE_DIR/etc/config/nordvpn_easy"
+          cp openwrt-packages/nordvpn-easy/files/etc/init.d/nordvpn-easy \
+            "$STAGE_DIR/etc/init.d/nordvpn-easy"
+          cp openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/core.sh \
+            "$STAGE_DIR/usr/libexec/nordvpn-easy/core.sh"
+          chmod 755 \
+            "$STAGE_DIR/etc/init.d/nordvpn-easy" \
+            "$STAGE_DIR/usr/libexec/nordvpn-easy/core.sh"
+
+          mkdir -p "$STAGE_DIR/lib/apk/packages"
+          printf '/etc/config/nordvpn_easy\n' \
+            > "$STAGE_DIR/lib/apk/packages/${PACKAGE_NAME}.conffiles"
+          printf '/etc/config/nordvpn_easy %s\n' \
+            "$("$MKHASH_BIN" sha256 "$STAGE_DIR/etc/config/nordvpn_easy")" \
+            > "$STAGE_DIR/lib/apk/packages/${PACKAGE_NAME}.conffiles_static"
+
+          # --- post-install / post-upgrade scripts ---
+          SCRIPTS_DIR=".build/scripts/${PACKAGE_NAME}"
+          mkdir -p "$SCRIPTS_DIR"
+
+          cat > "$SCRIPTS_DIR/post-install" <<'EOF'
+          #!/bin/sh
+          rm -f /tmp/luci-indexcache.*
+          rm -rf /tmp/luci-modulecache/
+          RPCD_OUTPUT="$(/etc/init.d/rpcd reload 2>&1)"
+          RPCD_STATUS=$?
+          if [ "$RPCD_STATUS" -ne 0 ]; then
+            printf "%s\n" "nordvpn-easy: rpcd reload failed with exit code $RPCD_STATUS" >&2
+            [ -n "$RPCD_OUTPUT" ] && printf "%s\n" "$RPCD_OUTPUT" >&2
+          fi
+          exit 0
+          EOF
+          cp "$SCRIPTS_DIR/post-install" "$SCRIPTS_DIR/post-upgrade"
+          chmod 755 "$SCRIPTS_DIR/post-install" "$SCRIPTS_DIR/post-upgrade"
+
+          # --- build apk ---
+          mkdir -p "$OUTPUT_DIR"
+
+          STAGING_DIR_HOST="$STAGING_DIR_HOST" "$FAKEROOT_BIN" "$APK_BIN" mkpkg \
+            --info "name:${PACKAGE_NAME}" \
+            --info "version:${PACKAGE_VERSION}" \
+            --info "description:${PACKAGE_DESCRIPTION}" \
+            --info "arch:noarch" \
+            --info "license:${PACKAGE_LICENSE}" \
+            --info "origin:${PACKAGE_NAME}" \
+            --info "url:https://github.com/${{ github.repository }}" \
+            --info "maintainer:${{ github.repository_owner }}" \
+            --info "depends:${PACKAGE_DEPENDS}" \
+            --files "$STAGE_DIR" \
+            --script "post-install:${SCRIPTS_DIR}/post-install" \
+            --script "post-upgrade:${SCRIPTS_DIR}/post-upgrade" \
+            --output "$ARTIFACT_PATH"
+
+          # --- sha256 + package index ---
+          printf '%s  %s\n' \
+            "$("$MKHASH_BIN" sha256 "$ARTIFACT_PATH")" \
+            "$(basename "$ARTIFACT_PATH")" \
+            > "${ARTIFACT_PATH}.sha256"
+
+          (
+            cd "$OUTPUT_DIR"
+            STAGING_DIR_HOST="$STAGING_DIR_HOST" "$FAKEROOT_BIN" "$APK_BIN" mkndx \
+              --allow-untrusted \
+              --description "${PACKAGE_INDEX_DESCRIPTION}" \
+              --output packages.adb \
+              "$(basename "$ARTIFACT_PATH")"
+          )
+
+          ls -lh "$OUTPUT_DIR/"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: '${{ github.ref_name }}'
+          generate_release_notes: true
+          files: |
+            dist/*.apk
+            dist/*.sha256
+            dist/*.adb
