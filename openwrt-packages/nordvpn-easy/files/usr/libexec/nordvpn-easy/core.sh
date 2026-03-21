@@ -64,7 +64,7 @@ log () {
 
 usage () {
   cat <<EOF
-Usage: $0 [check|setup|rotate|refresh_countries|refresh_countries_force|run|help] [config_file]
+Usage: $0 [check|setup|rotate|refresh_countries|refresh_countries_force|public_ip|run|help] [config_file]
 
 Commands:
   check   Run one VPN health-check cycle (default)
@@ -72,6 +72,7 @@ Commands:
   rotate  Download a fresh server list and switch server
   refresh_countries  Refresh the cached NordVPN country list if needed
   refresh_countries_force  Force-refresh the cached NordVPN country list
+  public_ip  Print the current public IP as seen from the router
   run     Backward-compatible alias for check
   help    Show this message
 
@@ -242,6 +243,29 @@ refresh_countries_cache () {
     log 'ERROR: COULD NOT UPDATE COUNTRY CACHE TIMESTAMP'
     return 1
   }
+}
+
+valid_public_ip () {
+  printf '%s' "$1" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$|^[0-9A-Fa-f:]+$'
+}
+
+get_public_ip () {
+  for PUBLIC_IP_URL in \
+    'https://api.ipify.org' \
+    'https://api64.ipify.org' \
+    'https://ipv4.icanhazip.com' \
+    'https://ifconfig.me/ip'
+  do
+    PUBLIC_IP=$(curl -fsS --connect-timeout 3 --max-time 5 "$PUBLIC_IP_URL" 2>/dev/null | tr -d '\r\n')
+
+    if [ -n "$PUBLIC_IP" ] && valid_public_ip "$PUBLIC_IP"; then
+      printf '%s\n' "$PUBLIC_IP"
+      return 0
+    fi
+  done
+
+  log 'ERROR: COULD NOT RETRIEVE PUBLIC IP'
+  return 1
 }
 
 resolve_country_filter () {
@@ -620,7 +644,7 @@ ACTION='check'
 
 if [ $# -gt 0 ]; then
   case "$1" in
-    check|setup|rotate|refresh_countries|refresh_countries_force|run|help)
+    check|setup|rotate|refresh_countries|refresh_countries_force|public_ip|run|help)
       ACTION="$1"
       shift
       ;;
@@ -642,6 +666,16 @@ case "$ACTION" in
     exit 0
     ;;
 esac
+
+if [ "$ACTION" = 'public_ip' ]; then
+  command -v curl >/dev/null 2>&1 || {
+    log 'curl IS MISSING, PLEASE INSTALL'
+    exit 1
+  }
+
+  get_public_ip
+  exit $?
+fi
 
 require_commands || exit 1
 

@@ -1,11 +1,13 @@
 'use strict';
 'require form';
 'require fs';
+'require poll';
 'require ui';
 'require uci';
 'require view';
 
 var COUNTRIES_CACHE_PATH = '/tmp/nordvpn-easy-countries.json';
+var PUBLIC_IP_STATUS_ID = 'nordvpn-easy-public-ip-status';
 
 function parseCountries(countriesRaw) {
 	var countries = [];
@@ -120,6 +122,29 @@ const CountrySelectValue = form.ListValue.extend({
 	}
 });
 
+const PublicIPValue = form.DummyValue.extend({
+	textvalue() {
+		return E('span', { 'id': PUBLIC_IP_STATUS_ID }, [ _('Collecting data...') ]);
+	}
+});
+
+function updatePublicIp() {
+	return fs.exec('/etc/init.d/nordvpn-easy', [ 'public_ip' ]).then(function(res) {
+		var statusEl = document.getElementById(PUBLIC_IP_STATUS_ID);
+		var publicIp = res.stdout ? res.stdout.trim() : '';
+
+		if (!statusEl)
+			return;
+
+		statusEl.textContent = (res.code === 0 && publicIp) ? publicIp : _('Unavailable');
+	}).catch(function() {
+		var statusEl = document.getElementById(PUBLIC_IP_STATUS_ID);
+
+		if (statusEl)
+			statusEl.textContent = _('Unavailable');
+	});
+}
+
 return view.extend({
 	load: function() {
 		return L.resolveDefault(fs.exec('/etc/init.d/nordvpn-easy', [ 'refresh_countries' ]), null).then(function() {
@@ -147,6 +172,8 @@ return view.extend({
 		o.default = '1';
 		o.rmempty = false;
 
+		o = s.option(PublicIPValue, '_public_ip', _('Public IP'));
+
 		o = s.option(form.Value, 'nordvpn_token', _('NordVPN Token'));
 		o.password = true;
 		o.rmempty = false;
@@ -165,12 +192,13 @@ return view.extend({
 		if (currentCountry && !countries.some(function(country) { return String(country.code) === currentCountry; }))
 			o.value(currentCountry, _('Current value: %s').format(currentCountry));
 
-		o = s.option(form.Button, '_advanced', _('Advanced'));
-		o.inputstyle = 'apply';
-		o.onclick = function() {
-			window.location.href = L.url('admin', 'services', 'nordvpn-easy', 'advanced');
-		};
+		return m.render().then(function(node) {
+			poll.add(function() {
+				return updatePublicIp();
+			}, 5);
 
-		return m.render();
+			updatePublicIp();
+			return node;
+		});
 	}
 });

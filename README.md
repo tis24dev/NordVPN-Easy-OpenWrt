@@ -30,17 +30,27 @@ legacy root-level direct-install files.
 
 1. Log in to LuCI.
 2. Open `System -> Software`.
-3. Click `Configure apk`.
-4. Add this repository index URL:
+3. Click `Update lists...`.
+4. Install `luci-app-filebrowser`.
+5. Log out from LuCI.
+6. Log in again.
+7. Open `System -> File Browser`.
+8. Open `etc/apk/keys`.
+9. Download:
+   `https://github.com/tis24dev/NordVPN-Easy-OpenWrt/releases/latest/download/vpn-easy-tis24dev.pem`
+10. Upload the PEM file.
+11. Open `System -> Software`.
+12. Click `Configure apk`.
+13. Add this repository index URL:
    `https://github.com/tis24dev/NordVPN-Easy-OpenWrt/releases/latest/download/luci-app-nordvpn-easy.adb`
-5. Save the `apk` configuration.
-6. Click `Update lists...`.
-7. In the `Filter` box, search for `nordvpn-easy`.
-8. Install `luci-app-nordvpn-easy`.
-9. Log out from LuCI.
-10. Log in again.
-11. Open `Services -> NordVPN Easy`.
-12. Configure the service.
+14. Save the `apk` configuration.
+15. Click `Update lists...`.
+16. In the `Filter` box, search for `nordvpn-easy`.
+17. Install `luci-app-nordvpn-easy`.
+18. Log out from LuCI.
+19. Log in again.
+20. Open `Services -> NordVPN Easy`.
+21. Configure the service.
 
 The configuration guide will be expanded separately.
 
