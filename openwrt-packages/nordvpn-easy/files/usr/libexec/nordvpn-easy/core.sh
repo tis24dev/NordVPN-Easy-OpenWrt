@@ -18,6 +18,7 @@ INTERFACE_RESTART_THRESHOLD="${INTERFACE_RESTART_THRESHOLD:-10}"
 MAX_INTERFACE_RESTARTS="${MAX_INTERFACE_RESTARTS:-3}"
 INTERFACE_RESTART_DELAY="${INTERFACE_RESTART_DELAY:-10}"
 POST_RESTART_DELAY="${POST_RESTART_DELAY:-60}"
+VPN_INTERFACE_PRESENT_DELAY="${VPN_INTERFACE_PRESENT_DELAY:-10}"
 
 SERVER_LIST_FILE='/tmp/nordvpn.json'
 COUNTRIES_CACHE_FILE='/tmp/nordvpn-easy-countries.json'
@@ -148,6 +149,10 @@ vpn_is_configured () {
   [ "$(uci -q get "network.${VPN_IF}.proto" 2>/dev/null)" = 'wireguard' ]
 }
 
+vpn_link_is_present () {
+  ip link show dev "$VPN_IF" >/dev/null 2>&1
+}
+
 log_vpn_interface_state () {
   STATE_CONTEXT="$1"
   VPN_PROTO=$(uci -q get "network.${VPN_IF}.proto" 2>/dev/null)
@@ -158,6 +163,70 @@ log_vpn_interface_state () {
   ip link show dev "$VPN_IF" >/dev/null 2>&1 && VPN_LINK_PRESENT='yes'
 
   log "Interface state [$STATE_CONTEXT]: proto=${VPN_PROTO:-absent}, disabled=${VPN_DISABLED:-0}, link_present=$VPN_LINK_PRESENT, endpoint=${VPN_ENDPOINT:-none}"
+}
+
+recover_missing_vpn_interface () {
+  log "VPN interface $VPN_IF is still not present after ${VPN_INTERFACE_PRESENT_DELAY}s - starting recovery sequence"
+  log_vpn_interface_state 'missing-interface-start'
+
+  log "Recovery step 1/3: cycling interface $VPN_IF with ifdown/ifup"
+  ifdown "$VPN_IF" >/dev/null 2>&1 || true
+  ifup "$VPN_IF" >/dev/null 2>&1 || true
+  sleep "$VPN_INTERFACE_PRESENT_DELAY"
+
+  if vpn_link_is_present; then
+    log "Recovery step 1/3 succeeded: interface $VPN_IF is present again"
+    log_vpn_interface_state 'missing-interface-after-ifup'
+    return 0
+  fi
+
+  log "Recovery step 2/3: reloading network service because $VPN_IF is still not present"
+  /etc/init.d/network reload || {
+    log 'ERROR: NETWORK RELOAD FAILED DURING MISSING INTERFACE RECOVERY'
+    return 1
+  }
+  sleep "$VPN_INTERFACE_PRESENT_DELAY"
+
+  if vpn_link_is_present; then
+    log "Recovery step 2/3 succeeded: interface $VPN_IF is present again"
+    log_vpn_interface_state 'missing-interface-after-reload'
+    return 0
+  fi
+
+  log "Recovery step 3/3: restarting network service because $VPN_IF is still not present"
+  /etc/init.d/network restart || {
+    log 'ERROR: NETWORK RESTART FAILED DURING MISSING INTERFACE RECOVERY'
+    return 1
+  }
+  sleep "$VPN_INTERFACE_PRESENT_DELAY"
+
+  if vpn_link_is_present; then
+    log "Recovery step 3/3 succeeded: interface $VPN_IF is present again"
+    log_vpn_interface_state 'missing-interface-after-restart'
+    return 0
+  fi
+
+  log "ERROR: VPN interface $VPN_IF is still not present after the full recovery sequence"
+  log_vpn_interface_state 'missing-interface-final'
+  return 1
+}
+
+ensure_vpn_interface_present () {
+  if vpn_link_is_present; then
+    return 0
+  fi
+
+  log "VPN interface $VPN_IF is not present, waiting ${VPN_INTERFACE_PRESENT_DELAY}s before recovery"
+  log_vpn_interface_state 'missing-interface-before-wait'
+  sleep "$VPN_INTERFACE_PRESENT_DELAY"
+
+  if vpn_link_is_present; then
+    log "VPN interface $VPN_IF became present during the wait window"
+    log_vpn_interface_state 'missing-interface-after-wait'
+    return 0
+  fi
+
+  recover_missing_vpn_interface
 }
 
 ensure_vpn_interface_enabled () {
@@ -682,6 +751,7 @@ bootstrap_if_needed () {
   fi
 
   ensure_vpn_in_wan_zone || return 1
+  ensure_vpn_interface_present || return 1
   log "Bootstrap completed for interface $VPN_IF"
   log_vpn_interface_state 'bootstrap-complete'
 }
