@@ -119,6 +119,9 @@ acquire_lock () {
     fi
   fi
 
+  # This stale-lock recovery has a small rm/mkdir race, but that is acceptable here:
+  # release_lock() owns the whole directory via LOCK_PID_FILE, and concurrent cron/hotplug
+  # attempts are designed to fail acquire_lock() and exit successfully instead of surfacing an error.
   rm -rf "$LOCK_DIR" 2>/dev/null || return 1
 
   mkdir "$LOCK_DIR" 2>/dev/null || return 1
