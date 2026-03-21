@@ -127,7 +127,7 @@ jobs:
           set -euo pipefail
           SIGNING_DIR=".build/signing"
           SIGNING_KEY_PATH="${SIGNING_DIR}/apk-signing-key.pem"
-          PUBLIC_KEY_PATH="dist/apk-signing-public.pem"
+          PUBLIC_KEY_PATH="dist/nordvpn-easy-openwrt-apk-public-key.pem"
 
           if [ -z "${APK_SIGNING_PRIVATE_KEY:-}" ]; then
             echo "::error::Missing APK_SIGNING_PRIVATE_KEY environment secret"
