@@ -23,6 +23,15 @@ function parseCountries(countriesRaw) {
 	});
 }
 
+function getCountrySelectElement(optionId) {
+	var frameEl = document.getElementById(optionId);
+
+	if (!frameEl)
+		return null;
+
+	return frameEl.querySelector('select');
+}
+
 function renderCountryChoices(selectEl, countries, currentCountry) {
 	var seenCurrent = false;
 
@@ -67,7 +76,7 @@ const CountrySelectValue = form.ListValue.extend({
 
 			return fs.read(COUNTRIES_CACHE_PATH);
 		}).then(function(countriesRaw) {
-			var selectEl = document.getElementById(this.cbid(section_id));
+			var selectEl = getCountrySelectElement(this.cbid(section_id));
 			var currentCountry = selectEl ? selectEl.value : '';
 			var countries = parseCountries(countriesRaw);
 
@@ -95,9 +104,9 @@ const CountrySelectValue = form.ListValue.extend({
 		});
 
 		return E('div', {
-			'style': 'display:flex;gap:0.5rem;align-items:center;'
+			'style': 'display:inline-flex;gap:0.5rem;align-items:center;flex-wrap:wrap;max-width:100%;'
 		}, [
-			E('div', { 'style': 'flex:1;min-width:0;' }, [ widget.render() ]),
+			E('div', { 'style': 'display:inline-block;width:18rem;max-width:100%;' }, [ widget.render() ]),
 			E('button', {
 				'class': 'cbi-button cbi-button-apply',
 				'type': 'button',
