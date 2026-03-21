@@ -137,6 +137,21 @@ vpn_is_configured () {
   [ "$(uci -q get "network.${VPN_IF}.proto" 2>/dev/null)" = 'wireguard' ]
 }
 
+ensure_vpn_interface_enabled () {
+  [ "$(uci -q get "network.${VPN_IF}.disabled" 2>/dev/null)" = '1' ] || return 0
+
+  uci -q delete "network.${VPN_IF}.disabled"
+  uci commit network || {
+    log "ERROR: COULD NOT COMMIT NETWORK CONFIGURATION WHILE ENABLING $VPN_IF"
+    return 1
+  }
+
+  /etc/init.d/network reload || {
+    log "ERROR: NETWORK RELOAD FAILED WHILE ENABLING $VPN_IF"
+    return 1
+  }
+}
+
 pick_ping_ip () {
   eval "printf '%s\n' \"\$IP$(awk 'BEGIN { srand(); print int((rand()*10000000)) % 20 }')\""
 }
@@ -464,6 +479,29 @@ EOF
   set_vpn_server_in_uci "$HOST_NAME" "$SERVER_IP" "$PUBLIC_KEY"
 }
 
+current_server_matches_recommendations () {
+  CURRENT_SERVER=$(uci -q get "network.${VPN_IF}server.endpoint_host" 2>/dev/null)
+
+  [ -n "$CURRENT_SERVER" ] || return 1
+
+  jq -e --arg current "$CURRENT_SERVER" '
+    [ .[] | select(.station == $current) ] | length > 0
+  ' "$SERVER_LIST_FILE" >/dev/null 2>&1
+}
+
+sync_server_selection () {
+  vpn_is_configured || return 0
+  get_servers_list || return 1
+
+  if current_server_matches_recommendations; then
+    log 'Current VPN server already matches the selected country/filter'
+    return 0
+  fi
+
+  log 'Current VPN server does not match the selected country/filter, changing server'
+  change_vpn_server reload
+}
+
 change_vpn_server () {
   CURRENT_SERVER=$(uci -q get "network.${VPN_IF}server.endpoint_host" 2>/dev/null)
   SERVER_CANDIDATES_FILE="/tmp/nordvpn.candidates.$$"
@@ -570,6 +608,8 @@ bootstrap_if_needed () {
 
   if ! vpn_is_configured; then
     configure_vpn_interface || return 1
+  else
+    ensure_vpn_interface_enabled || return 1
   fi
 
   ensure_vpn_in_wan_zone || return 1
@@ -687,7 +727,7 @@ case "$ACTION" in
     bootstrap_if_needed && check_once
     ;;
   setup)
-    bootstrap_if_needed && log 'NordVPN configuration is ready'
+    bootstrap_if_needed && sync_server_selection && log 'NordVPN configuration is ready'
     ;;
   rotate)
     rotate_action

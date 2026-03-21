@@ -158,6 +158,12 @@ function runServiceAction(action) {
 				return line;
 			}).join('\n') || _('Command completed.')
 		};
+	}).catch(function(err) {
+		return {
+			action: action,
+			code: -1,
+			message: (err && err.message) ? err.message : String(err)
+		};
 	});
 }
 
@@ -200,6 +206,7 @@ return view.extend({
 		var m, s, o;
 
 		this.initialEnabled = (uci.get('nordvpn_easy', 'main', 'enabled') !== '0');
+		this.initialCountry = currentCountry;
 
 		m = new form.Map('nordvpn_easy', _('NordVPN Easy'),
 			_('Configure the minimum settings required to connect NordVPN Easy.'));
@@ -248,6 +255,7 @@ return view.extend({
 
 	handleSaveApply: function(ev, mode) {
 		var previousEnabled = !!this.initialEnabled;
+		var previousCountry = this.initialCountry || '';
 
 		return this.handleSave(ev).then(L.bind(function() {
 			if (this._uciAppliedHandler)
@@ -260,18 +268,24 @@ return view.extend({
 				uci.unload('nordvpn_easy');
 				uci.load('nordvpn_easy').then(L.bind(function() {
 					var currentEnabled = (uci.get('nordvpn_easy', 'main', 'enabled') !== '0');
+					var currentCountry = uci.get('nordvpn_easy', 'main', 'vpn_country') || '';
 					var actions = [];
 					var successMessage = '';
 
 					this.initialEnabled = currentEnabled;
+					this.initialCountry = currentCountry;
 
 					if (!previousEnabled && currentEnabled) {
 						actions = [ 'setup', 'install_hooks' ];
 						successMessage = _('NordVPN Easy enabled: setup completed and hooks installed.');
 					}
 					else if (previousEnabled && !currentEnabled) {
-						actions = [ 'remove_hooks' ];
-						successMessage = _('NordVPN Easy disabled: hooks removed.');
+						actions = [ 'disable_runtime' ];
+						successMessage = _('NordVPN Easy disabled: VPN interface stopped and hooks removed.');
+					}
+					else if (currentEnabled && previousCountry !== currentCountry) {
+						actions = [ 'setup' ];
+						successMessage = _('Server country updated: VPN server synchronized.');
 					}
 
 					if (!actions.length)
