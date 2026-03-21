@@ -129,7 +129,7 @@ jobs:
           SIGNING_ROOT="${SIGNING_DIR}/trust-root"
           SIGNING_KEY_PATH="${SIGNING_ROOT}/private-key.pem"
           SIGNING_PUBLIC_KEY_PATH="${SIGNING_ROOT}/public-key.pem"
-          PUBLIC_KEY_ASSET_PATH="dist/nordvpn-easy-openwrt-apk-public-key.pem"
+          PUBLIC_KEY_ASSET_PATH="dist/vpn-easy-tis24dev.pem"
 
           if [ -z "${APK_SIGNING_PRIVATE_KEY:-}" ]; then
             echo "::error::Missing APK_SIGNING_PRIVATE_KEY environment secret"
@@ -163,6 +163,10 @@ jobs:
           mkdir -p "$STAGE_DIR"
 
           cp -R openwrt-packages/luci-app-nordvpn-easy/root/. "$STAGE_DIR/"
+          if [ -d openwrt-packages/luci-app-nordvpn-easy/htdocs ]; then
+            mkdir -p "$STAGE_DIR/www"
+            cp -R openwrt-packages/luci-app-nordvpn-easy/htdocs/. "$STAGE_DIR/www/"
+          fi
 
           mkdir -p \
             "$STAGE_DIR/etc/config" \
