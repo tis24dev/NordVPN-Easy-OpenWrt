@@ -376,6 +376,14 @@ vpn_status() {
 			printf '%s\n' 'active'
 			return 0
 		fi
+
+		if ifstatus "$cfg_vpn_if" 2>/dev/null | jq -er '.up == false' >/dev/null 2>&1; then
+			printf '%s\n' 'inactive'
+			return 0
+		fi
+
+		printf '%s\n' 'inactive'
+		return 0
 	fi
 
 	if ip link show dev "$cfg_vpn_if" >/dev/null 2>&1; then
