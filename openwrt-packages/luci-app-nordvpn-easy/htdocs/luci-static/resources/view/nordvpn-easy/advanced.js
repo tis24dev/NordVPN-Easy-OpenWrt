@@ -116,12 +116,6 @@ return view.extend({
 		o.datatype = 'uinteger';
 		o.rmempty = false;
 
-		o = s.option(form.Button, '_setup', _('Back to Setup'));
-		o.inputstyle = 'apply';
-		o.onclick = function() {
-			window.location.href = L.url('admin', 'services', 'nordvpn-easy');
-		};
-
 		s = m.section(form.NamedSection, 'main', 'nordvpn_easy', _('Runtime'));
 		s.anonymous = true;
 		s.addremove = false;

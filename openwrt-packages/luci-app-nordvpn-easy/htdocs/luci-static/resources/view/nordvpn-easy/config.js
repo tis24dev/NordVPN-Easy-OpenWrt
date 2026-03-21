@@ -192,12 +192,6 @@ return view.extend({
 		if (currentCountry && !countries.some(function(country) { return String(country.code) === currentCountry; }))
 			o.value(currentCountry, _('Current value: %s').format(currentCountry));
 
-		o = s.option(form.Button, '_advanced', _('Advanced'));
-		o.inputstyle = 'apply';
-		o.onclick = function() {
-			window.location.href = L.url('admin', 'services', 'nordvpn-easy', 'advanced');
-		};
-
 		return m.render().then(function(node) {
 			poll.add(function() {
 				return updatePublicIp();
