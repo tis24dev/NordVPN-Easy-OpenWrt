@@ -13,13 +13,14 @@ CORE_SCRIPT='/usr/libexec/nordvpn-easy/core.sh'
 CRON_PATH='/etc/cron.d/nordvpn-easy'
 HOTPLUG_PATH='/etc/hotplug.d/iface/95-nordvpn-easy'
 LOCK_DIR='/tmp/nordvpn-easy.lock'
-EXTRA_COMMANDS='setup check rotate refresh_countries refresh_countries_force public_ip operation_status vpn_status diagnostics_log install_hooks remove_hooks disable_runtime render_runtime_config'
+EXTRA_COMMANDS='setup check rotate refresh_countries refresh_countries_force public_ip public_country operation_status vpn_status diagnostics_log install_hooks remove_hooks disable_runtime render_runtime_config'
 EXTRA_HELP='  setup                 Run setup immediately
   check                 Run one health check immediately
   rotate                Force server rotation immediately
   refresh_countries     Refresh the cached NordVPN country list
   refresh_countries_force Force-refresh the cached NordVPN country list
   public_ip             Print the current public IP
+  public_country        Print the detected country code for the current public IP
   operation_status      Print whether a NordVPN Easy operation is running
   vpn_status            Print VPN runtime status (active/activating/inactive)
   diagnostics_log       Print filtered NordVPN Easy log output
@@ -318,6 +319,10 @@ refresh_countries_force() {
 
 public_ip() {
 	run_core_action public_ip
+}
+
+public_country() {
+	run_core_action public_country
 }
 
 operation_status() {
