@@ -60,6 +60,7 @@ IP19='209.244.0.4'
 
 log () {
   printf '*** %s ***\n' "$*"
+  command -v logger >/dev/null 2>&1 && logger -t 'nordvpn-easy' "$*"
 }
 
 usage () {
@@ -148,6 +149,11 @@ ensure_vpn_interface_enabled () {
 
   /etc/init.d/network reload || {
     log "ERROR: NETWORK RELOAD FAILED WHILE ENABLING $VPN_IF"
+    return 1
+  }
+
+  ifup "$VPN_IF" || {
+    log "ERROR: IFUP FAILED WHILE ENABLING $VPN_IF"
     return 1
   }
 }
