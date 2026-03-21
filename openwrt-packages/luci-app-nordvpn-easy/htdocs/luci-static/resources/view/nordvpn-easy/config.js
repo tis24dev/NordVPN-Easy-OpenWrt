@@ -18,6 +18,7 @@ var COUNTRY_FIELD_ID = 'cbid.nordvpn_easy.main.vpn_country';
 var COUNTRY_REFRESH_BUTTON_ID = 'cbid.nordvpn_easy.main.vpn_country.refresh';
 var pendingOperationLabel = '';
 var currentOperationStatus = 'idle';
+var currentVpnState = '';
 var appliedEnabled = true;
 var appliedCountryCode = '';
 var currentPublicCountry = '';
@@ -266,31 +267,47 @@ function updateVpnStatus() {
 	return fs.exec('/etc/init.d/nordvpn-easy', [ 'vpn_status' ]).then(function(res) {
 		var state = res.stdout ? res.stdout.trim() : 'inactive';
 		var busyAction;
+		var previousVpnState = currentVpnState;
 
 		if (currentOperationStatus.indexOf('busy:') === 0) {
 			busyAction = currentOperationStatus.substring(5);
 
-			if (busyAction !== 'refresh_countries')
+			if (busyAction !== 'refresh_countries') {
+				currentVpnState = 'activating';
 				return setVpnStatusIndicator('activating', _('Activating'));
+			}
 		}
 		else if (currentOperationStatus === 'busy') {
+			currentVpnState = 'activating';
 			return setVpnStatusIndicator('activating', _('Activating'));
 		}
 
 		if (res.code !== 0) {
+			currentVpnState = 'inactive';
 			setVpnStatusIndicator('inactive', _('Not Active'));
 			return;
 		}
 
-		if (state === 'active')
+		if (state === 'active') {
+			currentVpnState = 'active';
 			setVpnStatusIndicator('active', _('Active'));
-		else
+
+			if (previousVpnState !== 'active')
+				updatePublicCountry();
+		}
+		else {
+			currentVpnState = 'inactive';
 			setVpnStatusIndicator('inactive', _('Not Active'));
+		}
 	}).catch(function() {
-		if (currentOperationStatus.indexOf('busy') === 0)
+		if (currentOperationStatus.indexOf('busy') === 0) {
+			currentVpnState = 'activating';
 			setVpnStatusIndicator('activating', _('Activating'));
-		else
+		}
+		else {
+			currentVpnState = 'inactive';
 			setVpnStatusIndicator('inactive', _('Not Active'));
+		}
 	});
 }
 
