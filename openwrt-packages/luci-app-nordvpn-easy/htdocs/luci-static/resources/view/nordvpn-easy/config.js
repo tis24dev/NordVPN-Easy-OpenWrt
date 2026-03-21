@@ -292,8 +292,12 @@ function updateVpnStatus() {
 			currentVpnState = 'active';
 			setVpnStatusIndicator('active', _('Active'));
 
-			if (previousVpnState !== 'active')
-				updatePublicCountry();
+			if (previousVpnState !== 'active') {
+				setTimeout(function() {
+					updatePublicIp();
+					updatePublicCountry();
+				}, 5000);
+			}
 		}
 		else {
 			currentVpnState = 'inactive';
@@ -547,7 +551,7 @@ return view.extend({
 
 			poll.add(function() {
 				return updatePublicCountry();
-			}, 300);
+			}, 30);
 
 			poll.add(function() {
 				return updateOperationStatus();
@@ -655,6 +659,8 @@ return view.extend({
 					}).finally(function() {
 						pendingOperationLabel = '';
 						updateOperationStatus();
+						updatePublicIp();
+						updatePublicCountry();
 					});
 				}, this);
 
