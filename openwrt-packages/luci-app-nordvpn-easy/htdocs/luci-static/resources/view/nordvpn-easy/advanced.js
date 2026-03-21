@@ -117,7 +117,7 @@ return view.extend({
 		o.rmempty = false;
 
 		o = s.option(form.Button, '_setup', _('Back to Setup'));
-		o.inputstyle = 'reset';
+		o.inputstyle = 'apply';
 		o.onclick = function() {
 			window.location.href = L.url('admin', 'services', 'nordvpn-easy');
 		};

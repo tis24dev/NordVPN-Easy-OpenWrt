@@ -1,9 +1,130 @@
 'use strict';
 'require form';
+'require fs';
+'require ui';
+'require uci';
 'require view';
 
+var COUNTRIES_CACHE_PATH = '/tmp/nordvpn-easy-countries.json';
+
+function parseCountries(countriesRaw) {
+	var countries = [];
+
+	try {
+		countries = JSON.parse(countriesRaw || '[]');
+	} catch (e) {
+		countries = [];
+	}
+
+	return countries.filter(function(country) {
+		return country && country.name && country.code;
+	}).sort(function(a, b) {
+		return String(a.name).localeCompare(String(b.name));
+	});
+}
+
+function renderCountryChoices(selectEl, countries, currentCountry) {
+	var seenCurrent = false;
+
+	if (!selectEl)
+		return;
+
+	while (selectEl.firstChild)
+		selectEl.removeChild(selectEl.firstChild);
+
+	selectEl.appendChild(E('option', { value: '' }, [ _('Automatic') ]));
+
+	countries.forEach(function(country) {
+		var value = String(country.code);
+		selectEl.appendChild(E('option', { value: value }, [
+			_('%s (%s)').format(country.name, value)
+		]));
+
+		if (value === currentCountry)
+			seenCurrent = true;
+	});
+
+	if (currentCountry && !seenCurrent) {
+		selectEl.appendChild(E('option', { value: currentCountry }, [
+			_('Current value: %s').format(currentCountry)
+		]));
+	}
+
+	selectEl.value = currentCountry || '';
+}
+
+const CountrySelectValue = form.ListValue.extend({
+	refreshCountries(buttonEl, section_id) {
+		buttonEl.disabled = true;
+
+		return fs.exec('/etc/init.d/nordvpn-easy', [ 'refresh_countries_force' ]).then(function(res) {
+			var message;
+
+			if (res.code !== 0) {
+				message = res.stderr ? res.stderr.trim() : _('Country refresh failed.');
+				throw new Error(_('Country refresh failed with exit code %d: %s').format(res.code, message));
+			}
+
+			return fs.read(COUNTRIES_CACHE_PATH);
+		}).then(function(countriesRaw) {
+			var selectEl = document.getElementById(this.cbid(section_id));
+			var currentCountry = selectEl ? selectEl.value : '';
+			var countries = parseCountries(countriesRaw);
+
+			renderCountryChoices(selectEl, countries, currentCountry);
+			ui.addNotification(null, E('p', _('Country list refreshed.')), 'info');
+		}.bind(this)).catch(function(err) {
+			ui.addNotification(null, E('p', err.message), 'error');
+		}).finally(function() {
+			buttonEl.disabled = false;
+		});
+	},
+
+	renderWidget(section_id, option_index, cfgvalue) {
+		var choices = this.transformChoices();
+		var widget = new ui.Select((cfgvalue != null) ? cfgvalue : this.default, choices, {
+			id: this.cbid(section_id),
+			size: this.size,
+			sort: this.keylist,
+			widget: this.widget,
+			optional: this.optional,
+			orientation: this.orientation,
+			placeholder: this.placeholder,
+			validate: this.getValidator(section_id),
+			disabled: (this.readonly != null) ? this.readonly : this.map.readonly
+		});
+
+		return E('div', {
+			'style': 'display:flex;gap:0.5rem;align-items:center;'
+		}, [
+			E('div', { 'style': 'flex:1;min-width:0;' }, [ widget.render() ]),
+			E('button', {
+				'class': 'cbi-button cbi-button-apply',
+				'type': 'button',
+				'click': ui.createHandlerFn(this, function(section_id, ev) {
+					ev.preventDefault();
+					return this.refreshCountries(ev.currentTarget, section_id);
+				}, section_id),
+				'disabled': (this.readonly != null) ? this.readonly : this.map.readonly
+			}, [ _('Refresh') ])
+		]);
+	}
+});
+
 return view.extend({
-	render: function() {
+	load: function() {
+		return L.resolveDefault(fs.exec('/etc/init.d/nordvpn-easy', [ 'refresh_countries' ]), null).then(function() {
+			return Promise.all([
+				L.resolveDefault(fs.read(COUNTRIES_CACHE_PATH), '[]'),
+				uci.load('nordvpn_easy')
+			]);
+		});
+	},
+
+	render: function(data) {
+		var countriesRaw = data[0];
+		var currentCountry = uci.get('nordvpn_easy', 'main', 'vpn_country') || '';
+		var countries = parseCountries(countriesRaw);
 		var m, s, o;
 
 		m = new form.Map('nordvpn_easy', _('NordVPN Easy'),
@@ -22,10 +143,18 @@ return view.extend({
 		o.rmempty = false;
 		o.description = _('Required. NordVPN access token.');
 
-		o = s.option(form.Value, 'vpn_country', _('Country Filter'));
-		o.placeholder = 'IT / Italy / 106';
+		o = s.option(CountrySelectValue, 'vpn_country', _('Server Country'));
+		o.value('', _('Automatic'));
 		o.rmempty = true;
-		o.description = _('Optional. Use a country code, a full country name or a NordVPN country id.');
+		o.description = _('Optional. Country list is refreshed automatically every 24 hours.');
+
+		countries.forEach(function(country) {
+			var value = String(country.code);
+			o.value(value, _('%s (%s)').format(country.name, value));
+		});
+
+		if (currentCountry && !countries.some(function(country) { return String(country.code) === currentCountry; }))
+			o.value(currentCountry, _('Current value: %s').format(currentCountry));
 
 		o = s.option(form.Button, '_advanced', _('Advanced'));
 		o.inputstyle = 'apply';
