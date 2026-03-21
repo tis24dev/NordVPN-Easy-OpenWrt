@@ -85,25 +85,31 @@ load_config () {
   if [ -f "$CONFIG_PATH" ]; then
     # shellcheck disable=SC1090
     . "$CONFIG_PATH"
+    log "Loaded runtime configuration from $CONFIG_PATH"
   elif [ "$CONFIG_PATH_REQUIRED" -eq 1 ]; then
     log "ERROR: CONFIG FILE $CONFIG_PATH NOT FOUND"
     return 1
+  else
+    log "No runtime configuration file found at $CONFIG_PATH, using environment/default values"
   fi
 }
 
 require_commands () {
+  log 'Validating required system commands'
   for cmd in awk curl ifdown ifup ip jq ping uci; do
     command -v "$cmd" >/dev/null 2>&1 || {
       log "$cmd IS MISSING, PLEASE INSTALL"
       return 1
     }
   done
+  log 'Required system commands are available'
 }
 
 release_lock () {
   [ "$LOCK_ACQUIRED" -eq 1 ] || return 0
   rm -rf "$LOCK_DIR"
   LOCK_ACQUIRED=0
+  log "Released execution lock at $LOCK_DIR"
 }
 
 acquire_lock () {
@@ -113,12 +119,14 @@ acquire_lock () {
     printf '%s\n' "$$" > "$LOCK_PID_FILE"
     LOCK_ACQUIRED=1
     trap 'release_lock' EXIT HUP INT TERM
+    log "Acquired execution lock at $LOCK_DIR"
     return 0
   fi
 
   if [ -f "$LOCK_PID_FILE" ]; then
     LOCK_PID=$(cat "$LOCK_PID_FILE" 2>/dev/null)
     if [ -n "$LOCK_PID" ] && kill -0 "$LOCK_PID" 2>/dev/null; then
+      log "Execution lock is already held by PID $LOCK_PID"
       return 1
     fi
   fi
@@ -126,21 +134,37 @@ acquire_lock () {
   # This stale-lock recovery has a small rm/mkdir race, but that is acceptable here:
   # release_lock() owns the whole directory via LOCK_PID_FILE, and concurrent cron/hotplug
   # attempts are designed to fail acquire_lock() and exit successfully instead of surfacing an error.
+  log "Recovering stale execution lock at $LOCK_DIR"
   rm -rf "$LOCK_DIR" 2>/dev/null || return 1
 
   mkdir "$LOCK_DIR" 2>/dev/null || return 1
   printf '%s\n' "$$" > "$LOCK_PID_FILE"
   LOCK_ACQUIRED=1
   trap 'release_lock' EXIT HUP INT TERM
+  log "Recovered and acquired execution lock at $LOCK_DIR"
 }
 
 vpn_is_configured () {
   [ "$(uci -q get "network.${VPN_IF}.proto" 2>/dev/null)" = 'wireguard' ]
 }
 
+log_vpn_interface_state () {
+  STATE_CONTEXT="$1"
+  VPN_PROTO=$(uci -q get "network.${VPN_IF}.proto" 2>/dev/null)
+  VPN_DISABLED=$(uci -q get "network.${VPN_IF}.disabled" 2>/dev/null)
+  VPN_ENDPOINT=$(uci -q get "network.${VPN_IF}server.endpoint_host" 2>/dev/null)
+  VPN_LINK_PRESENT='no'
+
+  ip link show dev "$VPN_IF" >/dev/null 2>&1 && VPN_LINK_PRESENT='yes'
+
+  log "Interface state [$STATE_CONTEXT]: proto=${VPN_PROTO:-absent}, disabled=${VPN_DISABLED:-0}, link_present=$VPN_LINK_PRESENT, endpoint=${VPN_ENDPOINT:-none}"
+}
+
 ensure_vpn_interface_enabled () {
   [ "$(uci -q get "network.${VPN_IF}.disabled" 2>/dev/null)" = '1' ] || return 0
 
+  log "Re-enabling disabled VPN interface $VPN_IF"
+  log_vpn_interface_state 'before-enable'
   uci -q delete "network.${VPN_IF}.disabled"
   uci commit network || {
     log "ERROR: COULD NOT COMMIT NETWORK CONFIGURATION WHILE ENABLING $VPN_IF"
@@ -156,6 +180,9 @@ ensure_vpn_interface_enabled () {
     log "ERROR: IFUP FAILED WHILE ENABLING $VPN_IF"
     return 1
   }
+
+  log "VPN interface $VPN_IF has been re-enabled"
+  log_vpn_interface_state 'after-enable'
 }
 
 pick_ping_ip () {
@@ -186,6 +213,7 @@ fetch_credentials_json () {
 
 get_private_key () {
   if [ -n "$NORDVPN_TOKEN" ]; then
+    log 'Requesting NordLynx private key from NordVPN API'
     CREDENTIALS_JSON=$(fetch_credentials_json) || {
       log 'ERROR: COULD NOT RETRIEVE PRIVATE_KEY'
       return 1
@@ -199,6 +227,8 @@ get_private_key () {
     log 'ERROR: INVALID PRIVATE_KEY RESPONSE'
     return 1
   }
+
+  log 'NordLynx private key retrieved successfully'
 }
 
 countries_cache_is_fresh () {
@@ -223,7 +253,14 @@ refresh_countries_cache () {
   COUNTRIES_TS_TMP="${COUNTRIES_CACHE_TS_FILE}.tmp.$$"
 
   if [ "$FORCE_REFRESH" -ne 1 ] && countries_cache_is_fresh; then
+    log "Using cached NordVPN country list from $COUNTRIES_CACHE_FILE"
     return 0
+  fi
+
+  if [ "$FORCE_REFRESH" -eq 1 ]; then
+    log 'Force-refreshing NordVPN country list cache'
+  else
+    log 'Refreshing NordVPN country list cache'
   fi
 
   curl -fsS --connect-timeout 15 --max-time 30 "$COUNTRIES_URL" | jq -ce '
@@ -264,6 +301,8 @@ refresh_countries_cache () {
     log 'ERROR: COULD NOT UPDATE COUNTRY CACHE TIMESTAMP'
     return 1
   }
+
+  log "NordVPN country list cache updated at $COUNTRIES_CACHE_FILE"
 }
 
 valid_public_ip () {
@@ -327,6 +366,9 @@ build_server_recommendations_url () {
   if [ -n "$VPN_COUNTRY" ]; then
     resolve_country_filter || return 1
     SERVER_RECOMMENDATIONS_URL="${SERVER_RECOMMENDATIONS_URL}&filters\\[country_id\\]=$RESOLVED_COUNTRY_ID"
+    log "Building recommendations URL for country filter $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
+  else
+    log 'Building recommendations URL with automatic country selection'
   fi
 
   printf '%s\n' "$SERVER_RECOMMENDATIONS_URL"
@@ -335,6 +377,8 @@ build_server_recommendations_url () {
 get_servers_list () {
   SERVER_LIST_TMP="${SERVER_LIST_FILE}.tmp.$$"
   SERVER_RECOMMENDATIONS_URL=$(build_server_recommendations_url) || return 1
+
+  log "Downloading recommended VPN server list to $SERVER_LIST_TMP"
 
   curl -fsS --connect-timeout 15 --max-time 30 -o "$SERVER_LIST_TMP" "$SERVER_RECOMMENDATIONS_URL" || {
     rm -f "$SERVER_LIST_TMP"
@@ -357,6 +401,9 @@ get_servers_list () {
     log 'ERROR: COULD NOT UPDATE VPN SERVER LIST'
     return 1
   }
+
+  SERVER_COUNT=$(jq -r 'length' "$SERVER_LIST_FILE" 2>/dev/null)
+  log "VPN server list updated at $SERVER_LIST_FILE with ${SERVER_COUNT:-unknown} entries"
 }
 
 resolve_wan_device () {
@@ -439,7 +486,10 @@ ensure_vpn_in_wan_zone () {
     FIREWALL_CHANGED=1
   fi
 
-  [ "$FIREWALL_CHANGED" -eq 1 ] || return 0
+  if [ "$FIREWALL_CHANGED" -ne 1 ]; then
+    log "Firewall zone for $WAN_IF already contains $VPN_IF"
+    return 0
+  fi
 
   uci commit firewall || {
     log 'ERROR: COULD NOT COMMIT FIREWALL CONFIGURATION'
@@ -450,6 +500,8 @@ ensure_vpn_in_wan_zone () {
     log 'ERROR: FIREWALL RESTART FAILED'
     return 1
   }
+
+  log "Firewall updated so zone for $WAN_IF includes $VPN_IF"
 }
 
 set_vpn_server_in_uci () {
@@ -465,6 +517,7 @@ set_vpn_server_in_uci () {
   uci set "network.${VPN_IF}server.description"="$1"
   uci set "network.${VPN_IF}server.endpoint_host"="$2"
   uci set "network.${VPN_IF}server.public_key"="$3"
+  log "Prepared VPN peer update for server $1 ($2)"
 }
 
 set_first_server_from_list () {
@@ -482,6 +535,7 @@ set_first_server_from_list () {
 $FIRST_SERVER
 EOF
 
+  log "Selected first recommended VPN server $HOST_NAME ($SERVER_IP)"
   set_vpn_server_in_uci "$HOST_NAME" "$SERVER_IP" "$PUBLIC_KEY"
 }
 
@@ -512,6 +566,8 @@ change_vpn_server () {
   CURRENT_SERVER=$(uci -q get "network.${VPN_IF}server.endpoint_host" 2>/dev/null)
   SERVER_CANDIDATES_FILE="/tmp/nordvpn.candidates.$$"
 
+  log "Starting VPN server rotation from current endpoint ${CURRENT_SERVER:-none}"
+
   jq -r '.[] | [.hostname, .station, ([.technologies[]?.metadata[]? | select(.name=="public_key").value][0])] | @tsv' "$SERVER_LIST_FILE" > "$SERVER_CANDIDATES_FILE" 2>/dev/null || {
     rm -f "$SERVER_CANDIDATES_FILE"
     log 'ERROR: INVALID VPN SERVER LIST'
@@ -521,6 +577,8 @@ change_vpn_server () {
   while IFS="$(printf '\t')" read -r HOST_NAME SERVER_IP PUBLIC_KEY; do
     [ -n "$SERVER_IP" ] || continue
     [ "$CURRENT_SERVER" = "$SERVER_IP" ] && continue
+
+    log "Trying VPN server candidate $HOST_NAME ($SERVER_IP)"
 
     set_vpn_server_in_uci "$HOST_NAME" "$SERVER_IP" "$PUBLIC_KEY" || continue
     uci commit network || {
@@ -563,6 +621,8 @@ change_vpn_server () {
 
 configure_vpn_interface () {
   log "$VPN_IF NOT CONFIGURED - IT WILL BE CREATED"
+  log "Creating WireGuard interface $VPN_IF with address $VPN_ADDR and endpoint port $VPN_PORT"
+  log_vpn_interface_state 'before-create'
 
   get_private_key || return 1
   get_servers_list || return 1
@@ -606,9 +666,12 @@ configure_vpn_interface () {
   }
 
   log "$VPN_IF CREATED"
+  log_vpn_interface_state 'after-create'
 }
 
 bootstrap_if_needed () {
+  log "Bootstrapping VPN state for interface $VPN_IF"
+  log_vpn_interface_state 'bootstrap-start'
   refresh_countries_cache || true
   resolve_country_filter || return 1
 
@@ -619,9 +682,12 @@ bootstrap_if_needed () {
   fi
 
   ensure_vpn_in_wan_zone || return 1
+  log "Bootstrap completed for interface $VPN_IF"
+  log_vpn_interface_state 'bootstrap-complete'
 }
 
 rotate_action () {
+  log 'Rotate action started'
   bootstrap_if_needed || return 1
   get_servers_list || return 1
   log 'Changing VPN server'
@@ -636,12 +702,16 @@ check_once () {
   local retry_delay
   local backoff_steps
 
+  log "Starting VPN health-check on interface $VPN_IF"
   [ -f "$SERVER_LIST_FILE" ] || get_servers_list || true
 
   while ! ping_interface "$VPN_IF"; do
     failed_pings=$((failed_pings+1))
     retry_delay="$FAILURE_RETRY_DELAY"
-    ping_wan || return 0
+    ping_wan || {
+      log "WAN connectivity is down while VPN health-check is failing on $VPN_IF; skipping VPN recovery"
+      return 0
+    }
 
     if [ "$failed_pings" -gt "$INTERFACE_RESTART_THRESHOLD" ]; then
       if [ "$restart_count" -ge "$max_interface_restarts" ]; then
@@ -651,10 +721,13 @@ check_once () {
 
       restart_count=$((restart_count+1))
       log "PING FAILED $failed_pings TIMES - RESTARTING $VPN_IF ($restart_count/$max_interface_restarts)"
+      log "Requesting ifdown for interface $VPN_IF during recovery"
       ifdown "$VPN_IF"
       sleep "$INTERFACE_RESTART_DELAY"
+      log "Requesting ifup for interface $VPN_IF during recovery"
       ifup "$VPN_IF"
       sleep "$POST_RESTART_DELAY"
+      log_vpn_interface_state 'after-recovery-restart'
     elif [ "$failed_pings" -ge "$SERVER_ROTATE_THRESHOLD" ]; then
       log "PING FAILED $failed_pings TIMES"
 
@@ -684,6 +757,8 @@ check_once () {
 
     sleep "$retry_delay"
   done
+
+  log "VPN health-check passed on interface $VPN_IF"
 }
 
 ACTION='check'
@@ -724,6 +799,8 @@ if [ "$ACTION" = 'public_ip' ]; then
 fi
 
 require_commands || exit 1
+
+log "Executing action '$ACTION' for VPN interface $VPN_IF"
 
 # Intentionally exit 0 on lock contention so cron/hotplug do not log an error when another instance already holds the lock.
 acquire_lock || exit 0

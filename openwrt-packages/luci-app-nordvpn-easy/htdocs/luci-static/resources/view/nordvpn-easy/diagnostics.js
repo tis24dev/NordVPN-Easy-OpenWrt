@@ -68,7 +68,11 @@ return view.extend({
 
 									downloadLogFile(content);
 								}).catch(function(err) {
-									ui.addNotification(null, E('p', _('Log export failed: ') + err.message), 'error');
+									var message = (err && err.message) ||
+										(typeof err === 'string' ? err : JSON.stringify(err)) ||
+										_('Unknown error');
+
+									ui.addNotification(null, E('p', _('Log export failed: ') + message), 'error');
 								}).finally(function() {
 									button.disabled = false;
 								});

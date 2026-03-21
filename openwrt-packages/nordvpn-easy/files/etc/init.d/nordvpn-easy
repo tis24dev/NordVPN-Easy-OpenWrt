@@ -88,6 +88,7 @@ render_runtime_config() {
 	umask 077
 	mkdir -p /var/etc
 	: > "$RUNTIME_CONFIG" || return 1
+	log_service_info "rendering runtime config to $RUNTIME_CONFIG (enabled=$cfg_enabled, wan_if=$cfg_wan_if, vpn_if=$cfg_vpn_if, vpn_country=${cfg_vpn_country:-automatic})"
 
 	write_runtime_option NORDVPN_TOKEN "$cfg_nordvpn_token"
 	write_runtime_option WAN_IF "$cfg_wan_if"
@@ -115,6 +116,7 @@ run_core_action() {
 		return 1
 	}
 
+	log_service_info "running core action: $action"
 	render_runtime_config || return 1
 	"$CORE_SCRIPT" "$action" "$RUNTIME_CONFIG"
 }
@@ -130,6 +132,12 @@ log_service_error() {
 
 	logger -t "$SERVICE_NAME" "$message"
 	echo "$SERVICE_NAME: $message" >&2
+}
+
+log_service_info() {
+	local message="$1"
+
+	logger -t "$SERVICE_NAME" "$message"
 }
 
 validate_cron_schedule() {
@@ -166,8 +174,10 @@ install_cron_hook() {
 		cat > "$CRON_PATH" <<EOF
 $cfg_check_cron_schedule /etc/init.d/$SERVICE_NAME check 2>&1 | logger -t $SERVICE_NAME-cron
 EOF
+		log_service_info "installed cron hook at $CRON_PATH with schedule '$cfg_check_cron_schedule'"
 	else
 		rm -f "$CRON_PATH"
+		log_service_info "removed cron hook from $CRON_PATH"
 	fi
 
 	restart_cron_service
@@ -179,6 +189,7 @@ install_hotplug_hook() {
 
 	if [ "$cfg_enabled" -ne 1 ] || [ "$cfg_enable_hotplug" -ne 1 ]; then
 		rm -f "$HOTPLUG_PATH"
+		log_service_info "removed hotplug hook from $HOTPLUG_PATH"
 		return 0
 	fi
 
@@ -198,41 +209,55 @@ esac
 EOF
 
 	chmod 755 "$HOTPLUG_PATH"
+	log_service_info "installed hotplug hook at $HOTPLUG_PATH for wan_if=$cfg_wan_if vpn_if=$cfg_vpn_if"
 }
 
 install_hooks() {
+	log_service_info 'installing runtime hooks'
 	install_cron_hook || return 1
 	install_hotplug_hook || return 1
+	log_service_info 'runtime hooks installed'
 }
 
 remove_hooks() {
+	log_service_info 'removing runtime hooks'
 	rm -f "$CRON_PATH" "$HOTPLUG_PATH"
 	restart_cron_service
+	log_service_info 'runtime hooks removed'
 }
 
 disable_vpn_runtime() {
 	load_service_config
+	log_service_info "disabling VPN runtime for interface $cfg_vpn_if"
 	remove_hooks
 
-	[ "$(uci -q get "network.${cfg_vpn_if}.proto" 2>/dev/null)" = 'wireguard' ] || return 0
+	if [ "$(uci -q get "network.${cfg_vpn_if}.proto" 2>/dev/null)" != 'wireguard' ]; then
+		log_service_info "no WireGuard interface named $cfg_vpn_if is currently configured"
+		return 0
+	fi
 
+	log_service_info "WireGuard interface $cfg_vpn_if will be marked disabled; the UCI configuration is kept and the interface is not removed"
 	uci set "network.${cfg_vpn_if}.disabled"='1'
 	uci commit network || {
 		log_service_error "failed to commit network while disabling ${cfg_vpn_if}"
 		return 1
 	}
+	log_service_info "marked network.${cfg_vpn_if}.disabled=1"
 
 	ifdown "$cfg_vpn_if" >/dev/null 2>&1 || true
+	log_service_info "requested ifdown for $cfg_vpn_if"
 
 	/etc/init.d/network reload >/dev/null 2>&1 ||
 	/etc/init.d/network restart >/dev/null 2>&1 || {
 		log_service_error "failed to reload network while disabling ${cfg_vpn_if}"
 		return 1
 	}
+	log_service_info "VPN runtime disabled for interface $cfg_vpn_if; it may now appear as not present until re-enabled"
 }
 
 start() {
 	load_service_config
+	log_service_info 'service start requested'
 
 	if [ "$cfg_enabled" -ne 1 ]; then
 		disable_vpn_runtime || return 1
@@ -248,35 +273,43 @@ start() {
 }
 
 stop() {
+	log_service_info 'service stop requested'
 	remove_hooks
 }
 
 restart() {
+	log_service_info 'service restart requested'
 	stop
 	start
 }
 
 reload() {
+	log_service_info 'service reload requested'
 	restart
 }
 
 setup() {
+	log_service_info 'manual setup requested'
 	run_core_action setup
 }
 
 check() {
+	log_service_info 'manual health-check requested'
 	run_core_action check
 }
 
 rotate() {
+	log_service_info 'manual rotate requested'
 	run_core_action rotate
 }
 
 refresh_countries() {
+	log_service_info 'country cache refresh requested'
 	run_core_action refresh_countries
 }
 
 refresh_countries_force() {
+	log_service_info 'forced country cache refresh requested'
 	run_core_action refresh_countries_force
 }
 
@@ -285,14 +318,26 @@ public_ip() {
 }
 
 diagnostics_log() {
+	local tmp_log
+
+	log_service_info 'diagnostics log export requested'
 	command -v logread >/dev/null 2>&1 || {
 		log_service_error "logread command not found"
 		return 1
 	}
 
-	logread -e "$SERVICE_NAME"
+	tmp_log="/tmp/${SERVICE_NAME}.diagnostics.$$"
+
+	logread -e "$SERVICE_NAME" > "$tmp_log" || {
+		rm -f "$tmp_log"
+		return 1
+	}
+
+	tail -n 500 "$tmp_log"
+	rm -f "$tmp_log"
 }
 
 disable_runtime() {
+	log_service_info 'manual disable_runtime requested'
 	disable_vpn_runtime
 }
