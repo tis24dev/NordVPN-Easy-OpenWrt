@@ -517,7 +517,7 @@ return view.extend({
 
 			poll.add(function() {
 				return updatePublicCountry();
-			}, 15);
+			}, 300);
 
 			poll.add(function() {
 				return updateOperationStatus();
