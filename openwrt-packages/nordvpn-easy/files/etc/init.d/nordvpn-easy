@@ -35,6 +35,7 @@ cfg_enable_hotplug='1'
 cfg_failure_retry_delay='6'
 cfg_server_rotate_threshold='5'
 cfg_interface_restart_threshold='10'
+cfg_max_interface_restarts='3'
 cfg_interface_restart_delay='10'
 cfg_post_restart_delay='60'
 
@@ -55,6 +56,7 @@ load_service_config() {
 	config_get cfg_failure_retry_delay "$UCI_SECTION" failure_retry_delay '6'
 	config_get cfg_server_rotate_threshold "$UCI_SECTION" server_rotate_threshold '5'
 	config_get cfg_interface_restart_threshold "$UCI_SECTION" interface_restart_threshold '10'
+	config_get cfg_max_interface_restarts "$UCI_SECTION" max_interface_restarts '3'
 	config_get cfg_interface_restart_delay "$UCI_SECTION" interface_restart_delay '10'
 	config_get cfg_post_restart_delay "$UCI_SECTION" post_restart_delay '60'
 }
@@ -90,6 +92,7 @@ render_runtime_config() {
 	write_runtime_option FAILURE_RETRY_DELAY "$cfg_failure_retry_delay"
 	write_runtime_option SERVER_ROTATE_THRESHOLD "$cfg_server_rotate_threshold"
 	write_runtime_option INTERFACE_RESTART_THRESHOLD "$cfg_interface_restart_threshold"
+	write_runtime_option MAX_INTERFACE_RESTARTS "$cfg_max_interface_restarts"
 	write_runtime_option INTERFACE_RESTART_DELAY "$cfg_interface_restart_delay"
 	write_runtime_option POST_RESTART_DELAY "$cfg_post_restart_delay"
 }

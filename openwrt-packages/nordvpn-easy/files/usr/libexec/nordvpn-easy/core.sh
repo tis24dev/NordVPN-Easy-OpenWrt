@@ -18,6 +18,7 @@ ENABLE_HOTPLUG="${ENABLE_HOTPLUG:-1}"
 FAILURE_RETRY_DELAY="${FAILURE_RETRY_DELAY:-6}"
 SERVER_ROTATE_THRESHOLD="${SERVER_ROTATE_THRESHOLD:-5}"
 INTERFACE_RESTART_THRESHOLD="${INTERFACE_RESTART_THRESHOLD:-10}"
+MAX_INTERFACE_RESTARTS="${MAX_INTERFACE_RESTARTS:-3}"
 INTERFACE_RESTART_DELAY="${INTERFACE_RESTART_DELAY:-10}"
 POST_RESTART_DELAY="${POST_RESTART_DELAY:-60}"
 
@@ -139,14 +140,35 @@ ping_interface () {
   ping -q -c 1 -W 5 "$(pick_ping_ip)" -I "$1" >/dev/null 2>&1
 }
 
+curl_config_escape () {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+fetch_credentials_json () {
+  {
+    printf '%s\n' 'silent'
+    printf '%s\n' 'show-error'
+    printf '%s\n' 'fail'
+    printf '%s\n' 'connect-timeout = 15'
+    printf '%s\n' 'max-time = 30'
+    printf 'url = "%s"\n' "$(curl_config_escape "$CREDENTIALS_URL")"
+
+    if [ -n "$NORDVPN_BASIC_TOKEN" ]; then
+      printf 'header = "authorization: Basic %s"\n' "$(curl_config_escape "$NORDVPN_BASIC_TOKEN")"
+    else
+      printf 'user = "token:%s"\n' "$(curl_config_escape "$NORDVPN_TOKEN")"
+    fi
+  } | curl --config -
+}
+
 get_private_key () {
   if [ -n "$NORDVPN_BASIC_TOKEN" ]; then
-    CREDENTIALS_JSON=$(curl -fsS --connect-timeout 15 --max-time 30 -H "authorization: Basic $NORDVPN_BASIC_TOKEN" "$CREDENTIALS_URL") || {
+    CREDENTIALS_JSON=$(fetch_credentials_json) || {
       log 'ERROR: COULD NOT RETRIEVE PRIVATE_KEY'
       return 1
     }
   elif [ -n "$NORDVPN_TOKEN" ]; then
-    CREDENTIALS_JSON=$(curl -fsS --connect-timeout 15 --max-time 30 -u "token:$NORDVPN_TOKEN" "$CREDENTIALS_URL") || {
+    CREDENTIALS_JSON=$(fetch_credentials_json) || {
       log 'ERROR: COULD NOT RETRIEVE PRIVATE_KEY'
       return 1
     }
@@ -475,14 +497,26 @@ rotate_action () {
 }
 
 check_once () {
-  failed_pings=0
+  local failed_pings=0
+  local restart_count=0
+  local max_interface_restarts="${MAX_INTERFACE_RESTARTS:-3}"
+  local retry_delay
+  local backoff_steps
+
   [ -f "$SERVER_LIST_FILE" ] || get_servers_list || true
 
   while ! ping_interface "$VPN_IF"; do
+    retry_delay="$FAILURE_RETRY_DELAY"
     ping_wan || return 0
 
     if [ "$failed_pings" -gt "$INTERFACE_RESTART_THRESHOLD" ]; then
-      log "PING FAILED $failed_pings TIMES - RESTARTING $VPN_IF"
+      if [ "$restart_count" -ge "$max_interface_restarts" ]; then
+        log "PING FAILED $failed_pings TIMES - RESTART LIMIT REACHED FOR $VPN_IF ($restart_count/$max_interface_restarts)"
+        return 1
+      fi
+
+      restart_count=$((restart_count+1))
+      log "PING FAILED $failed_pings TIMES - RESTARTING $VPN_IF ($restart_count/$max_interface_restarts)"
       ifdown "$VPN_IF"
       sleep "$INTERFACE_RESTART_DELAY"
       ifup "$VPN_IF"
@@ -505,7 +539,16 @@ check_once () {
       sleep "$POST_RESTART_DELAY"
     fi
 
-    sleep "$FAILURE_RETRY_DELAY"
+    if [ "$failed_pings" -ge "$SERVER_ROTATE_THRESHOLD" ]; then
+      backoff_steps=$((failed_pings - SERVER_ROTATE_THRESHOLD + 1))
+      while [ "$backoff_steps" -gt 0 ]; do
+        retry_delay=$((retry_delay * 2))
+        [ "$retry_delay" -gt "$POST_RESTART_DELAY" ] && retry_delay="$POST_RESTART_DELAY"
+        backoff_steps=$((backoff_steps - 1))
+      done
+    fi
+
+    sleep "$retry_delay"
     failed_pings=$((failed_pings+1))
   done
 }

@@ -69,7 +69,9 @@ jobs:
           SDK_BASENAME="openwrt-sdk-${OPENWRT_VERSION}-${OPENWRT_TARGET}-${OPENWRT_SUBTARGET}_${OPENWRT_TOOLCHAIN}.Linux-x86_64"
           SDK_ARCHIVE="${SDK_BASENAME}.tar.zst"
           SDK_URL="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/${OPENWRT_TARGET}/${OPENWRT_SUBTARGET}/${SDK_ARCHIVE}"
+          SDK_BASE_URL="${SDK_URL%/*}"
           WORKDIR=".build/openwrt-sdk"
+          CHECKSUMS_PATH="$WORKDIR/SHA256SUMS"
 
           mkdir -p "$WORKDIR"
 
@@ -77,6 +79,23 @@ jobs:
             echo "Downloading SDK..."
             curl -fL --retry 3 --output "$WORKDIR/$SDK_ARCHIVE" "$SDK_URL"
           fi
+
+          echo "Downloading SDK checksums..."
+          if ! curl -fL --retry 3 --output "$CHECKSUMS_PATH" "${SDK_BASE_URL}/SHA256SUMS"; then
+            curl -fL --retry 3 --output "$CHECKSUMS_PATH" "${SDK_BASE_URL}/sha256sums"
+          fi
+
+          CHECKSUM_LINE="$(grep -E "([ *])${SDK_ARCHIVE}$" "$CHECKSUMS_PATH" || true)"
+          if [ -z "$CHECKSUM_LINE" ]; then
+            echo "::error::Unable to find checksum for $SDK_ARCHIVE in ${SDK_BASE_URL}/SHA256SUMS"
+            exit 1
+          fi
+
+          echo "Verifying SDK archive checksum..."
+          (
+            cd "$WORKDIR"
+            printf '%s\n' "$CHECKSUM_LINE" | sha256sum -c -
+          )
 
           if [ ! -d "$WORKDIR/$SDK_BASENAME" ]; then
             echo "Extracting SDK..."
@@ -142,7 +161,7 @@ jobs:
           SCRIPTS_DIR=".build/scripts/${PACKAGE_NAME}"
           mkdir -p "$SCRIPTS_DIR"
 
-          printf '#!/bin/sh\nrm -f /tmp/luci-indexcache.*\nrm -rf /tmp/luci-modulecache/\n/etc/init.d/rpcd reload >/dev/null 2>&1 || true\nexit 0\n' \
+          printf '#!/bin/sh\nrm -f /tmp/luci-indexcache.*\nrm -rf /tmp/luci-modulecache/\nRPCD_OUTPUT="$(/etc/init.d/rpcd reload 2>&1)"\nRPCD_STATUS=$?\nif [ "$RPCD_STATUS" -ne 0 ]; then\n  printf "%s\\n" "nordvpn-easy: rpcd reload failed with exit code $RPCD_STATUS" >&2\n  [ -n "$RPCD_OUTPUT" ] && printf "%s\\n" "$RPCD_OUTPUT" >&2\nfi\nexit 0\n' \
             > "$SCRIPTS_DIR/post-install"
           cp "$SCRIPTS_DIR/post-install" "$SCRIPTS_DIR/post-upgrade"
           chmod 755 "$SCRIPTS_DIR/post-install" "$SCRIPTS_DIR/post-upgrade"

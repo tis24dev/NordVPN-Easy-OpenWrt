@@ -17,9 +17,16 @@ function runAction(action) {
 		if (!lines.length)
 			lines.push(_('Command completed.'));
 
-		ui.addNotification(null, E('p', lines.join('\n')));
+		if (res.code !== 0) {
+			ui.addNotification(null, E('p', _(
+				'Command failed with exit code %d: %s'
+			).format(res.code, res.stderr ? res.stderr.trim() : lines.join('\n'))), 'error');
+			return;
+		}
+
+		ui.addNotification(null, E('p', lines.join('\n')), 'info');
 	}).catch(function(err) {
-		ui.addNotification(null, E('p', _('Command failed: ') + err.message));
+		ui.addNotification(null, E('p', _('Command failed: ') + err.message), 'error');
 	});
 }
 
@@ -99,6 +106,12 @@ return view.extend({
 		o.placeholder = '10';
 		o.datatype = 'uinteger';
 		o.rmempty = false;
+
+		o = s.option(form.Value, 'max_interface_restarts', _('Max Interface Restarts'));
+		o.placeholder = '3';
+		o.datatype = 'uinteger';
+		o.rmempty = false;
+		o.description = _('Maximum interface restarts per check run. Use 0 to disable interface restarts.');
 
 		o = s.option(form.Value, 'interface_restart_delay', _('Interface Restart Delay'));
 		o.placeholder = '10';
