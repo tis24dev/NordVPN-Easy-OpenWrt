@@ -18,6 +18,7 @@ var COUNTRY_FIELD_ID = 'cbid.nordvpn_easy.main.vpn_country';
 var COUNTRY_REFRESH_BUTTON_ID = 'cbid.nordvpn_easy.main.vpn_country.refresh';
 var pendingOperationLabel = '';
 var currentOperationStatus = 'idle';
+var appliedEnabled = true;
 var appliedCountryCode = '';
 var currentPublicCountry = '';
 
@@ -86,6 +87,18 @@ function formatActionsLabel(actions) {
 
 function normalizeCountryCode(value) {
 	return String(value || '').trim().toUpperCase();
+}
+
+function getEnabledCheckboxElement() {
+	var fieldEl = document.getElementById(ENABLED_FIELD_ID);
+
+	if (!fieldEl)
+		return null;
+
+	if (fieldEl.matches && fieldEl.matches('input[type="checkbox"]'))
+		return fieldEl;
+
+	return fieldEl.querySelector ? fieldEl.querySelector('input[type="checkbox"]') : null;
 }
 
 function setSetupControlsDisabled(disabled) {
@@ -171,7 +184,6 @@ function setCountryMatchIndicator(state, label) {
 }
 
 function updateCountryMatchStatus() {
-	var enabledEl = document.getElementById(ENABLED_FIELD_ID);
 	var busyAction;
 	var expectedCountry = normalizeCountryCode(appliedCountryCode);
 	var actualCountry = normalizeCountryCode(currentPublicCountry);
@@ -186,7 +198,7 @@ function updateCountryMatchStatus() {
 		return setCountryMatchIndicator('checking', _('Checking'));
 	}
 
-	if (enabledEl && !enabledEl.checked)
+	if (!appliedEnabled)
 		return setCountryMatchIndicator('inactive', _('Inactive'));
 
 	if (!expectedCountry)
@@ -449,6 +461,7 @@ return view.extend({
 
 		this.initialEnabled = (uci.get('nordvpn_easy', 'main', 'enabled') !== '0');
 		this.initialCountry = currentCountry;
+		appliedEnabled = this.initialEnabled;
 		appliedCountryCode = currentCountry;
 
 		m = new form.Map('nordvpn_easy', _('NordVPN Easy'),
@@ -579,6 +592,7 @@ return view.extend({
 
 						this.initialEnabled = currentEnabled;
 						this.initialCountry = currentCountry;
+						appliedEnabled = currentEnabled;
 						appliedCountryCode = currentCountry;
 
 						if (!previousEnabled && currentEnabled) {
