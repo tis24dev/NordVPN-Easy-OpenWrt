@@ -8,6 +8,7 @@ health-check and recovery logic.
 ## <ins>Project goals</ins>
 
 - install `luci-app-nordvpn-easy` from LuCI `System -> Software`
+  This only works after the relevant OpenWrt feeds and package indexes are set up and refreshed. In the build system, run the usual feeds update/install steps first; on the device, refresh package lists with `opkg update` or `apk update` before attempting installation from LuCI.
 - configure NordVPN from LuCI and UCI instead of editing shell code
 - keep the tunnel healthy through scheduled checks and event-triggered recovery
 - support NordVPN recommended WireGuard servers, optionally filtered by country
@@ -100,5 +101,5 @@ High-value validation work is:
 
 - The public product name should remain `NordVPN Easy`.
 - If you edit files on another machine, keep Unix `LF` line endings.
-- Disable IPv6 if your deployment requires strict anti-leak behaviour.
-- After the tunnel is up, IPv4 traffic is routed through the VPN.
+- Disabling IPv6 can help reduce leak risk in deployments that require stricter isolation, but actual leak prevention still depends on firewall, routing and failure-handling policy.
+- When the tunnel is healthy, IPv4 traffic is usually routed through the VPN; verify the effective routing, firewall rules and failure modes on your target system.
