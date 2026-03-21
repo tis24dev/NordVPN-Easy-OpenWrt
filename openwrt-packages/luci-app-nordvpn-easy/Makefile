@@ -11,7 +11,8 @@ LUCI_PKGARCH:=all
 
 include $(TOPDIR)/feeds/luci/luci.mk
 
-define Build/Prepare/luci-app-nordvpn-easy
+define Build/Prepare
+	$(call Build/Prepare/Default)
 	$(INSTALL_DIR) $(PKG_BUILD_DIR)/root/etc/config
 	$(INSTALL_CONF) $(CURDIR)/../nordvpn-easy/files/etc/config/nordvpn_easy $(PKG_BUILD_DIR)/root/etc/config/nordvpn_easy
 	$(INSTALL_DIR) $(PKG_BUILD_DIR)/root/etc/init.d
