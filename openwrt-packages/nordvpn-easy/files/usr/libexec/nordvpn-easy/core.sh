@@ -1,10 +1,7 @@
 #!/bin/sh
 
 # Use NORDVPN_TOKEN with the token you get from https://my.nordaccount.com/dashboard/nordvpn/access-tokens/
-# Use NORDVPN_BASIC_TOKEN if OpenWrt not built with 'CONFIG_LIBCURL_HTTP_AUTH=y'
-# See https://github.com/cjom/NordVPN-OpenWRT for instructions to get the basic token
 
-NORDVPN_BASIC_TOKEN="${NORDVPN_BASIC_TOKEN:-}"
 NORDVPN_TOKEN="${NORDVPN_TOKEN:-}"
 WAN_IF="${WAN_IF:-wan}"
 VPN_IF="${VPN_IF:-wg0}"
@@ -156,22 +153,18 @@ fetch_credentials_json () {
     printf '%s\n' 'max-time = 30'
     printf 'url = "%s"\n' "$(curl_config_escape "$CREDENTIALS_URL")"
 
-    if [ -n "$NORDVPN_BASIC_TOKEN" ]; then
-      printf 'header = "authorization: Basic %s"\n' "$(curl_config_escape "$NORDVPN_BASIC_TOKEN")"
-    else
-      printf 'user = "token:%s"\n' "$(curl_config_escape "$NORDVPN_TOKEN")"
-    fi
+    printf 'user = "token:%s"\n' "$(curl_config_escape "$NORDVPN_TOKEN")"
   } | curl --config -
 }
 
 get_private_key () {
-  if [ -n "$NORDVPN_BASIC_TOKEN" ] || [ -n "$NORDVPN_TOKEN" ]; then
+  if [ -n "$NORDVPN_TOKEN" ]; then
     CREDENTIALS_JSON=$(fetch_credentials_json) || {
       log 'ERROR: COULD NOT RETRIEVE PRIVATE_KEY'
       return 1
     }
   else
-    log 'ERROR: TOKEN IS NOT DEFINED'
+    log 'ERROR: NORDVPN_TOKEN IS NOT DEFINED'
     return 1
   fi
 
