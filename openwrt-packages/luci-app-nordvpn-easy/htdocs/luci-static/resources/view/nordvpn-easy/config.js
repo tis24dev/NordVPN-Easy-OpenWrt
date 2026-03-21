@@ -122,8 +122,12 @@ function setVpnStatusIndicator(state, label) {
 		break;
 	}
 
-	statusEl.innerHTML = '<span style="display:inline-block;width:0.75rem;height:0.75rem;border-radius:50%;background:%s;vertical-align:middle;margin-right:0.45rem;"></span>%s'
-		.format(color, label);
+	statusEl.replaceChildren(
+		E('span', {
+			'style': 'display:inline-block;width:0.75rem;height:0.75rem;border-radius:50%;background:' + color + ';vertical-align:middle;margin-right:0.45rem;'
+		}),
+		document.createTextNode(label)
+	);
 }
 
 function updateOperationStatus() {
