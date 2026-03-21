@@ -9,8 +9,8 @@ NORDVPN_TOKEN="${NORDVPN_TOKEN:-}"
 WAN_IF="${WAN_IF:-wan}"
 VPN_IF="${VPN_IF:-wg0}"
 VPN_COUNTRY="${VPN_COUNTRY:-}"                 # optional: country code (IT), country name (Italy) or country id
-VPN_PORT="${VPN_PORT:-51820}"                 # DO NOT CHANGE THIS
-VPN_ADDR="${VPN_ADDR:-10.5.0.2/32}"           # DO NOT CHANGE THIS
+VPN_PORT="${VPN_PORT:-51820}"                 # NordVPN-recommended default; can be changed via LuCI or env
+VPN_ADDR="${VPN_ADDR:-10.5.0.2/32}"           # NordVPN-recommended default; can be changed via LuCI or env
 VPN_DNS1="${VPN_DNS1:-103.86.99.99}"          # optional: these are the Threat Protection Lite DNS servers
 VPN_DNS2="${VPN_DNS2:-103.86.96.96}"          # optional: these are the Threat Protection Lite DNS servers
 CHECK_CRON_SCHEDULE="${CHECK_CRON_SCHEDULE:-* * * * *}"
@@ -502,6 +502,7 @@ check_once () {
   [ -f "$SERVER_LIST_FILE" ] || get_servers_list || true
 
   while ! ping_interface "$VPN_IF"; do
+    failed_pings=$((failed_pings+1))
     retry_delay="$FAILURE_RETRY_DELAY"
     ping_wan || return 0
 
@@ -545,7 +546,6 @@ check_once () {
     fi
 
     sleep "$retry_delay"
-    failed_pings=$((failed_pings+1))
   done
 }
 

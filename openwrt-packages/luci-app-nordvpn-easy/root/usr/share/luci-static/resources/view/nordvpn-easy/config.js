@@ -57,10 +57,12 @@ return view.extend({
 		o = s.option(form.Value, 'nordvpn_token', _('NordVPN Token'));
 		o.password = true;
 		o.rmempty = true;
+		o.description = _('At least one token is required; leave this empty if using the other token.');
 
 		o = s.option(form.Value, 'nordvpn_basic_token', _('NordVPN Basic Token'));
 		o.password = true;
 		o.rmempty = true;
+		o.description = _('At least one token is required; leave this empty if using the other token.');
 
 		o = s.option(form.Value, 'wan_if', _('WAN Interface'));
 		o.placeholder = 'wan';
