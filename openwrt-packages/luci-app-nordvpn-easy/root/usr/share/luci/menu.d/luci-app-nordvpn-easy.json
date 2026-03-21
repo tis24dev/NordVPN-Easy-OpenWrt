@@ -21,5 +21,13 @@
 			"type": "view",
 			"path": "nordvpn-easy/advanced"
 		}
+	},
+	"admin/services/nordvpn-easy/diagnostics": {
+		"title": "Diagnostics",
+		"order": 30,
+		"action": {
+			"type": "view",
+			"path": "nordvpn-easy/diagnostics"
+		}
 	}
 }

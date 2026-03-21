@@ -12,13 +12,14 @@ RUNTIME_CONFIG='/var/etc/nordvpn-easy.conf'
 CORE_SCRIPT='/usr/libexec/nordvpn-easy/core.sh'
 CRON_PATH='/etc/cron.d/nordvpn-easy'
 HOTPLUG_PATH='/etc/hotplug.d/iface/95-nordvpn-easy'
-EXTRA_COMMANDS='setup check rotate refresh_countries refresh_countries_force public_ip install_hooks remove_hooks disable_runtime render_runtime_config'
+EXTRA_COMMANDS='setup check rotate refresh_countries refresh_countries_force public_ip diagnostics_log install_hooks remove_hooks disable_runtime render_runtime_config'
 EXTRA_HELP='  setup                 Run setup immediately
   check                 Run one health check immediately
   rotate                Force server rotation immediately
   refresh_countries     Refresh the cached NordVPN country list
   refresh_countries_force Force-refresh the cached NordVPN country list
   public_ip             Print the current public IP
+  diagnostics_log       Print filtered NordVPN Easy log output
   install_hooks         Install cron and hotplug hooks
   remove_hooks          Remove cron and hotplug hooks
   disable_runtime       Disable the VPN interface and remove hooks
@@ -281,6 +282,15 @@ refresh_countries_force() {
 
 public_ip() {
 	run_core_action public_ip
+}
+
+diagnostics_log() {
+	command -v logread >/dev/null 2>&1 || {
+		log_service_error "logread command not found"
+		return 1
+	}
+
+	logread -e "$SERVICE_NAME"
 }
 
 disable_runtime() {
