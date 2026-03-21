@@ -141,7 +141,7 @@ acquire_lock () {
     LOCK_PID=$(cat "$LOCK_PID_FILE" 2>/dev/null)
     if [ -n "$LOCK_PID" ] && kill -0 "$LOCK_PID" 2>/dev/null; then
       log "Execution lock is already held by PID $LOCK_PID"
-      return 1
+      return 2
     fi
   fi
 
@@ -889,12 +889,18 @@ require_commands || exit 1
 log "Executing action '$ACTION' for VPN interface $VPN_IF"
 
 # Intentionally exit 0 on lock contention so cron/hotplug do not log an error when another instance already holds the lock.
-if ! acquire_lock; then
-  if lock_contention_is_nonfatal; then
+acquire_lock
+LOCK_STATUS=$?
+if [ "$LOCK_STATUS" -ne 0 ]; then
+  if [ "$LOCK_STATUS" -eq 2 ] && lock_contention_is_nonfatal; then
     exit 0
   fi
 
-  log "ERROR: ACTION '$ACTION' ABORTED BECAUSE ANOTHER NORDVPN-EASY OPERATION IS STILL RUNNING"
+  if [ "$LOCK_STATUS" -eq 2 ]; then
+    log "ERROR: ACTION '$ACTION' ABORTED BECAUSE ANOTHER NORDVPN-EASY OPERATION IS STILL RUNNING"
+  else
+    log "ERROR: ACTION '$ACTION' FAILED TO ACQUIRE EXECUTION LOCK AT $LOCK_DIR"
+  fi
   exit 1
 fi
 
