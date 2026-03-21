@@ -126,21 +126,26 @@ jobs:
         run: |
           set -euo pipefail
           SIGNING_DIR=".build/signing"
-          SIGNING_KEY_PATH="${SIGNING_DIR}/apk-signing-key.pem"
-          PUBLIC_KEY_PATH="dist/apk-signing-public.pem"
+          SIGNING_ROOT="${SIGNING_DIR}/trust-root"
+          SIGNING_KEY_PATH="${SIGNING_ROOT}/private-key.pem"
+          SIGNING_PUBLIC_KEY_PATH="${SIGNING_ROOT}/public-key.pem"
+          PUBLIC_KEY_ASSET_PATH="dist/nordvpn-easy-openwrt-apk-public-key.pem"
 
           if [ -z "${APK_SIGNING_PRIVATE_KEY:-}" ]; then
             echo "::error::Missing APK_SIGNING_PRIVATE_KEY environment secret"
             exit 1
           fi
 
-          mkdir -p "$SIGNING_DIR" dist
+          mkdir -p "$SIGNING_ROOT" dist
           umask 077
           printf '%s\n' "$APK_SIGNING_PRIVATE_KEY" > "$SIGNING_KEY_PATH"
-          openssl pkey -in "$SIGNING_KEY_PATH" -pubout -out "$PUBLIC_KEY_PATH"
+          openssl ec -in "$SIGNING_KEY_PATH" -pubout -out "$SIGNING_PUBLIC_KEY_PATH"
+          cp "$SIGNING_PUBLIC_KEY_PATH" "$PUBLIC_KEY_ASSET_PATH"
 
+          echo "APK_SIGNING_ROOT=$(realpath "$SIGNING_ROOT")" >> "$GITHUB_ENV"
           echo "APK_SIGNING_KEY_PATH=$(realpath "$SIGNING_KEY_PATH")" >> "$GITHUB_ENV"
-          echo "APK_SIGNING_PUBLIC_KEY_PATH=$(realpath "$PUBLIC_KEY_PATH")" >> "$GITHUB_ENV"
+          echo "APK_SIGNING_PUBLIC_KEY_PATH=$(realpath "$SIGNING_PUBLIC_KEY_PATH")" >> "$GITHUB_ENV"
+          echo "APK_SIGNING_PUBLIC_ASSET_PATH=$(realpath "$PUBLIC_KEY_ASSET_PATH")" >> "$GITHUB_ENV"
 
       - name: Build APK
         run: |
@@ -218,10 +223,7 @@ jobs:
             --script "post-upgrade:${SCRIPTS_DIR}/post-upgrade" \
             --output "$ARTIFACT_PATH"
 
-          # --- sign apk ---
-          "$APK_BIN" adbsign --sign-key "$APK_SIGNING_KEY_PATH" "$ARTIFACT_PATH"
-
-          # --- sha256 + package index ---
+          # --- sha256 + signed package index ---
           printf '%s  %s\n' \
             "$("$MKHASH_BIN" sha256 "$ARTIFACT_PATH")" \
             "$(basename "$ARTIFACT_PATH")" \
@@ -230,14 +232,14 @@ jobs:
           (
             cd "$OUTPUT_DIR"
             STAGING_DIR_HOST="$STAGING_DIR_HOST" "$APK_BIN" mkndx \
+              --root "$APK_SIGNING_ROOT" \
+              --keys-dir "$APK_SIGNING_ROOT" \
               --allow-untrusted \
+              --sign-key "$APK_SIGNING_KEY_PATH" \
               --description "${PACKAGE_INDEX_DESCRIPTION}" \
               --output packages.adb \
               "$(basename "$ARTIFACT_PATH")"
           )
-
-          # --- sign repository index ---
-          "$APK_BIN" adbsign --sign-key "$APK_SIGNING_KEY_PATH" "${OUTPUT_DIR}/packages.adb"
 
           ls -lh "$OUTPUT_DIR/"
 
