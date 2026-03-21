@@ -26,6 +26,24 @@ health-check and recovery logic.
 The package tree is the source of truth. The repository no longer depends on
 legacy root-level direct-install files.
 
+## Installation
+
+1. Log in to LuCI.
+2. Open `System -> Software`.
+3. Click `Configure apk`.
+4. Add this repository index URL:
+   `https://github.com/tis24dev/NordVPN-Easy-OpenWrt/releases/latest/download/luci-app-nordvpn-easy.adb`
+5. Save the `apk` configuration.
+6. Click `Update lists...`.
+7. In the `Filter` box, search for `nordvpn-easy`.
+8. Install `luci-app-nordvpn-easy`.
+9. Log out from LuCI.
+10. Log in again.
+11. Open `Services -> NordVPN Easy`.
+12. Configure the service.
+
+The configuration guide will be expanded separately.
+
 ## Runtime model
 
 The runtime model is service-driven and one-shot based:
