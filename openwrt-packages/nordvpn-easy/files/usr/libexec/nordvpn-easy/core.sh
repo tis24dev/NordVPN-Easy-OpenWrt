@@ -673,12 +673,15 @@ change_vpn_server () {
     log "VPN server changed to $HOST_NAME ( $SERVER_IP )"
 
     if [ "$1" = 'reload' ]; then
-      /etc/init.d/network reload || {
+      log "Cycling VPN interface $VPN_IF to apply the new peer configuration"
+      ifdown "$VPN_IF" >/dev/null 2>&1 || true
+      sleep "$INTERFACE_RESTART_DELAY"
+      ifup "$VPN_IF" || {
         rm -f "$SERVER_CANDIDATES_FILE"
-        log 'ERROR: NETWORK RELOAD FAILED'
+        log "ERROR: IFUP FAILED AFTER CHANGING VPN SERVER ON $VPN_IF"
         return 1
       }
-      log "Waiting ${POST_RESTART_DELAY}s after network reload before validating VPN connectivity"
+      log "Waiting ${POST_RESTART_DELAY}s after cycling $VPN_IF before validating VPN connectivity"
     else
       /etc/init.d/network restart || {
         rm -f "$SERVER_CANDIDATES_FILE"
