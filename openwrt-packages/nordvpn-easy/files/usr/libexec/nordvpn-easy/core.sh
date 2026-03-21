@@ -26,7 +26,7 @@ COUNTRIES_CACHE_TS_FILE='/tmp/nordvpn-easy-countries.timestamp'
 COUNTRIES_CACHE_TTL="${COUNTRIES_CACHE_TTL:-86400}"
 NORDVPN_API='https://api.nordvpn.com/v1'
 COUNTRIES_URL="${NORDVPN_API}/servers/countries"
-SERVER_RECOMMENDATIONS_URL_BASE="${NORDVPN_API}/servers/recommendations?filters\\[servers_technologies\\]\\[identifier\\]=wireguard_udp&limit=10"
+SERVER_RECOMMENDATIONS_URL_BASE="${NORDVPN_API}/servers/recommendations?filters[servers_technologies][identifier]=wireguard_udp&limit=10"
 CREDENTIALS_URL="${NORDVPN_API}/users/services/credentials"
 DEFAULT_CONFIG_FILE='/var/etc/nordvpn-easy.conf'
 LOCK_DIR='/tmp/nordvpn-easy.lock'
@@ -434,7 +434,7 @@ build_server_recommendations_url () {
 
   if [ -n "$VPN_COUNTRY" ]; then
     resolve_country_filter || return 1
-    SERVER_RECOMMENDATIONS_URL="${SERVER_RECOMMENDATIONS_URL}&filters\\[country_id\\]=$RESOLVED_COUNTRY_ID"
+    SERVER_RECOMMENDATIONS_URL="${SERVER_RECOMMENDATIONS_URL}&filters[country_id]=$RESOLVED_COUNTRY_ID"
     log "Building recommendations URL for country filter $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
   else
     log 'Building recommendations URL with automatic country selection'
@@ -449,7 +449,7 @@ get_servers_list () {
 
   log "Downloading recommended VPN server list to $SERVER_LIST_TMP"
 
-  curl -fsS --connect-timeout 15 --max-time 30 -o "$SERVER_LIST_TMP" "$SERVER_RECOMMENDATIONS_URL" || {
+  curl -g -fsS --connect-timeout 15 --max-time 30 -o "$SERVER_LIST_TMP" "$SERVER_RECOMMENDATIONS_URL" || {
     rm -f "$SERVER_LIST_TMP"
     log 'ERROR: COULD NOT RETRIEVE VPN SERVERS'
     return 1
