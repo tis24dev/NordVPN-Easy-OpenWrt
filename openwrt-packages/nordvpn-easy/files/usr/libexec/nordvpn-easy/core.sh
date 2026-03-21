@@ -26,7 +26,7 @@ COUNTRIES_CACHE_TS_FILE='/tmp/nordvpn-easy-countries.timestamp'
 COUNTRIES_CACHE_TTL="${COUNTRIES_CACHE_TTL:-86400}"
 NORDVPN_API='https://api.nordvpn.com/v1'
 COUNTRIES_URL="${NORDVPN_API}/servers/countries"
-PUBLIC_COUNTRY_API='https://api.country.is'
+PUBLIC_COUNTRY_API='https://api.country.is'   # Third-party API, no auth required; returns JSON like {"country":"XX"} with an ISO country code.
 SERVER_RECOMMENDATIONS_URL_BASE="${NORDVPN_API}/servers/recommendations?filters[servers_technologies][identifier]=wireguard_udp&limit=10"
 CREDENTIALS_URL="${NORDVPN_API}/users/services/credentials"
 DEFAULT_CONFIG_FILE='/var/etc/nordvpn-easy.conf'
