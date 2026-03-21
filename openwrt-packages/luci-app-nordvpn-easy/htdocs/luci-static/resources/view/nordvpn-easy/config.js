@@ -7,7 +7,15 @@
 'require view';
 
 var COUNTRIES_CACHE_PATH = '/tmp/nordvpn-easy-countries.json';
+var OPERATION_STATUS_ID = 'nordvpn-easy-operation-status';
 var PUBLIC_IP_STATUS_ID = 'nordvpn-easy-public-ip-status';
+var VPN_STATUS_ID = 'nordvpn-easy-vpn-status';
+var ENABLED_FIELD_ID = 'cbid.nordvpn_easy.main.enabled';
+var TOKEN_FIELD_ID = 'cbid.nordvpn_easy.main.nordvpn_token';
+var COUNTRY_FIELD_ID = 'cbid.nordvpn_easy.main.vpn_country';
+var COUNTRY_REFRESH_BUTTON_ID = 'cbid.nordvpn_easy.main.vpn_country.refresh';
+var pendingOperationLabel = '';
+var currentOperationStatus = 'idle';
 
 function parseCountries(countriesRaw) {
 	var countries = [];
@@ -64,6 +72,134 @@ function renderCountryChoices(selectEl, countries, currentCountry) {
 	selectEl.value = currentCountry || '';
 }
 
+function humanizeAction(action) {
+	return String(action || _('operation')).replace(/_/g, ' ');
+}
+
+function formatActionsLabel(actions) {
+	return actions.map(humanizeAction).join(' + ');
+}
+
+function setSetupControlsDisabled(disabled) {
+	[
+		ENABLED_FIELD_ID,
+		TOKEN_FIELD_ID,
+		COUNTRY_FIELD_ID,
+		COUNTRY_REFRESH_BUTTON_ID
+	].forEach(function(id) {
+		var el = document.getElementById(id);
+
+		if (el)
+			el.disabled = disabled;
+	});
+}
+
+function setOperationStatusText(text, busy) {
+	var statusEl = document.getElementById(OPERATION_STATUS_ID);
+
+	if (statusEl)
+		statusEl.textContent = text;
+
+	setSetupControlsDisabled(busy);
+}
+
+function setVpnStatusIndicator(state, label) {
+	var statusEl = document.getElementById(VPN_STATUS_ID);
+	var color;
+
+	if (!statusEl)
+		return;
+
+	switch (state) {
+	case 'active':
+		color = '#2ea043';
+		break;
+	case 'activating':
+		color = '#d29922';
+		break;
+	default:
+		color = '#cf222e';
+		break;
+	}
+
+	statusEl.innerHTML = '<span style="display:inline-block;width:0.75rem;height:0.75rem;border-radius:50%;background:%s;vertical-align:middle;margin-right:0.45rem;"></span>%s'
+		.format(color, label);
+}
+
+function updateOperationStatus() {
+	return fs.exec('/etc/init.d/nordvpn-easy', [ 'operation_status' ]).then(function(res) {
+		var raw = res.stdout ? res.stdout.trim() : '';
+		var action;
+
+		if (res.code !== 0) {
+			currentOperationStatus = 'unknown';
+			setOperationStatusText(_('Unknown'), false);
+			return;
+		}
+
+		currentOperationStatus = raw || 'idle';
+
+		if (raw.indexOf('busy:') === 0) {
+			action = raw.substring(5);
+			setOperationStatusText(_('Applying (%s)...').format(humanizeAction(action)), true);
+			return;
+		}
+
+		if (raw === 'busy') {
+			setOperationStatusText(_('Applying...'), true);
+			return;
+		}
+
+		if (pendingOperationLabel) {
+			setOperationStatusText(_('Applying (%s)...').format(humanizeAction(pendingOperationLabel)), true);
+			return;
+		}
+
+		setOperationStatusText(_('Idle'), false);
+	}).catch(function() {
+		currentOperationStatus = pendingOperationLabel ? ('busy:' + pendingOperationLabel) : 'unknown';
+
+		if (pendingOperationLabel) {
+			setOperationStatusText(_('Applying (%s)...').format(humanizeAction(pendingOperationLabel)), true);
+			return;
+		}
+
+		setOperationStatusText(_('Unknown'), false);
+	});
+}
+
+function updateVpnStatus() {
+	return fs.exec('/etc/init.d/nordvpn-easy', [ 'vpn_status' ]).then(function(res) {
+		var state = res.stdout ? res.stdout.trim() : 'inactive';
+		var busyAction;
+
+		if (currentOperationStatus.indexOf('busy:') === 0) {
+			busyAction = currentOperationStatus.substring(5);
+
+			if (busyAction !== 'refresh_countries')
+				return setVpnStatusIndicator('activating', _('Activating'));
+		}
+		else if (currentOperationStatus === 'busy') {
+			return setVpnStatusIndicator('activating', _('Activating'));
+		}
+
+		if (res.code !== 0) {
+			setVpnStatusIndicator('inactive', _('Not Active'));
+			return;
+		}
+
+		if (state === 'active')
+			setVpnStatusIndicator('active', _('Active'));
+		else
+			setVpnStatusIndicator('inactive', _('Not Active'));
+	}).catch(function() {
+		if (currentOperationStatus.indexOf('busy') === 0)
+			setVpnStatusIndicator('activating', _('Activating'));
+		else
+			setVpnStatusIndicator('inactive', _('Not Active'));
+	});
+}
+
 const CountrySelectValue = form.ListValue.extend({
 	refreshCountries(buttonEl, section_id) {
 		buttonEl.disabled = true;
@@ -110,6 +246,7 @@ const CountrySelectValue = form.ListValue.extend({
 		}, [
 			E('div', { 'style': 'display:inline-block;width:18rem;max-width:100%;' }, [ widget.render() ]),
 			E('button', {
+				'id': COUNTRY_REFRESH_BUTTON_ID,
 				'class': 'cbi-button cbi-button-apply',
 				'type': 'button',
 				'click': ui.createHandlerFn(this, function(section_id, ev) {
@@ -219,6 +356,18 @@ return view.extend({
 		o.default = '1';
 		o.rmempty = false;
 
+		o = s.option(form.DummyValue, '_vpn_status', _('VPN Status'));
+		o.rawhtml = true;
+		o.cfgvalue = function() {
+			return '<span id="%s">%s</span>'.format(VPN_STATUS_ID, _('Unknown'));
+		};
+
+		o = s.option(form.DummyValue, '_operation_status', _('Operation Status'));
+		o.rawhtml = true;
+		o.cfgvalue = function() {
+			return '<span id="%s">%s</span>'.format(OPERATION_STATUS_ID, _('Idle'));
+		};
+
 		o = s.option(form.DummyValue, '_public_ip', _('Public IP'));
 		o.rawhtml = true;
 		o.cfgvalue = function() {
@@ -248,6 +397,16 @@ return view.extend({
 				return updatePublicIp();
 			}, 5);
 
+			poll.add(function() {
+				return updateOperationStatus();
+			}, 2);
+
+			poll.add(function() {
+				return updateVpnStatus();
+			}, 2);
+
+			updateOperationStatus();
+			updateVpnStatus();
 			updatePublicIp();
 			return node;
 		});
@@ -288,8 +447,16 @@ return view.extend({
 						successMessage = _('Server country updated: VPN server synchronized.');
 					}
 
-					if (!actions.length)
+					if (!actions.length) {
+						pendingOperationLabel = '';
+						updateOperationStatus();
 						return;
+					}
+
+					pendingOperationLabel = formatActionsLabel(actions);
+					currentOperationStatus = 'busy:' + pendingOperationLabel;
+					setVpnStatusIndicator('activating', _('Activating'));
+					setOperationStatusText(_('Applying (%s)...').format(pendingOperationLabel), true);
 
 					return runServiceActions(actions).then(function(results) {
 						var failures = summarizeActionFailures(results);
@@ -302,11 +469,18 @@ return view.extend({
 						ui.addNotification(null, E('p', successMessage), 'info');
 					}).catch(function(err) {
 						ui.addNotification(null, E('p', _('Automatic runtime sync failed: ') + err.message), 'error');
+					}).finally(function() {
+						pendingOperationLabel = '';
+						updateOperationStatus();
 					});
 				}, this));
 			}, this);
 
 			document.addEventListener('uci-applied', this._uciAppliedHandler);
+			pendingOperationLabel = _('configuration');
+			currentOperationStatus = 'busy:configuration';
+			setVpnStatusIndicator('activating', _('Activating'));
+			setOperationStatusText(_('Applying configuration...'), true);
 			ui.changes.apply(mode == '0');
 		}, this));
 	}

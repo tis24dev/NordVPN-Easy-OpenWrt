@@ -82,6 +82,17 @@ If config_file is omitted, $DEFAULT_CONFIG_FILE is used when present.
 EOF
 }
 
+lock_contention_is_nonfatal () {
+  case "$ACTION" in
+    run|check|refresh_countries)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 load_config () {
   if [ -f "$CONFIG_PATH" ]; then
     # shellcheck disable=SC1090
@@ -115,9 +126,11 @@ release_lock () {
 
 acquire_lock () {
   LOCK_PID_FILE="$LOCK_DIR/pid"
+  LOCK_ACTION_FILE="$LOCK_DIR/action"
 
   if mkdir "$LOCK_DIR" 2>/dev/null; then
     printf '%s\n' "$$" > "$LOCK_PID_FILE"
+    printf '%s\n' "$ACTION" > "$LOCK_ACTION_FILE"
     LOCK_ACQUIRED=1
     trap 'release_lock' EXIT HUP INT TERM
     log "Acquired execution lock at $LOCK_DIR"
@@ -140,6 +153,7 @@ acquire_lock () {
 
   mkdir "$LOCK_DIR" 2>/dev/null || return 1
   printf '%s\n' "$$" > "$LOCK_PID_FILE"
+  printf '%s\n' "$ACTION" > "$LOCK_ACTION_FILE"
   LOCK_ACQUIRED=1
   trap 'release_lock' EXIT HUP INT TERM
   log "Recovered and acquired execution lock at $LOCK_DIR"
@@ -664,12 +678,14 @@ change_vpn_server () {
         log 'ERROR: NETWORK RELOAD FAILED'
         return 1
       }
+      log "Waiting ${POST_RESTART_DELAY}s after network reload before validating VPN connectivity"
     else
       /etc/init.d/network restart || {
         rm -f "$SERVER_CANDIDATES_FILE"
         log 'ERROR: NETWORK RESTART FAILED'
         return 1
       }
+      log "Waiting ${POST_RESTART_DELAY}s after network restart before validating VPN connectivity"
     fi
 
     sleep "$POST_RESTART_DELAY"
@@ -873,7 +889,14 @@ require_commands || exit 1
 log "Executing action '$ACTION' for VPN interface $VPN_IF"
 
 # Intentionally exit 0 on lock contention so cron/hotplug do not log an error when another instance already holds the lock.
-acquire_lock || exit 0
+if ! acquire_lock; then
+  if lock_contention_is_nonfatal; then
+    exit 0
+  fi
+
+  log "ERROR: ACTION '$ACTION' ABORTED BECAUSE ANOTHER NORDVPN-EASY OPERATION IS STILL RUNNING"
+  exit 1
+fi
 
 case "$ACTION" in
   run|check)
