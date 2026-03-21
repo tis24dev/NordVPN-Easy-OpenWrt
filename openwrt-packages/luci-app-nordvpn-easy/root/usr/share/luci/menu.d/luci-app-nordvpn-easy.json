@@ -6,5 +6,13 @@
 			"type": "view",
 			"path": "nordvpn-easy/config"
 		}
+	},
+	"admin/services/nordvpn-easy/advanced": {
+		"title": "Advanced",
+		"order": 10,
+		"action": {
+			"type": "view",
+			"path": "nordvpn-easy/advanced"
+		}
 	}
 }

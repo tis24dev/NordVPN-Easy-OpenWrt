@@ -197,6 +197,10 @@ jobs:
 
           cat > "$SCRIPTS_DIR/post-install" <<'EOF'
           #!/bin/sh
+          if uci -q get nordvpn_easy.main.nordvpn_basic_token >/dev/null 2>&1; then
+            uci -q delete nordvpn_easy.main.nordvpn_basic_token
+            uci -q commit nordvpn_easy
+          fi
           rm -f /tmp/luci-indexcache.*
           rm -rf /tmp/luci-modulecache/
           RPCD_OUTPUT="$(/etc/init.d/rpcd reload 2>&1)"

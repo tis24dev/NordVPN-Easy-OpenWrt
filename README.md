@@ -75,7 +75,7 @@ that loops forever.
 The packaged service is configured through UCI in `/etc/config/nordvpn_easy`.
 Key settings include:
 
-- `nordvpn_token` or `nordvpn_basic_token`
+- `nordvpn_token`
 - `wan_if`
 - `vpn_if`
 - `vpn_country`

@@ -21,7 +21,6 @@ EXTRA_HELP='  setup                 Run setup immediately
   render_runtime_config Render the temporary shell config'
 
 cfg_enabled='1'
-cfg_nordvpn_basic_token=''
 cfg_nordvpn_token=''
 cfg_wan_if='wan'
 cfg_vpn_if='wg0'
@@ -39,10 +38,17 @@ cfg_max_interface_restarts='3'
 cfg_interface_restart_delay='10'
 cfg_post_restart_delay='60'
 
+cleanup_legacy_config() {
+	if uci -q get "${UCI_CONFIG}.${UCI_SECTION}.nordvpn_basic_token" >/dev/null 2>&1; then
+		uci -q delete "${UCI_CONFIG}.${UCI_SECTION}.nordvpn_basic_token"
+		uci -q commit "$UCI_CONFIG"
+	fi
+}
+
 load_service_config() {
+	cleanup_legacy_config
 	config_load "$UCI_CONFIG"
 	config_get_bool cfg_enabled "$UCI_SECTION" enabled 1
-	config_get cfg_nordvpn_basic_token "$UCI_SECTION" nordvpn_basic_token ''
 	config_get cfg_nordvpn_token "$UCI_SECTION" nordvpn_token ''
 	config_get cfg_wan_if "$UCI_SECTION" wan_if 'wan'
 	config_get cfg_vpn_if "$UCI_SECTION" vpn_if 'wg0'
@@ -78,7 +84,6 @@ render_runtime_config() {
 	mkdir -p /var/etc
 	: > "$RUNTIME_CONFIG" || return 1
 
-	write_runtime_option NORDVPN_BASIC_TOKEN "$cfg_nordvpn_basic_token"
 	write_runtime_option NORDVPN_TOKEN "$cfg_nordvpn_token"
 	write_runtime_option WAN_IF "$cfg_wan_if"
 	write_runtime_option VPN_IF "$cfg_vpn_if"
