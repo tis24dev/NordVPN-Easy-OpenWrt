@@ -66,6 +66,19 @@ log () {
   command -v logger >/dev/null 2>&1 && logger -t 'nordvpn-easy' "$*"
 }
 
+curl_rc_meaning () {
+  case "$1" in
+    0)  printf 'ok' ;;
+    6)  printf 'could not resolve host (DNS failure)' ;;
+    7)  printf 'failed to connect to host' ;;
+    28) printf 'operation timed out' ;;
+    35) printf 'SSL/TLS handshake failed' ;;
+    52) printf 'empty reply from server' ;;
+    56) printf 'receive failure' ;;
+    *)  printf 'curl error %s' "$1" ;;
+  esac
+}
+
 usage () {
   cat <<EOF
 Usage: $0 [check|setup|rotate|refresh_countries|refresh_countries_force|public_ip|public_country|run|help] [config_file]
@@ -418,7 +431,7 @@ get_public_ip () {
       return 0
     fi
 
-    log "get_public_ip: attempt failed for $PUBLIC_IP_URL (curl_rc=$curl_rc, response='${curl_out:-empty}')"
+    log "get_public_ip: attempt failed for $PUBLIC_IP_URL (curl_rc=$curl_rc: $(curl_rc_meaning "$curl_rc"), response='${curl_out:-empty}')"
   done
 
   log 'ERROR: COULD NOT RETRIEVE PUBLIC IP'
@@ -434,12 +447,12 @@ lookup_public_country_by_ip () {
     return 1
   }
 
-  log "lookup_public_country_by_ip: querying ${PUBLIC_COUNTRY_API}/${LOOKUP_IP}"
-  curl_raw=$(curl -fsS --connect-timeout 5 --max-time 10 "${PUBLIC_COUNTRY_API}/${LOOKUP_IP}" 2>/dev/null)
+  log "lookup_public_country_by_ip: querying ${PUBLIC_COUNTRY_API}/${LOOKUP_IP} (IPv4-only to avoid IPv6 unreachable on OpenWRT)"
+  curl_raw=$(curl -4 -fsS --connect-timeout 5 --max-time 10 "${PUBLIC_COUNTRY_API}/${LOOKUP_IP}" 2>/dev/null)
   curl_rc=$?
 
   if [ "$curl_rc" -ne 0 ] || [ -z "$curl_raw" ]; then
-    log "ERROR: COULD NOT LOOK UP COUNTRY FOR PUBLIC IP $LOOKUP_IP (curl_rc=$curl_rc, response='${curl_raw:-empty}')"
+    log "ERROR: COULD NOT LOOK UP COUNTRY FOR PUBLIC IP $LOOKUP_IP (curl_rc=$curl_rc, curl_rc_meaning=$(curl_rc_meaning "$curl_rc"), response='${curl_raw:-empty}')"
     return 1
   fi
 
