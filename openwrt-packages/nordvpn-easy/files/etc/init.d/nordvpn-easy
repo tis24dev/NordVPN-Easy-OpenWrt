@@ -382,11 +382,6 @@ vpn_status() {
 			return 0
 		fi
 
-		if ifstatus "$cfg_vpn_if" 2>/dev/null | jq -er '.up == false' >/dev/null 2>&1; then
-			printf '%s\n' 'inactive'
-			return 0
-		fi
-
 		printf '%s\n' 'inactive'
 		return 0
 	fi
