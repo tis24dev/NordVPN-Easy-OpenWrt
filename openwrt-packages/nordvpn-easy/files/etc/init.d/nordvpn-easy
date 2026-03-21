@@ -13,7 +13,7 @@ CORE_SCRIPT='/usr/libexec/nordvpn-easy/core.sh'
 CRON_PATH='/etc/cron.d/nordvpn-easy'
 HOTPLUG_PATH='/etc/hotplug.d/iface/95-nordvpn-easy'
 LOCK_DIR='/tmp/nordvpn-easy.lock'
-EXTRA_COMMANDS='setup check rotate refresh_countries refresh_countries_force public_ip operation_status diagnostics_log install_hooks remove_hooks disable_runtime render_runtime_config'
+EXTRA_COMMANDS='setup check rotate refresh_countries refresh_countries_force public_ip operation_status vpn_status diagnostics_log install_hooks remove_hooks disable_runtime render_runtime_config'
 EXTRA_HELP='  setup                 Run setup immediately
   check                 Run one health check immediately
   rotate                Force server rotation immediately
@@ -21,6 +21,7 @@ EXTRA_HELP='  setup                 Run setup immediately
   refresh_countries_force Force-refresh the cached NordVPN country list
   public_ip             Print the current public IP
   operation_status      Print whether a NordVPN Easy operation is running
+  vpn_status            Print VPN runtime status (active/activating/inactive)
   diagnostics_log       Print filtered NordVPN Easy log output
   install_hooks         Install cron and hotplug hooks
   remove_hooks          Remove cron and hotplug hooks
@@ -350,6 +351,39 @@ operation_status() {
 	else
 		printf '%s\n' 'busy'
 	fi
+}
+
+vpn_status() {
+	load_service_config
+
+	if [ "$cfg_enabled" -ne 1 ]; then
+		printf '%s\n' 'inactive'
+		return 0
+	fi
+
+	if [ "$(uci -q get "network.${cfg_vpn_if}.proto" 2>/dev/null)" != 'wireguard' ]; then
+		printf '%s\n' 'inactive'
+		return 0
+	fi
+
+	if [ "$(uci -q get "network.${cfg_vpn_if}.disabled" 2>/dev/null)" = '1' ]; then
+		printf '%s\n' 'inactive'
+		return 0
+	fi
+
+	if command -v ifstatus >/dev/null 2>&1; then
+		if ifstatus "$cfg_vpn_if" 2>/dev/null | jq -er '.up == true' >/dev/null 2>&1; then
+			printf '%s\n' 'active'
+			return 0
+		fi
+	fi
+
+	if ip link show dev "$cfg_vpn_if" >/dev/null 2>&1; then
+		printf '%s\n' 'active'
+		return 0
+	fi
+
+	printf '%s\n' 'inactive'
 }
 
 diagnostics_log() {

@@ -9,11 +9,13 @@
 var COUNTRIES_CACHE_PATH = '/tmp/nordvpn-easy-countries.json';
 var OPERATION_STATUS_ID = 'nordvpn-easy-operation-status';
 var PUBLIC_IP_STATUS_ID = 'nordvpn-easy-public-ip-status';
+var VPN_STATUS_ID = 'nordvpn-easy-vpn-status';
 var ENABLED_FIELD_ID = 'cbid.nordvpn_easy.main.enabled';
 var TOKEN_FIELD_ID = 'cbid.nordvpn_easy.main.nordvpn_token';
 var COUNTRY_FIELD_ID = 'cbid.nordvpn_easy.main.vpn_country';
 var COUNTRY_REFRESH_BUTTON_ID = 'cbid.nordvpn_easy.main.vpn_country.refresh';
 var pendingOperationLabel = '';
+var currentOperationStatus = 'idle';
 
 function parseCountries(countriesRaw) {
 	var countries = [];
@@ -101,15 +103,41 @@ function setOperationStatusText(text, busy) {
 	setSetupControlsDisabled(busy);
 }
 
+function setVpnStatusIndicator(state, label) {
+	var statusEl = document.getElementById(VPN_STATUS_ID);
+	var color;
+
+	if (!statusEl)
+		return;
+
+	switch (state) {
+	case 'active':
+		color = '#2ea043';
+		break;
+	case 'activating':
+		color = '#d29922';
+		break;
+	default:
+		color = '#cf222e';
+		break;
+	}
+
+	statusEl.innerHTML = '<span style="display:inline-block;width:0.75rem;height:0.75rem;border-radius:50%;background:%s;vertical-align:middle;margin-right:0.45rem;"></span>%s'
+		.format(color, label);
+}
+
 function updateOperationStatus() {
 	return fs.exec('/etc/init.d/nordvpn-easy', [ 'operation_status' ]).then(function(res) {
 		var raw = res.stdout ? res.stdout.trim() : '';
 		var action;
 
 		if (res.code !== 0) {
+			currentOperationStatus = 'unknown';
 			setOperationStatusText(_('Unknown'), false);
 			return;
 		}
+
+		currentOperationStatus = raw || 'idle';
 
 		if (raw.indexOf('busy:') === 0) {
 			action = raw.substring(5);
@@ -129,12 +157,46 @@ function updateOperationStatus() {
 
 		setOperationStatusText(_('Idle'), false);
 	}).catch(function() {
+		currentOperationStatus = pendingOperationLabel ? ('busy:' + pendingOperationLabel) : 'unknown';
+
 		if (pendingOperationLabel) {
 			setOperationStatusText(_('Applying (%s)...').format(humanizeAction(pendingOperationLabel)), true);
 			return;
 		}
 
 		setOperationStatusText(_('Unknown'), false);
+	});
+}
+
+function updateVpnStatus() {
+	return fs.exec('/etc/init.d/nordvpn-easy', [ 'vpn_status' ]).then(function(res) {
+		var state = res.stdout ? res.stdout.trim() : 'inactive';
+		var busyAction;
+
+		if (currentOperationStatus.indexOf('busy:') === 0) {
+			busyAction = currentOperationStatus.substring(5);
+
+			if (busyAction !== 'refresh_countries')
+				return setVpnStatusIndicator('activating', _('Activating'));
+		}
+		else if (currentOperationStatus === 'busy') {
+			return setVpnStatusIndicator('activating', _('Activating'));
+		}
+
+		if (res.code !== 0) {
+			setVpnStatusIndicator('inactive', _('Not Active'));
+			return;
+		}
+
+		if (state === 'active')
+			setVpnStatusIndicator('active', _('Active'));
+		else
+			setVpnStatusIndicator('inactive', _('Not Active'));
+	}).catch(function() {
+		if (currentOperationStatus.indexOf('busy') === 0)
+			setVpnStatusIndicator('activating', _('Activating'));
+		else
+			setVpnStatusIndicator('inactive', _('Not Active'));
 	});
 }
 
@@ -294,6 +356,12 @@ return view.extend({
 		o.default = '1';
 		o.rmempty = false;
 
+		o = s.option(form.DummyValue, '_vpn_status', _('VPN Status'));
+		o.rawhtml = true;
+		o.cfgvalue = function() {
+			return '<span id="%s">%s</span>'.format(VPN_STATUS_ID, _('Unknown'));
+		};
+
 		o = s.option(form.DummyValue, '_operation_status', _('Operation Status'));
 		o.rawhtml = true;
 		o.cfgvalue = function() {
@@ -333,7 +401,12 @@ return view.extend({
 				return updateOperationStatus();
 			}, 2);
 
+			poll.add(function() {
+				return updateVpnStatus();
+			}, 2);
+
 			updateOperationStatus();
+			updateVpnStatus();
 			updatePublicIp();
 			return node;
 		});
@@ -381,6 +454,8 @@ return view.extend({
 					}
 
 					pendingOperationLabel = formatActionsLabel(actions);
+					currentOperationStatus = 'busy:' + pendingOperationLabel;
+					setVpnStatusIndicator('activating', _('Activating'));
 					setOperationStatusText(_('Applying (%s)...').format(pendingOperationLabel), true);
 
 					return runServiceActions(actions).then(function(results) {
@@ -403,6 +478,8 @@ return view.extend({
 
 			document.addEventListener('uci-applied', this._uciAppliedHandler);
 			pendingOperationLabel = _('configuration');
+			currentOperationStatus = 'busy:configuration';
+			setVpnStatusIndicator('activating', _('Activating'));
 			setOperationStatusText(_('Applying configuration...'), true);
 			ui.changes.apply(mode == '0');
 		}, this));
