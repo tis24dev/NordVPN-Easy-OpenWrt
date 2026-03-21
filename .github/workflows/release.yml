@@ -161,8 +161,18 @@ jobs:
           SCRIPTS_DIR=".build/scripts/${PACKAGE_NAME}"
           mkdir -p "$SCRIPTS_DIR"
 
-          printf '#!/bin/sh\nrm -f /tmp/luci-indexcache.*\nrm -rf /tmp/luci-modulecache/\nRPCD_OUTPUT="$(/etc/init.d/rpcd reload 2>&1)"\nRPCD_STATUS=$?\nif [ "$RPCD_STATUS" -ne 0 ]; then\n  printf "%s\\n" "nordvpn-easy: rpcd reload failed with exit code $RPCD_STATUS" >&2\n  [ -n "$RPCD_OUTPUT" ] && printf "%s\\n" "$RPCD_OUTPUT" >&2\nfi\nexit 0\n' \
-            > "$SCRIPTS_DIR/post-install"
+          cat > "$SCRIPTS_DIR/post-install" <<'EOF'
+          #!/bin/sh
+          rm -f /tmp/luci-indexcache.*
+          rm -rf /tmp/luci-modulecache/
+          RPCD_OUTPUT="$(/etc/init.d/rpcd reload 2>&1)"
+          RPCD_STATUS=$?
+          if [ "$RPCD_STATUS" -ne 0 ]; then
+            printf "%s\n" "nordvpn-easy: rpcd reload failed with exit code $RPCD_STATUS" >&2
+            [ -n "$RPCD_OUTPUT" ] && printf "%s\n" "$RPCD_OUTPUT" >&2
+          fi
+          exit 0
+          EOF
           cp "$SCRIPTS_DIR/post-install" "$SCRIPTS_DIR/post-upgrade"
           chmod 755 "$SCRIPTS_DIR/post-install" "$SCRIPTS_DIR/post-upgrade"
 

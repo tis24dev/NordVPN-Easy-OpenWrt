@@ -75,6 +75,16 @@ return view.extend({
 		o.rmempty = true;
 		o.description = _('Optional. Use a country code, a full country name or a NordVPN country id.');
 
+		o = s.option(form.Value, 'vpn_addr', _('VPN Address'));
+		o.placeholder = '10.5.0.2/32';
+		o.rmempty = true;
+		o.description = _('Optional. Local VPN interface address.');
+
+		o = s.option(form.Value, 'vpn_port', _('VPN Port'));
+		o.placeholder = '51820';
+		o.rmempty = true;
+		o.description = _('Optional. Backend VPN server port.');
+
 		o = s.option(form.Value, 'vpn_dns1', _('DNS 1'));
 		o.placeholder = '103.86.99.99';
 		o.rmempty = true;

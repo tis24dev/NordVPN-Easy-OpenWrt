@@ -115,11 +115,44 @@ restart_cron_service() {
 	true
 }
 
+log_service_error() {
+	local message="$1"
+
+	logger -t "$SERVICE_NAME" "$message"
+	echo "$SERVICE_NAME: $message" >&2
+}
+
+validate_cron_schedule() {
+	local schedule="$1"
+
+	printf '%s' "$schedule" | awk '
+		BEGIN { valid = 1 }
+		NR > 1 { valid = 0 }
+		{
+			if ($0 !~ /^[0-9*\/,[:space:]-]+$/)
+				valid = 0
+			if (NF != 5)
+				valid = 0
+			for (i = 1; i <= NF; i++) {
+				if ($i !~ /^[0-9*\/,-]+$/)
+					valid = 0
+			}
+		}
+		END { exit(valid ? 0 : 1) }
+	'
+}
+
 install_cron_hook() {
 	load_service_config
 	mkdir -p /etc/cron.d
 
 	if [ "$cfg_enabled" -eq 1 ] && [ -n "$cfg_check_cron_schedule" ]; then
+		if ! validate_cron_schedule "$cfg_check_cron_schedule"; then
+			rm -f "$CRON_PATH"
+			log_service_error "invalid cron schedule '$cfg_check_cron_schedule'; refusing to write $CRON_PATH"
+			return 1
+		fi
+
 		cat > "$CRON_PATH" <<EOF
 $cfg_check_cron_schedule /etc/init.d/$SERVICE_NAME check 2>&1 | logger -t $SERVICE_NAME-cron
 EOF
