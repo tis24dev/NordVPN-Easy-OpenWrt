@@ -122,12 +122,6 @@ const CountrySelectValue = form.ListValue.extend({
 	}
 });
 
-const PublicIPValue = form.DummyValue.extend({
-	textvalue() {
-		return E('span', { 'id': PUBLIC_IP_STATUS_ID }, [ _('Collecting data...') ]);
-	}
-});
-
 function updatePublicIp() {
 	return fs.exec('/etc/init.d/nordvpn-easy', [ 'public_ip' ]).then(function(res) {
 		var statusEl = document.getElementById(PUBLIC_IP_STATUS_ID);
@@ -136,13 +130,57 @@ function updatePublicIp() {
 		if (!statusEl)
 			return;
 
-		statusEl.textContent = (res.code === 0 && publicIp) ? publicIp : _('Unavailable');
+		statusEl.textContent = (res.code === 0 && publicIp && publicIp !== 'null' && publicIp !== 'undefined')
+			? publicIp
+			: _('Unavailable');
 	}).catch(function() {
 		var statusEl = document.getElementById(PUBLIC_IP_STATUS_ID);
 
 		if (statusEl)
 			statusEl.textContent = _('Unavailable');
 	});
+}
+
+function runServiceAction(action) {
+	return fs.exec('/etc/init.d/nordvpn-easy', [ action ]).then(function(res) {
+		var lines = [];
+
+		if (res.stdout)
+			lines.push(res.stdout.trim());
+
+		if (res.stderr)
+			lines.push(res.stderr.trim());
+
+		return {
+			action: action,
+			code: res.code,
+			message: lines.filter(function(line) {
+				return line;
+			}).join('\n') || _('Command completed.')
+		};
+	});
+}
+
+function runServiceActions(actions) {
+	var results = [];
+
+	return actions.reduce(function(chain, action) {
+		return chain.then(function() {
+			return runServiceAction(action).then(function(result) {
+				results.push(result);
+			});
+		});
+	}, Promise.resolve()).then(function() {
+		return results;
+	});
+}
+
+function summarizeActionFailures(results) {
+	return results.filter(function(result) {
+		return result.code !== 0;
+	}).map(function(result) {
+		return _('%s failed with exit code %d: %s').format(result.action, result.code, result.message);
+	}).join('\n');
 }
 
 return view.extend({
@@ -161,6 +199,8 @@ return view.extend({
 		var countries = parseCountries(countriesRaw);
 		var m, s, o;
 
+		this.initialEnabled = (uci.get('nordvpn_easy', 'main', 'enabled') !== '0');
+
 		m = new form.Map('nordvpn_easy', _('NordVPN Easy'),
 			_('Configure the minimum settings required to connect NordVPN Easy.'));
 
@@ -172,7 +212,11 @@ return view.extend({
 		o.default = '1';
 		o.rmempty = false;
 
-		o = s.option(PublicIPValue, '_public_ip', _('Public IP'));
+		o = s.option(form.DummyValue, '_public_ip', _('Public IP'));
+		o.rawhtml = true;
+		o.cfgvalue = function() {
+			return '<span id="%s">%s</span>'.format(PUBLIC_IP_STATUS_ID, _('Collecting data...'));
+		};
 
 		o = s.option(form.Value, 'nordvpn_token', _('NordVPN Token'));
 		o.password = true;
@@ -200,5 +244,56 @@ return view.extend({
 			updatePublicIp();
 			return node;
 		});
+	},
+
+	handleSaveApply: function(ev, mode) {
+		var previousEnabled = !!this.initialEnabled;
+
+		return this.handleSave(ev).then(L.bind(function() {
+			if (this._uciAppliedHandler)
+				document.removeEventListener('uci-applied', this._uciAppliedHandler);
+
+			this._uciAppliedHandler = L.bind(function() {
+				document.removeEventListener('uci-applied', this._uciAppliedHandler);
+				this._uciAppliedHandler = null;
+
+				uci.unload('nordvpn_easy');
+				uci.load('nordvpn_easy').then(L.bind(function() {
+					var currentEnabled = (uci.get('nordvpn_easy', 'main', 'enabled') !== '0');
+					var actions = [];
+					var successMessage = '';
+
+					this.initialEnabled = currentEnabled;
+
+					if (!previousEnabled && currentEnabled) {
+						actions = [ 'setup', 'install_hooks' ];
+						successMessage = _('NordVPN Easy enabled: setup completed and hooks installed.');
+					}
+					else if (previousEnabled && !currentEnabled) {
+						actions = [ 'remove_hooks' ];
+						successMessage = _('NordVPN Easy disabled: hooks removed.');
+					}
+
+					if (!actions.length)
+						return;
+
+					return runServiceActions(actions).then(function(results) {
+						var failures = summarizeActionFailures(results);
+
+						if (failures) {
+							ui.addNotification(null, E('p', failures), 'error');
+							return;
+						}
+
+						ui.addNotification(null, E('p', successMessage), 'info');
+					}).catch(function(err) {
+						ui.addNotification(null, E('p', _('Automatic runtime sync failed: ') + err.message), 'error');
+					});
+				}, this));
+			}, this);
+
+			document.addEventListener('uci-applied', this._uciAppliedHandler);
+			ui.changes.apply(mode == '0');
+		}, this));
 	}
 });
