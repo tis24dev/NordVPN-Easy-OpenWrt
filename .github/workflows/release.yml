@@ -132,7 +132,6 @@ jobs:
             "${SDK_DIR}/package/feeds/luci/luci-base"
             "${SDK_DIR}/package/feeds/packages/curl"
             "${SDK_DIR}/package/feeds/packages/jq"
-            "${SDK_DIR}/package/feeds/base/ca-certificates"
           )
           NEED_FEED_UPDATE=0
 
