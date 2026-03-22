@@ -119,6 +119,49 @@ jobs:
             fi
           done
 
+      - name: Prepare OpenWrt feeds required by package build
+        run: |
+          set -euo pipefail
+          SDK_DIR="$(realpath "$SDK_DIR")"
+          REQUIRED_FEED_FILES=(
+            "${SDK_DIR}/feeds/luci/luci.mk"
+            "${SDK_DIR}/feeds/packages/net/curl/Makefile"
+            "${SDK_DIR}/feeds/packages/utils/jq/Makefile"
+          )
+          REQUIRED_PACKAGE_LINKS=(
+            "${SDK_DIR}/package/feeds/luci/luci-base"
+            "${SDK_DIR}/package/feeds/packages/curl"
+            "${SDK_DIR}/package/feeds/packages/jq"
+            "${SDK_DIR}/package/feeds/base/ca-certificates"
+          )
+          NEED_FEED_UPDATE=0
+
+          for path in "${REQUIRED_FEED_FILES[@]}"; do
+            if [ ! -f "$path" ]; then
+              NEED_FEED_UPDATE=1
+              break
+            fi
+          done
+
+          if [ "$NEED_FEED_UPDATE" -eq 1 ]; then
+            (
+              cd "$SDK_DIR"
+              ./scripts/feeds update packages luci
+            )
+          fi
+
+          (
+            cd "$SDK_DIR"
+            ./scripts/feeds install -f ca-certificates curl jq luci-base
+          )
+
+          for path in "${REQUIRED_FEED_FILES[@]}" "${REQUIRED_PACKAGE_LINKS[@]}"; do
+            if [ ! -e "$path" ]; then
+              echo "::error::Missing required feed path after SDK bootstrap: $path"
+              exit 1
+            fi
+          done
+
       - name: Sync package sources into SDK
         run: |
           set -euo pipefail
