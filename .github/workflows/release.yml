@@ -755,6 +755,11 @@ jobs:
 
           # Copia i file opkg nel path corretto
           mkdir -p "${DEPLOY_DIR}/packages/opkg"
+          
+          # Rimuove i vecchi pacchetti prima di copiare i nuovi
+          rm -f "${DEPLOY_DIR}/packages/opkg"/*.ipk
+          rm -f "${DEPLOY_DIR}/packages/opkg"/*.ipk.sha256
+          
           cp dist-opkg/*.ipk \
              dist-opkg/Packages \
              dist-opkg/Packages.gz \
