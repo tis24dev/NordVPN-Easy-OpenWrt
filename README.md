@@ -41,7 +41,7 @@ legacy root-level direct-install files.
 10. Upload the PEM file.
 11. Open `System -> Software`.
 12. Click `Configure apk`.
-13. Add this repository index URL:
+13. Add this repository index URL into "/etc/apk/repositories.d/customfeeds.list":
    `https://github.com/tis24dev/NordVPN-Easy-OpenWrt/releases/latest/download/luci-app-nordvpn-easy.adb`
 14. Save the `apk` configuration.
 15. Click `Update lists...`.
