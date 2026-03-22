@@ -520,6 +520,28 @@ jobs:
           cp -R openwrt-packages/nordvpn-easy \
             "${SDK_DIR}/package/nordvpn-easy"
 
+      - name: Pre-place backend files for OpenWrt 23.05 compatibility
+        run: |
+          set -euo pipefail
+          SDK_DIR="$(realpath "$SDK_DIR")"
+
+          # OpenWrt 23.05 luci.mk does not call Build/Prepare/$(PKG_NAME),
+          # so backend files must be pre-placed in the luci-app root/ tree.
+          LUCI_ROOT="${SDK_DIR}/package/luci-app-nordvpn-easy/root"
+          BACKEND_FILES="openwrt-packages/nordvpn-easy/files"
+
+          install -d -m0755 "${LUCI_ROOT}/etc/config"
+          install -m0644 "${BACKEND_FILES}/etc/config/nordvpn_easy" \
+            "${LUCI_ROOT}/etc/config/nordvpn_easy"
+
+          install -d -m0755 "${LUCI_ROOT}/etc/init.d"
+          install -m0755 "${BACKEND_FILES}/etc/init.d/nordvpn-easy" \
+            "${LUCI_ROOT}/etc/init.d/nordvpn-easy"
+
+          install -d -m0755 "${LUCI_ROOT}/usr/libexec/nordvpn-easy"
+          install -m0755 "${BACKEND_FILES}/usr/libexec/nordvpn-easy/core.sh" \
+            "${LUCI_ROOT}/usr/libexec/nordvpn-easy/core.sh"
+
       - name: Initialize OpenWrt SDK configuration
         run: |
           set -euo pipefail
