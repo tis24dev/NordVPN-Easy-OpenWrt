@@ -716,11 +716,12 @@ jobs:
       contents: write
 
     steps:
-      - name: Checkout
+      - name: Checkout main
         uses: actions/checkout@v4
         with:
           ref: main
-    
+          fetch-depth: 0
+
       - name: Download APK artifacts
         uses: actions/download-artifact@v4
         with:
@@ -733,18 +734,38 @@ jobs:
           name: dist-opkg
           path: dist-opkg/
 
-      - name: Publish OPKG repo to GitHub Pages
+      - name: Publish OPKG repo to GitHub Pages (gh-pages branch)
         run: |
           set -euo pipefail
 
           git config --global user.name "github-actions"
           git config --global user.email "actions@github.com"
 
-          git pull --rebase
+          REPO_URL="https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          DEPLOY_DIR="$(mktemp -d)"
 
-          git add dist-opkg
-          git commit -m "Update OPKG repository (latest)" || true
-          git push
+          # Clona gh-pages se esiste, altrimenti crea branch orfano
+          if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
+            git clone --branch gh-pages --single-branch --depth 1 "$REPO_URL" "$DEPLOY_DIR"
+          else
+            git -C "$DEPLOY_DIR" init
+            git -C "$DEPLOY_DIR" checkout --orphan gh-pages
+            git -C "$DEPLOY_DIR" remote add origin "$REPO_URL"
+          fi
+
+          # Copia i file opkg nel path corretto
+          mkdir -p "${DEPLOY_DIR}/packages/opkg"
+          cp dist-opkg/*.ipk \
+             dist-opkg/Packages \
+             dist-opkg/Packages.gz \
+             dist-opkg/Packages.sig \
+             dist-opkg/vpn-easy-tis24dev.pub \
+             "${DEPLOY_DIR}/packages/opkg/"
+
+          git -C "$DEPLOY_DIR" add packages/
+          git -C "$DEPLOY_DIR" commit \
+            -m "chore: update OPKG repo [${{ github.ref_name }}]" || true
+          git -C "$DEPLOY_DIR" push "$REPO_URL" HEAD:gh-pages
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -758,6 +779,7 @@ jobs:
             dist-apk/*.pem
             dist-opkg/*.ipk
             dist-opkg/*.ipk.sha256
+            dist-opkg/Packages
             dist-opkg/Packages.gz
             dist-opkg/Packages.sig
             dist-opkg/vpn-easy-tis24dev.pub
