@@ -693,7 +693,7 @@ jobs:
           # Generate signed package index
           (
             cd "$OUTPUT_DIR"
-            "${SDK_DIR}/scripts/ipkg-make-index.sh" . > Packages
+            MKHASH="$MKHASH_BIN" "${SDK_DIR}/scripts/ipkg-make-index.sh" . > Packages
             gzip -k Packages
             "$USIGN_BIN" -S -m Packages -s "$USIGN_KEY_PATH"
           )
