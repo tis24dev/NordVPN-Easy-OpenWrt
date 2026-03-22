@@ -45,7 +45,7 @@ fi
 	   [ "$$(uci -q get nordvpn_easy.main.enabled 2>/dev/null)" = "1" ] && \
 	   [ -n "$$(uci -q get nordvpn_easy.main.nordvpn_token 2>/dev/null)" ] && \
 	   [ -x /etc/init.d/nordvpn-easy ]; then
-		NORDVPN_LOG_STDERR=0 SERVICE_OUTPUT="$$(/etc/init.d/nordvpn-easy start 2>&1)"
+		SERVICE_OUTPUT="$$(/etc/init.d/nordvpn-easy start 2>&1)"
 		SERVICE_STATUS=$$?
 		if [ "$$SERVICE_STATUS" -ne 0 ]; then
 			printf "%s\n" "nordvpn-easy: service start failed with exit code $$SERVICE_STATUS" >&2
