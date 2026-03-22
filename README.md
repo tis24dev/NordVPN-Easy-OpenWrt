@@ -20,11 +20,6 @@ health-check and recovery logic.
   core
 - `openwrt-packages/luci-app-nordvpn-easy`
   LuCI frontend package
-- `DEVELOPMENT`
-  Continuity notes, design decisions and current project state
-
-The package tree is the source of truth. The repository no longer depends on
-legacy root-level direct-install files.
 
 ## Installation — OpenWrt 24.x and earlier (OPKG)
 
