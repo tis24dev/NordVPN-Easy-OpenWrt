@@ -13,18 +13,24 @@ defaults:
     shell: bash
 
 env:
-  OPENWRT_VERSION: '25.12.0'
   OPENWRT_TARGET: 'x86'
   OPENWRT_SUBTARGET: '64'
-  OPENWRT_TOOLCHAIN: 'gcc-14.3.0_musl'
   PACKAGE_NAME: 'luci-app-nordvpn-easy'
-  PACKAGE_INDEX_NAME: 'luci-app-nordvpn-easy.adb'
   PACKAGE_RELEASE: '1'
-  PACKAGE_INDEX_DESCRIPTION: 'NordVPN Easy local APK repository'
+
+  # APK build (OpenWrt 25.12.0+)
+  OPENWRT_APK_VERSION: '25.12.0'
+  OPENWRT_APK_TOOLCHAIN: 'gcc-14.3.0_musl'
+  APK_PACKAGE_INDEX_NAME: 'luci-app-nordvpn-easy.adb'
+  APK_PACKAGE_INDEX_DESCRIPTION: 'NordVPN Easy local APK repository'
+
+  # OPKG build (OpenWrt 23.05.x)
+  OPENWRT_OPKG_VERSION: '23.05.0'
+  OPENWRT_OPKG_TOOLCHAIN: 'gcc-12.3.0_musl'
 
 jobs:
-  build-and-release:
-    name: Build APK and publish release
+  build-apk:
+    name: Build APK package
     runs-on: ubuntu-latest
     environment:
       name: Key APK
@@ -62,14 +68,14 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .build/openwrt-sdk
-          key: openwrt-sdk-${{ runner.os }}-${{ env.OPENWRT_VERSION }}-${{ env.OPENWRT_TARGET }}-${{ env.OPENWRT_SUBTARGET }}-${{ env.OPENWRT_TOOLCHAIN }}
+          key: openwrt-sdk-${{ runner.os }}-${{ env.OPENWRT_APK_VERSION }}-${{ env.OPENWRT_TARGET }}-${{ env.OPENWRT_SUBTARGET }}-${{ env.OPENWRT_APK_TOOLCHAIN }}
 
       - name: Download and extract OpenWrt SDK
         run: |
           set -euo pipefail
-          SDK_BASENAME="openwrt-sdk-${OPENWRT_VERSION}-${OPENWRT_TARGET}-${OPENWRT_SUBTARGET}_${OPENWRT_TOOLCHAIN}.Linux-x86_64"
+          SDK_BASENAME="openwrt-sdk-${OPENWRT_APK_VERSION}-${OPENWRT_TARGET}-${OPENWRT_SUBTARGET}_${OPENWRT_APK_TOOLCHAIN}.Linux-x86_64"
           SDK_ARCHIVE="${SDK_BASENAME}.tar.zst"
-          SDK_URL="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/${OPENWRT_TARGET}/${OPENWRT_SUBTARGET}/${SDK_ARCHIVE}"
+          SDK_URL="https://downloads.openwrt.org/releases/${OPENWRT_APK_VERSION}/targets/${OPENWRT_TARGET}/${OPENWRT_SUBTARGET}/${SDK_ARCHIVE}"
           SDK_BASE_URL="${SDK_URL%/*}"
           WORKDIR=".build/openwrt-sdk"
           CHECKSUMS_PATH="$WORKDIR/SHA256SUMS"
@@ -283,7 +289,7 @@ jobs:
             "${ARTIFACT_SOURCE}" \
             "${ARTIFACT_PATH}" \
             "${ARTIFACT_PATH}.sha256" \
-            "${OUTPUT_DIR}/${PACKAGE_INDEX_NAME}"
+            "${OUTPUT_DIR}/${APK_PACKAGE_INDEX_NAME}"
 
           # The direct package-recipe path intentionally skips LuCI minification
           # so release builds do not depend on host tools prepared by the
@@ -344,12 +350,360 @@ jobs:
               --keys-dir "$APK_SIGNING_ROOT" \
               --allow-untrusted \
               --sign-key "$APK_SIGNING_KEY_PATH" \
-              --description "${PACKAGE_INDEX_DESCRIPTION}" \
-              --output "${PACKAGE_INDEX_NAME}" \
+              --description "${APK_PACKAGE_INDEX_DESCRIPTION}" \
+              --output "${APK_PACKAGE_INDEX_NAME}" \
               "$(basename "$ARTIFACT_PATH")"
           )
 
           ls -lh "$OUTPUT_DIR/"
+
+      - name: Upload APK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-apk
+          path: dist/
+
+  build-opkg:
+    name: Build OPKG package
+    runs-on: ubuntu-latest
+    environment:
+      name: Key OPKG
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify tag is on main
+        run: |
+          set -euo pipefail
+          git fetch origin refs/heads/main:refs/remotes/origin/main --no-tags
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::Tag $GITHUB_REF_NAME is not on main — aborting."
+            exit 1
+          fi
+
+      - name: Validate tag format
+        run: |
+          set -euo pipefail
+          if ! printf '%s\n' "$GITHUB_REF_NAME" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Tag $GITHUB_REF_NAME must match vX.X.X"
+            exit 1
+          fi
+
+      - name: Set version from tag
+        run: |
+          set -euo pipefail
+          RAW="${GITHUB_REF_NAME#v}"
+          echo "PACKAGE_VERSION=${RAW}" >> "$GITHUB_ENV"
+
+      - name: Cache OpenWrt SDK
+        uses: actions/cache@v4
+        with:
+          path: .build/openwrt-sdk-opkg
+          key: openwrt-sdk-${{ runner.os }}-${{ env.OPENWRT_OPKG_VERSION }}-${{ env.OPENWRT_TARGET }}-${{ env.OPENWRT_SUBTARGET }}-${{ env.OPENWRT_OPKG_TOOLCHAIN }}
+
+      - name: Download and extract OpenWrt SDK
+        run: |
+          set -euo pipefail
+          SDK_BASENAME="openwrt-sdk-${OPENWRT_OPKG_VERSION}-${OPENWRT_TARGET}-${OPENWRT_SUBTARGET}_${OPENWRT_OPKG_TOOLCHAIN}.Linux-x86_64"
+          SDK_ARCHIVE="${SDK_BASENAME}.tar.xz"
+          SDK_URL="https://downloads.openwrt.org/releases/${OPENWRT_OPKG_VERSION}/targets/${OPENWRT_TARGET}/${OPENWRT_SUBTARGET}/${SDK_ARCHIVE}"
+          SDK_BASE_URL="${SDK_URL%/*}"
+          WORKDIR=".build/openwrt-sdk-opkg"
+          CHECKSUMS_PATH="$WORKDIR/SHA256SUMS"
+          CONFIG_BUILDINFO_PATH="$WORKDIR/config.buildinfo"
+
+          mkdir -p "$WORKDIR"
+
+          if [ ! -f "$WORKDIR/$SDK_ARCHIVE" ]; then
+            echo "Downloading SDK..."
+            curl -fL --retry 3 --output "$WORKDIR/$SDK_ARCHIVE" "$SDK_URL"
+          fi
+
+          echo "Downloading SDK checksums..."
+          if ! curl -fL --retry 3 --output "$CHECKSUMS_PATH" "${SDK_BASE_URL}/SHA256SUMS"; then
+            curl -fL --retry 3 --output "$CHECKSUMS_PATH" "${SDK_BASE_URL}/sha256sums"
+          fi
+
+          echo "Downloading target config seed..."
+          curl -fL --retry 3 --output "$CONFIG_BUILDINFO_PATH" "${SDK_BASE_URL}/config.buildinfo"
+
+          CHECKSUM_LINE="$(grep -E "([ *])${SDK_ARCHIVE}$" "$CHECKSUMS_PATH" || true)"
+          if [ -z "$CHECKSUM_LINE" ]; then
+            echo "::error::Unable to find checksum for $SDK_ARCHIVE in ${SDK_BASE_URL}/SHA256SUMS"
+            exit 1
+          fi
+
+          echo "Verifying SDK archive checksum..."
+          (
+            cd "$WORKDIR"
+            printf '%s\n' "$CHECKSUM_LINE" | sha256sum -c -
+          )
+
+          if [ ! -d "$WORKDIR/$SDK_BASENAME" ]; then
+            echo "Extracting SDK..."
+            tar -xJf "$WORKDIR/$SDK_ARCHIVE" -C "$WORKDIR"
+          fi
+
+          echo "SDK_DIR=$(realpath "$WORKDIR/$SDK_BASENAME")" >> "$GITHUB_ENV"
+          echo "SDK_CONFIG_BUILDINFO_PATH=$(realpath "$CONFIG_BUILDINFO_PATH")" >> "$GITHUB_ENV"
+
+      - name: Validate SDK tools
+        run: |
+          set -euo pipefail
+          SDK_DIR="$(realpath "$SDK_DIR")"
+          USIGN_BIN="${SDK_DIR}/staging_dir/host/bin/usign"
+          MKHASH_BIN="${SDK_DIR}/staging_dir/host/bin/mkhash"
+
+          for tool in "$USIGN_BIN" "$MKHASH_BIN"; do
+            if [ ! -x "$tool" ]; then
+              echo "::error::Missing required SDK tool: $tool"
+              exit 1
+            fi
+          done
+
+      - name: Prepare OpenWrt feeds required by package build
+        run: |
+          set -euo pipefail
+          SDK_DIR="$(realpath "$SDK_DIR")"
+          REQUIRED_FEED_FILES=(
+            "${SDK_DIR}/feeds/luci/luci.mk"
+            "${SDK_DIR}/feeds/packages/net/curl/Makefile"
+            "${SDK_DIR}/feeds/packages/utils/jq/Makefile"
+          )
+          REQUIRED_PACKAGE_LINKS=(
+            "${SDK_DIR}/package/feeds/luci/luci-base"
+            "${SDK_DIR}/package/feeds/packages/curl"
+            "${SDK_DIR}/package/feeds/packages/jq"
+          )
+          NEED_FEED_UPDATE=0
+
+          for path in "${REQUIRED_FEED_FILES[@]}"; do
+            if [ ! -f "$path" ]; then
+              NEED_FEED_UPDATE=1
+              break
+            fi
+          done
+
+          if [ "$NEED_FEED_UPDATE" -eq 1 ]; then
+            (
+              cd "$SDK_DIR"
+              ./scripts/feeds update packages luci
+            )
+          fi
+
+          (
+            cd "$SDK_DIR"
+            ./scripts/feeds install -f curl jq luci-base
+          )
+
+          for path in "${REQUIRED_FEED_FILES[@]}" "${REQUIRED_PACKAGE_LINKS[@]}"; do
+            if [ ! -e "$path" ]; then
+              echo "::error::Missing required feed path after SDK bootstrap: $path"
+              exit 1
+            fi
+          done
+
+      - name: Sync package sources into SDK
+        run: |
+          set -euo pipefail
+          SDK_DIR="$(realpath "$SDK_DIR")"
+
+          rm -rf \
+            "${SDK_DIR}/package/luci-app-nordvpn-easy" \
+            "${SDK_DIR}/package/nordvpn-easy"
+
+          cp -R openwrt-packages/luci-app-nordvpn-easy \
+            "${SDK_DIR}/package/luci-app-nordvpn-easy"
+          cp -R openwrt-packages/nordvpn-easy \
+            "${SDK_DIR}/package/nordvpn-easy"
+
+      - name: Initialize OpenWrt SDK configuration
+        run: |
+          set -euo pipefail
+          SDK_DIR="$(realpath "$SDK_DIR")"
+          CONFIG_BUILDINFO_PATH="$(realpath "$SDK_CONFIG_BUILDINFO_PATH")"
+
+          cp "$CONFIG_BUILDINFO_PATH" "${SDK_DIR}/.config"
+          cat >> "${SDK_DIR}/.config" <<EOF
+          CONFIG_PACKAGE_nordvpn-easy=m
+          CONFIG_PACKAGE_${PACKAGE_NAME}=m
+          EOF
+
+          (
+            cd "$SDK_DIR"
+            make defconfig
+          )
+
+          if ! grep -Fq "CONFIG_PACKAGE_${PACKAGE_NAME}=m" "${SDK_DIR}/.config"; then
+            echo "::error::Failed to enable ${PACKAGE_NAME} in ${SDK_DIR}/.config"
+            exit 1
+          fi
+
+          if ! grep -Fq "CONFIG_PACKAGE_nordvpn-easy=m" "${SDK_DIR}/.config"; then
+            echo "::error::Failed to enable nordvpn-easy in ${SDK_DIR}/.config"
+            exit 1
+          fi
+
+      - name: Prepare usign signing key
+        env:
+          USIGN_PRIVATE_KEY: ${{ secrets.USIGN_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          SDK_DIR="$(realpath "$SDK_DIR")"
+          USIGN_BIN="${SDK_DIR}/staging_dir/host/bin/usign"
+          SIGNING_DIR=".build/signing-opkg"
+          SIGNING_KEY_PATH="${SIGNING_DIR}/key-build"
+          SIGNING_PUBLIC_KEY_PATH="${SIGNING_DIR}/key-build.pub"
+
+          if [ -z "${USIGN_PRIVATE_KEY:-}" ]; then
+            echo "::error::Missing USIGN_PRIVATE_KEY environment secret"
+            exit 1
+          fi
+
+          mkdir -p "$SIGNING_DIR"
+          umask 077
+          printf '%s\n' "$USIGN_PRIVATE_KEY" > "$SIGNING_KEY_PATH"
+          "$USIGN_BIN" -F -s "$SIGNING_KEY_PATH" > "$SIGNING_PUBLIC_KEY_PATH"
+
+          echo "USIGN_BIN=$(realpath "$USIGN_BIN")" >> "$GITHUB_ENV"
+          echo "USIGN_KEY_PATH=$(realpath "$SIGNING_KEY_PATH")" >> "$GITHUB_ENV"
+          echo "USIGN_PUBLIC_KEY_PATH=$(realpath "$SIGNING_PUBLIC_KEY_PATH")" >> "$GITHUB_ENV"
+
+      - name: Build IPK from OpenWrt package recipe
+        run: |
+          set -euo pipefail
+          SDK_DIR="$(realpath "$SDK_DIR")"
+          PACKAGE_DIR="${SDK_DIR}/package/${PACKAGE_NAME}"
+          MKHASH_BIN="${SDK_DIR}/staging_dir/host/bin/mkhash"
+          OUTPUT_DIR="dist"
+          PACKAGE_FILENAME="${PACKAGE_NAME}_${PACKAGE_VERSION}-${PACKAGE_RELEASE}_all.ipk"
+          MAKE_ARGS=(
+            -C "$PACKAGE_DIR"
+            TOPDIR="$SDK_DIR"
+            BUILD_SUBDIR="package/${PACKAGE_NAME}"
+            BUILD_VARIANT=""
+            ALL_VARIANTS=""
+            CONFIG_LUCI_JSMIN=
+            CONFIG_LUCI_CSSTIDY=
+            CONFIG_LUCI_SRCDIET=
+            NORDVPN_EASY_VERSION="$PACKAGE_VERSION"
+            NORDVPN_EASY_RELEASE="$PACKAGE_RELEASE"
+            NORDVPN_EASY_PACKAGE_URL="https://github.com/${{ github.repository }}"
+            NORDVPN_EASY_PACKAGE_MAINTAINER="${{ github.repository_owner }}"
+          )
+
+          if [ ! -d "$PACKAGE_DIR" ]; then
+            echo "::error::Expected package recipe not found at ${PACKAGE_DIR}"
+            exit 1
+          fi
+
+          # The direct package-recipe path intentionally skips LuCI minification
+          # so release builds do not depend on host tools prepared by the
+          # top-level SDK dependency graph.
+          make "${MAKE_ARGS[@]}" clean prepare compile
+
+          # Locate the built .ipk — OpenWrt 23.05 places it under bin/packages/
+          ARTIFACT_SOURCE="$(find "${SDK_DIR}/bin" -name "${PACKAGE_NAME}_*.ipk" -type f | head -n 1)"
+
+          if [ -z "$ARTIFACT_SOURCE" ]; then
+            echo "::error::Built package not found under ${SDK_DIR}/bin/"
+            exit 1
+          fi
+
+          mkdir -p "$OUTPUT_DIR"
+          cp "$ARTIFACT_SOURCE" "${OUTPUT_DIR}/${PACKAGE_FILENAME}"
+          ARTIFACT_PATH="${OUTPUT_DIR}/${PACKAGE_FILENAME}"
+
+          printf '%s  %s\n' \
+            "$("$MKHASH_BIN" sha256 "$ARTIFACT_PATH")" \
+            "$(basename "$ARTIFACT_PATH")" \
+            > "${ARTIFACT_PATH}.sha256"
+
+          # Verify payload — .ipk is an ar archive containing data.tar.gz
+          VERIFY_DIR="$(mktemp -d)"
+          trap 'rm -rf "$VERIFY_DIR"' EXIT
+
+          (
+            cd "$VERIFY_DIR"
+            ar -x "$GITHUB_WORKSPACE/$ARTIFACT_PATH"
+            mkdir data
+            tar -xzf data.tar.gz -C data 2>/dev/null || tar -xf data.tar.gz -C data
+          )
+
+          for required_path in \
+            "${VERIFY_DIR}/data/etc/config/nordvpn_easy" \
+            "${VERIFY_DIR}/data/etc/init.d/nordvpn-easy" \
+            "${VERIFY_DIR}/data/usr/libexec/nordvpn-easy/core.sh" \
+            "${VERIFY_DIR}/data/www/luci-static/resources/view/nordvpn-easy/config.js"
+          do
+            if [ ! -f "$required_path" ]; then
+              echo "::error::Built IPK is missing required payload file: ${required_path#${VERIFY_DIR}/data/}"
+              exit 1
+            fi
+          done
+
+          # Verify control metadata
+          (
+            cd "$VERIFY_DIR"
+            mkdir control
+            tar -xzf control.tar.gz -C control 2>/dev/null || tar -xf control.tar.gz -C control
+          )
+
+          if [ ! -f "${VERIFY_DIR}/control/control" ]; then
+            echo "::error::Built IPK is missing control file"
+            exit 1
+          fi
+
+          if [ ! -f "${VERIFY_DIR}/control/postinst" ]; then
+            echo "::error::Built IPK is missing postinst script"
+            exit 1
+          fi
+
+          if [ ! -f "${VERIFY_DIR}/control/conffiles" ]; then
+            echo "::error::Built IPK is missing conffiles"
+            exit 1
+          fi
+
+          # Generate signed package index
+          (
+            cd "$OUTPUT_DIR"
+            "${SDK_DIR}/scripts/ipkg-make-index.sh" "$(basename "$ARTIFACT_PATH")" > Packages
+            gzip -k Packages
+            "$USIGN_BIN" -S -m Packages -s "$USIGN_KEY_PATH"
+          )
+
+          cp "$USIGN_PUBLIC_KEY_PATH" "${OUTPUT_DIR}/key-build.pub"
+
+          ls -lh "$OUTPUT_DIR/"
+
+      - name: Upload OPKG artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-opkg
+          path: dist/
+
+  release:
+    name: Publish GitHub Release
+    needs: [build-apk, build-opkg]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download APK artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-apk
+          path: dist-apk/
+
+      - name: Download OPKG artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-opkg
+          path: dist-opkg/
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -357,7 +711,12 @@ jobs:
           name: '${{ github.ref_name }}'
           generate_release_notes: true
           files: |
-            dist/*.apk
-            dist/*.sha256
-            dist/*.adb
-            dist/*.pem
+            dist-apk/*.apk
+            dist-apk/*.sha256
+            dist-apk/*.adb
+            dist-apk/*.pem
+            dist-opkg/*.ipk
+            dist-opkg/*.ipk.sha256
+            dist-opkg/Packages.gz
+            dist-opkg/Packages.sig
+            dist-opkg/key-build.pub
