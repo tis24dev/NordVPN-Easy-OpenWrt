@@ -19,9 +19,7 @@ env:
   OPENWRT_TOOLCHAIN: 'gcc-14.3.0_musl'
   PACKAGE_NAME: 'luci-app-nordvpn-easy'
   PACKAGE_INDEX_NAME: 'luci-app-nordvpn-easy.adb'
-  PACKAGE_LICENSE: 'Unlicense'
-  PACKAGE_DEPENDS: 'ca-certificates curl jq luci-base kmod-wireguard wireguard-tools'
-  PACKAGE_DESCRIPTION: 'NordVPN Easy LuCI app with bundled backend for OpenWrt'
+  PACKAGE_RELEASE: '1'
   PACKAGE_INDEX_DESCRIPTION: 'NordVPN Easy local APK repository'
 
 jobs:
@@ -58,7 +56,7 @@ jobs:
         run: |
           set -euo pipefail
           RAW="${GITHUB_REF_NAME#v}"
-          echo "PACKAGE_VERSION=${RAW}-r1" >> "$GITHUB_ENV"
+          echo "PACKAGE_VERSION=${RAW}" >> "$GITHUB_ENV"
 
       - name: Cache OpenWrt SDK
         uses: actions/cache@v4
@@ -121,6 +119,20 @@ jobs:
             fi
           done
 
+      - name: Sync package sources into SDK
+        run: |
+          set -euo pipefail
+          SDK_DIR="$(realpath "$SDK_DIR")"
+
+          rm -rf \
+            "${SDK_DIR}/package/luci-app-nordvpn-easy" \
+            "${SDK_DIR}/package/nordvpn-easy"
+
+          cp -R openwrt-packages/luci-app-nordvpn-easy \
+            "${SDK_DIR}/package/luci-app-nordvpn-easy"
+          cp -R openwrt-packages/nordvpn-easy \
+            "${SDK_DIR}/package/nordvpn-easy"
+
       - name: Prepare APK signing key
         env:
           APK_SIGNING_PRIVATE_KEY: ${{ secrets.APK_SIGNING_PRIVATE_KEY }}
@@ -148,105 +160,108 @@ jobs:
           echo "APK_SIGNING_PUBLIC_KEY_PATH=$(realpath "$SIGNING_PUBLIC_KEY_PATH")" >> "$GITHUB_ENV"
           echo "APK_SIGNING_PUBLIC_ASSET_PATH=$(realpath "$PUBLIC_KEY_ASSET_PATH")" >> "$GITHUB_ENV"
 
-      - name: Build APK
+      - name: Build APK from OpenWrt package recipe
         run: |
           set -euo pipefail
           SDK_DIR="$(realpath "$SDK_DIR")"
+          PACKAGE_DIR="${SDK_DIR}/package/${PACKAGE_NAME}"
           APK_BIN="${SDK_DIR}/staging_dir/host/bin/apk"
           MKHASH_BIN="${SDK_DIR}/staging_dir/host/bin/mkhash"
           STAGING_DIR_HOST="${SDK_DIR}/staging_dir/host"
-          STAGE_DIR=".build/pkgroot/${PACKAGE_NAME}"
           OUTPUT_DIR="dist"
-          ARTIFACT_PATH="${OUTPUT_DIR}/${PACKAGE_NAME}-${PACKAGE_VERSION}.apk"
+          PACKAGE_FILENAME="${PACKAGE_NAME}-${PACKAGE_VERSION}-r${PACKAGE_RELEASE}.apk"
+          ARTIFACT_PATH="${OUTPUT_DIR}/${PACKAGE_FILENAME}"
+          MAKE_ARGS=(
+            -C "$PACKAGE_DIR"
+            TOPDIR="$SDK_DIR"
+            BUILD_SUBDIR="package/${PACKAGE_NAME}"
+            BUILD_VARIANT=""
+            ALL_VARIANTS=""
+            CONFIG_LUCI_JSMIN=
+            CONFIG_LUCI_CSSTIDY=
+            CONFIG_LUCI_SRCDIET=
+            NORDVPN_EASY_VERSION="$PACKAGE_VERSION"
+            NORDVPN_EASY_RELEASE="$PACKAGE_RELEASE"
+            NORDVPN_EASY_PACKAGE_URL="https://github.com/${{ github.repository }}"
+            NORDVPN_EASY_PACKAGE_MAINTAINER="${{ github.repository_owner }}"
+          )
 
-          # --- stage dir ---
-          rm -rf "$STAGE_DIR"
-          mkdir -p "$STAGE_DIR"
-
-          cp -R openwrt-packages/luci-app-nordvpn-easy/root/. "$STAGE_DIR/"
-          if [ -d openwrt-packages/luci-app-nordvpn-easy/htdocs ]; then
-            mkdir -p "$STAGE_DIR/www"
-            cp -R openwrt-packages/luci-app-nordvpn-easy/htdocs/. "$STAGE_DIR/www/"
+          if [ ! -d "$PACKAGE_DIR" ]; then
+            echo "::error::Expected package recipe not found at ${PACKAGE_DIR}"
+            exit 1
           fi
 
-          mkdir -p \
-            "$STAGE_DIR/etc/config" \
-            "$STAGE_DIR/etc/init.d" \
-            "$STAGE_DIR/usr/libexec/nordvpn-easy"
+          # Ask OpenWrt where this recipe emits its .apk instead of inferring an
+          # output directory from SDK internals. This stays correct across core
+          # repo vs per-feed repo layouts.
+          ARTIFACT_SOURCE="$(
+            make "${MAKE_ARGS[@]}" -pn \
+              | sed -n "s/^PACK_${PACKAGE_NAME} := //p" \
+              | tail -n 1
+          )"
 
-          cp openwrt-packages/nordvpn-easy/files/etc/config/nordvpn_easy \
-            "$STAGE_DIR/etc/config/nordvpn_easy"
-          cp openwrt-packages/nordvpn-easy/files/etc/init.d/nordvpn-easy \
-            "$STAGE_DIR/etc/init.d/nordvpn-easy"
-          cp openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/core.sh \
-            "$STAGE_DIR/usr/libexec/nordvpn-easy/core.sh"
-          chmod 755 \
-            "$STAGE_DIR/etc/init.d/nordvpn-easy" \
-            "$STAGE_DIR/usr/libexec/nordvpn-easy/core.sh"
-
-          mkdir -p "$STAGE_DIR/lib/apk/packages"
-          printf '/etc/config/nordvpn_easy\n' \
-            > "$STAGE_DIR/lib/apk/packages/${PACKAGE_NAME}.conffiles"
-          printf '/etc/config/nordvpn_easy %s\n' \
-            "$("$MKHASH_BIN" sha256 "$STAGE_DIR/etc/config/nordvpn_easy")" \
-            > "$STAGE_DIR/lib/apk/packages/${PACKAGE_NAME}.conffiles_static"
-
-          # --- post-install / post-upgrade scripts ---
-          SCRIPTS_DIR=".build/scripts/${PACKAGE_NAME}"
-          mkdir -p "$SCRIPTS_DIR"
-
-          cat > "$SCRIPTS_DIR/post-install" <<'EOF'
-          #!/bin/sh
-          if uci -q get nordvpn_easy.main.nordvpn_basic_token >/dev/null 2>&1; then
-            uci -q delete nordvpn_easy.main.nordvpn_basic_token
-            uci -q commit nordvpn_easy
+          if [ -z "$ARTIFACT_SOURCE" ]; then
+            echo "::error::Unable to resolve OpenWrt output path for ${PACKAGE_NAME}"
+            exit 1
           fi
-          rm -f /tmp/luci-indexcache.*
-          rm -rf /tmp/luci-modulecache/
-          RPCD_OUTPUT="$(/etc/init.d/rpcd reload 2>&1)"
-          RPCD_STATUS=$?
-          if [ "$RPCD_STATUS" -ne 0 ]; then
-            printf "%s\n" "nordvpn-easy: rpcd reload failed with exit code $RPCD_STATUS" >&2
-            [ -n "$RPCD_OUTPUT" ] && printf "%s\n" "$RPCD_OUTPUT" >&2
-          fi
-          if [ "$(uci -q get nordvpn_easy.main.enabled 2>/dev/null)" = "1" ] && \
-             [ -n "$(uci -q get nordvpn_easy.main.nordvpn_token 2>/dev/null)" ] && \
-             [ -x /etc/init.d/nordvpn-easy ]; then
-            SERVICE_OUTPUT="$(/etc/init.d/nordvpn-easy start 2>&1)"
-            SERVICE_STATUS=$?
-            if [ "$SERVICE_STATUS" -ne 0 ]; then
-              printf "%s\n" "nordvpn-easy: service start failed with exit code $SERVICE_STATUS" >&2
-              [ -n "$SERVICE_OUTPUT" ] && printf "%s\n" "$SERVICE_OUTPUT" >&2
-            fi
-          fi
-          exit 0
-          EOF
-          cp "$SCRIPTS_DIR/post-install" "$SCRIPTS_DIR/post-upgrade"
-          chmod 755 "$SCRIPTS_DIR/post-install" "$SCRIPTS_DIR/post-upgrade"
 
-          # --- build apk ---
+          rm -f \
+            "${ARTIFACT_SOURCE}" \
+            "${ARTIFACT_PATH}" \
+            "${ARTIFACT_PATH}.sha256" \
+            "${OUTPUT_DIR}/${PACKAGE_INDEX_NAME}"
+
+          # The direct package-recipe path intentionally skips LuCI minification
+          # so release builds do not depend on host tools prepared by the
+          # top-level SDK dependency graph.
+          make "${MAKE_ARGS[@]}" clean prepare compile
+
+          if [ ! -f "$ARTIFACT_SOURCE" ]; then
+            echo "::error::Built package ${PACKAGE_FILENAME} not found at ${ARTIFACT_SOURCE}"
+            exit 1
+          fi
+
           mkdir -p "$OUTPUT_DIR"
+          cp "$ARTIFACT_SOURCE" "$ARTIFACT_PATH"
 
-          STAGING_DIR_HOST="$STAGING_DIR_HOST" "$APK_BIN" mkpkg \
-            --info "name:${PACKAGE_NAME}" \
-            --info "version:${PACKAGE_VERSION}" \
-            --info "description:${PACKAGE_DESCRIPTION}" \
-            --info "arch:noarch" \
-            --info "license:${PACKAGE_LICENSE}" \
-            --info "origin:${PACKAGE_NAME}" \
-            --info "url:https://github.com/${{ github.repository }}" \
-            --info "maintainer:${{ github.repository_owner }}" \
-            --info "depends:${PACKAGE_DEPENDS}" \
-            --files "$STAGE_DIR" \
-            --script "post-install:${SCRIPTS_DIR}/post-install" \
-            --script "post-upgrade:${SCRIPTS_DIR}/post-upgrade" \
-            --output "$ARTIFACT_PATH"
-
-          # --- sha256 + signed package index ---
           printf '%s  %s\n' \
             "$("$MKHASH_BIN" sha256 "$ARTIFACT_PATH")" \
             "$(basename "$ARTIFACT_PATH")" \
             > "${ARTIFACT_PATH}.sha256"
+
+          VERIFY_DIR="$(mktemp -d)"
+          ADB_DUMP="$(mktemp)"
+          trap 'rm -rf "$VERIFY_DIR"; rm -f "$ADB_DUMP"' EXIT
+
+          "$APK_BIN" extract \
+            --allow-untrusted \
+            --destination "$VERIFY_DIR" \
+            "$ARTIFACT_PATH" >/dev/null
+
+          for required_path in \
+            "${VERIFY_DIR}/etc/config/nordvpn_easy" \
+            "${VERIFY_DIR}/etc/init.d/nordvpn-easy" \
+            "${VERIFY_DIR}/usr/libexec/nordvpn-easy/core.sh" \
+            "${VERIFY_DIR}/www/luci-static/resources/view/nordvpn-easy/config.js"
+          do
+            if [ ! -f "$required_path" ]; then
+              echo "::error::Built APK is missing required payload file: ${required_path#${VERIFY_DIR}/}"
+              exit 1
+            fi
+          done
+
+          "$APK_BIN" adbdump "$ARTIFACT_PATH" > "$ADB_DUMP"
+          for required_metadata in \
+            "name: luci-app-nordvpn-easy.conffiles" \
+            "name: luci-app-nordvpn-easy.conffiles_static" \
+            "post-install: |" \
+            "post-upgrade: |"
+          do
+            if ! grep -Fq "$required_metadata" "$ADB_DUMP"; then
+              echo "::error::Built APK is missing required metadata marker: $required_metadata"
+              exit 1
+            fi
+          done
 
           (
             cd "$OUTPUT_DIR"

@@ -1,10 +1,15 @@
 include $(TOPDIR)/rules.mk
 
+NORDVPN_EASY_DEFAULT_VERSION:=0.1.0
+NORDVPN_EASY_DEFAULT_RELEASE:=1
+NORDVPN_EASY_PACKAGE_MAINTAINER?=tis24dev
+NORDVPN_EASY_PACKAGE_URL?=https://github.com/tis24dev/NordVPN-Easy-OpenWrt
+
 PKG_NAME:=nordvpn-easy
-PKG_VERSION:=0.1.0
-PKG_RELEASE:=1
+PKG_VERSION:=$(if $(NORDVPN_EASY_VERSION),$(NORDVPN_EASY_VERSION),$(NORDVPN_EASY_DEFAULT_VERSION))
+PKG_RELEASE:=$(if $(NORDVPN_EASY_RELEASE),$(NORDVPN_EASY_RELEASE),$(NORDVPN_EASY_DEFAULT_RELEASE))
 PKG_LICENSE:=Unlicense
-PKG_MAINTAINER:=Codex
+PKG_MAINTAINER:=$(NORDVPN_EASY_PACKAGE_MAINTAINER)
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)
 
 include $(INCLUDE_DIR)/package.mk
@@ -16,6 +21,8 @@ define Package/nordvpn-easy
   TITLE:=NordVPN Easy backend service for OpenWrt
   DEPENDS:=+ca-certificates +curl +jq +kmod-wireguard +wireguard-tools
   PKGARCH:=all
+  URL:=$(NORDVPN_EASY_PACKAGE_URL)
+  MAINTAINER:=$(NORDVPN_EASY_PACKAGE_MAINTAINER)
 endef
 
 define Package/nordvpn-easy/description
