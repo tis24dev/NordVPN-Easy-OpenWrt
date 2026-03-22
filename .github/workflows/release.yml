@@ -698,7 +698,7 @@ jobs:
             "$USIGN_BIN" -S -m Packages -s "$USIGN_KEY_PATH"
           )
 
-          cp "$USIGN_PUBLIC_KEY_PATH" "${OUTPUT_DIR}/key-build.pub"
+          cp "$USIGN_PUBLIC_KEY_PATH" "${OUTPUT_DIR}/vpn-easy-tis24dev.pub"
 
           ls -lh "$OUTPUT_DIR/"
 
@@ -742,4 +742,4 @@ jobs:
             dist-opkg/*.ipk.sha256
             dist-opkg/Packages.gz
             dist-opkg/Packages.sig
-            dist-opkg/key-build.pub
+            dist-opkg/vpn-easy-tis24dev.pub
