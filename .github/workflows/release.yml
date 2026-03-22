@@ -73,6 +73,7 @@ jobs:
           SDK_BASE_URL="${SDK_URL%/*}"
           WORKDIR=".build/openwrt-sdk"
           CHECKSUMS_PATH="$WORKDIR/SHA256SUMS"
+          CONFIG_BUILDINFO_PATH="$WORKDIR/config.buildinfo"
 
           mkdir -p "$WORKDIR"
 
@@ -85,6 +86,9 @@ jobs:
           if ! curl -fL --retry 3 --output "$CHECKSUMS_PATH" "${SDK_BASE_URL}/SHA256SUMS"; then
             curl -fL --retry 3 --output "$CHECKSUMS_PATH" "${SDK_BASE_URL}/sha256sums"
           fi
+
+          echo "Downloading target config seed..."
+          curl -fL --retry 3 --output "$CONFIG_BUILDINFO_PATH" "${SDK_BASE_URL}/config.buildinfo"
 
           CHECKSUM_LINE="$(grep -E "([ *])${SDK_ARCHIVE}$" "$CHECKSUMS_PATH" || true)"
           if [ -z "$CHECKSUM_LINE" ]; then
@@ -104,6 +108,7 @@ jobs:
           fi
 
           echo "SDK_DIR=$(realpath "$WORKDIR/$SDK_BASENAME")" >> "$GITHUB_ENV"
+          echo "SDK_CONFIG_BUILDINFO_PATH=$(realpath "$CONFIG_BUILDINFO_PATH")" >> "$GITHUB_ENV"
 
       - name: Validate SDK tools
         run: |
@@ -151,7 +156,7 @@ jobs:
 
           (
             cd "$SDK_DIR"
-            ./scripts/feeds install -f ca-certificates curl jq luci-base
+            ./scripts/feeds install -f curl jq luci-base
           )
 
           for path in "${REQUIRED_FEED_FILES[@]}" "${REQUIRED_PACKAGE_LINKS[@]}"; do
@@ -174,6 +179,33 @@ jobs:
             "${SDK_DIR}/package/luci-app-nordvpn-easy"
           cp -R openwrt-packages/nordvpn-easy \
             "${SDK_DIR}/package/nordvpn-easy"
+
+      - name: Initialize OpenWrt SDK configuration
+        run: |
+          set -euo pipefail
+          SDK_DIR="$(realpath "$SDK_DIR")"
+          CONFIG_BUILDINFO_PATH="$(realpath "$SDK_CONFIG_BUILDINFO_PATH")"
+
+          cp "$CONFIG_BUILDINFO_PATH" "${SDK_DIR}/.config"
+          cat >> "${SDK_DIR}/.config" <<EOF
+          CONFIG_PACKAGE_nordvpn-easy=m
+          CONFIG_PACKAGE_${PACKAGE_NAME}=m
+          EOF
+
+          (
+            cd "$SDK_DIR"
+            make defconfig
+          )
+
+          if ! grep -Fq "CONFIG_PACKAGE_${PACKAGE_NAME}=m" "${SDK_DIR}/.config"; then
+            echo "::error::Failed to enable ${PACKAGE_NAME} in ${SDK_DIR}/.config"
+            exit 1
+          fi
+
+          if ! grep -Fq "CONFIG_PACKAGE_nordvpn-easy=m" "${SDK_DIR}/.config"; then
+            echo "::error::Failed to enable nordvpn-easy in ${SDK_DIR}/.config"
+            exit 1
+          fi
 
       - name: Prepare APK signing key
         env:
