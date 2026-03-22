@@ -579,7 +579,6 @@ jobs:
           PACKAGE_DIR="${SDK_DIR}/package/${PACKAGE_NAME}"
           MKHASH_BIN="${SDK_DIR}/staging_dir/host/bin/mkhash"
           OUTPUT_DIR="dist"
-          PACKAGE_FILENAME="${PACKAGE_NAME}_${PACKAGE_VERSION}-${PACKAGE_RELEASE}_all.ipk"
           MAKE_ARGS=(
             -C "$PACKAGE_DIR"
             TOPDIR="$SDK_DIR"
@@ -613,6 +612,7 @@ jobs:
             exit 1
           fi
 
+          PACKAGE_FILENAME="$(basename "$ARTIFACT_SOURCE")"
           mkdir -p "$OUTPUT_DIR"
           cp "$ARTIFACT_SOURCE" "${OUTPUT_DIR}/${PACKAGE_FILENAME}"
           ARTIFACT_PATH="${OUTPUT_DIR}/${PACKAGE_FILENAME}"
@@ -622,15 +622,16 @@ jobs:
             "$(basename "$ARTIFACT_PATH")" \
             > "${ARTIFACT_PATH}.sha256"
 
-          # Verify payload — .ipk is an ar archive containing data.tar.gz
+          # Verify payload — OpenWrt 23.05 .ipk is a gzipped tar containing
+          # debian-binary, control.tar.gz, and data.tar.gz
           VERIFY_DIR="$(mktemp -d)"
           trap 'rm -rf "$VERIFY_DIR"' EXIT
 
           (
             cd "$VERIFY_DIR"
-            ar -x "$GITHUB_WORKSPACE/$ARTIFACT_PATH"
+            tar -xzf "$GITHUB_WORKSPACE/$ARTIFACT_PATH"
             mkdir data
-            tar -xzf data.tar.gz -C data 2>/dev/null || tar -xf data.tar.gz -C data
+            tar -xzf data.tar.gz -C data
           )
 
           for required_path in \
@@ -649,7 +650,7 @@ jobs:
           (
             cd "$VERIFY_DIR"
             mkdir control
-            tar -xzf control.tar.gz -C control 2>/dev/null || tar -xf control.tar.gz -C control
+            tar -xzf control.tar.gz -C control
           )
 
           if [ ! -f "${VERIFY_DIR}/control/control" ]; then
