@@ -40,9 +40,8 @@ legacy root-level direct-install files.
    `https://github.com/tis24dev/NordVPN-Easy-OpenWrt/releases/latest/download/vpn-easy-tis24dev.pem`
 10. Upload the PEM file.
 11. Open `System -> Software`.
-12. Click `Configure apk`.
-13. Add this repository index URL into "/etc/apk/repositories.d/customfeeds.list":
-   `https://github.com/tis24dev/NordVPN-Easy-OpenWrt/releases/latest/download/luci-app-nordvpn-easy.adb`
+12. Click `Configure apk` and go: `/etc/apk/repositories.d/customfeeds.list`
+13. Add: `https://github.com/tis24dev/NordVPN-Easy-OpenWrt/releases/latest/download/luci-app-nordvpn-easy.adb`
 14. Save the `apk` configuration.
 15. Click `Update lists...`.
 16. In the `Filter` box, search for `nordvpn-easy`.
