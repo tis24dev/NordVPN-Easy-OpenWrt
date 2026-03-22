@@ -716,6 +716,9 @@ jobs:
       contents: write
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+    
       - name: Download APK artifacts
         uses: actions/download-artifact@v4
         with:
@@ -727,6 +730,19 @@ jobs:
         with:
           name: dist-opkg
           path: dist-opkg/
+
+      - name: Publish OPKG repo to GitHub Pages
+        run: |
+          set -euo pipefail
+
+          git config --global user.name "github-actions"
+          git config --global user.email "actions@github.com"
+
+          git pull --rebase
+
+          git add dist-opkg
+          git commit -m "Update OPKG repository (latest)" || true
+          git push
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
