@@ -26,7 +26,7 @@ health-check and recovery logic.
 The package tree is the source of truth. The repository no longer depends on
 legacy root-level direct-install files.
 
-## Installation - OpenWRT 24 >=
+## Installation — OpenWrt 24.x and earlier (OPKG)
 
 1. Log in to LuCI.
 2. Open `System -> Software`.
@@ -35,14 +35,14 @@ legacy root-level direct-install files.
 5. Log out from LuCI.
 6. Log in again.
 7. Open `System -> File Browser`.
-8. Open `etc/apk/keys`.
+8. Open `etc/opkg/keys`.
 9. Download:
    `https://github.com/tis24dev/NordVPN-Easy-OpenWrt/releases/latest/download/vpn-easy-tis24dev.pub`
-10. Upload the PEM file.
+10. Upload the PUB file.
 11. Open `System -> Software`.
-12. Click `Configure apk` and go: `/etc/apk/repositories.d/customfeeds.list`
-13. Add: `https://github.com/tis24dev/NordVPN-Easy-OpenWrt/releases/latest/download/luci-app-nordvpn-easy.adb`
-14. Save the `apk` configuration.
+12. Click `Configure opkg` and go: `/etc/opkg/customfeeds.conf`
+13. Add: `src/gz nordvpn-easy https://tis24dev.github.io/NordVPN-Easy-OpenWrt/packages/opkg`
+14. Save the `opkg` configuration.
 15. Click `Update lists...`.
 16. In the `Filter` box, search for `nordvpn-easy`.
 17. Install `luci-app-nordvpn-easy`.
@@ -51,7 +51,7 @@ legacy root-level direct-install files.
 20. Open `Services -> NordVPN Easy`.
 21. Configure the service.
 
-## Installation - OpenWRT 25 =<
+## Installation — OpenWrt 25.x and later (APK)
 
 1. Log in to LuCI.
 2. Open `System -> Software`.
