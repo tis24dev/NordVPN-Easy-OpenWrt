@@ -62,7 +62,7 @@ IP18='209.244.0.3'
 IP19='209.244.0.4'
 
 log () {
-  printf '*** %s ***\n' "$*" >&2
+  [ "${NORDVPN_LOG_STDERR:-1}" != '0' ] && printf '*** %s ***\n' "$*" >&2
   command -v logger >/dev/null 2>&1 && logger -t 'nordvpn-easy' "$*"
 }
 
