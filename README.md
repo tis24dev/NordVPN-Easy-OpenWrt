@@ -33,7 +33,7 @@ health-check and recovery logic.
 8. Open `etc/opkg/keys`.
 9. Download:
    `https://github.com/tis24dev/NordVPN-Easy-OpenWrt/raw/gh-pages/packages/opkg/e45702ccdd8637fd`
-10. Upload the key file.
+10. Upload the key file (without any extension, only name `e45702ccdd8637fd`
 11. Open `System -> Software`.
 12. Click `Configure opkg` and go: `/etc/opkg/customfeeds.conf`
 13. Add: `src/gz nordvpn-easy https://tis24dev.github.io/NordVPN-Easy-OpenWrt/packages/opkg`

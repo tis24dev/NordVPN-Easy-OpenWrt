@@ -354,7 +354,7 @@ const CountrySelectValue = form.ListValue.extend({
 			optional: this.optional,
 			orientation: this.orientation,
 			placeholder: this.placeholder,
-			validate: this.getValidator(section_id),
+			validate: (typeof this.getValidator === 'function') ? this.getValidator(section_id) : null,
 			disabled: (this.readonly != null) ? this.readonly : this.map.readonly
 		});
 
