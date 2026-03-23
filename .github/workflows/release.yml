@@ -572,6 +572,7 @@ jobs:
       - name: Prepare usign signing key
         env:
           USIGN_PRIVATE_KEY: ${{ secrets.USIGN_PRIVATE_KEY }}
+          USIGN_PUBLIC_KEY: ${{ secrets.USIGN_PUBLIC_KEY }}
         run: |
           set -euo pipefail
           SDK_DIR="$(realpath "$SDK_DIR")"
@@ -580,15 +581,21 @@ jobs:
           SIGNING_KEY_PATH="${SIGNING_DIR}/key-build"
           SIGNING_PUBLIC_KEY_PATH="${SIGNING_DIR}/key-build.pub"
 
-          if [ -z "${USIGN_PRIVATE_KEY:-}" ]; then
-            echo "::error::Missing USIGN_PRIVATE_KEY environment secret"
-            exit 1
-          fi
+          [ -n "${USIGN_PRIVATE_KEY:-}" ] || { echo "::error::Missing USIGN_PRIVATE_KEY"; exit 1; }
+          [ -n "${USIGN_PUBLIC_KEY:-}" ] || { echo "::error::Missing USIGN_PUBLIC_KEY"; exit 1; }
 
           mkdir -p "$SIGNING_DIR"
           umask 077
           printf '%s\n' "$USIGN_PRIVATE_KEY" > "$SIGNING_KEY_PATH"
-          "$USIGN_BIN" -F -s "$SIGNING_KEY_PATH" > "$SIGNING_PUBLIC_KEY_PATH"
+          printf '%s\n' "$USIGN_PUBLIC_KEY" > "$SIGNING_PUBLIC_KEY_PATH"
+
+          PRIV_FP="$("$USIGN_BIN" -F -s "$SIGNING_KEY_PATH")"
+          PUB_FP="$("$USIGN_BIN" -F -p "$SIGNING_PUBLIC_KEY_PATH")"
+
+          [ "$PRIV_FP" = "$PUB_FP" ] || {
+            echo "::error::USIGN private/public key mismatch"
+            exit 1
+          }
 
           echo "USIGN_BIN=$(realpath "$USIGN_BIN")" >> "$GITHUB_ENV"
           echo "USIGN_KEY_PATH=$(realpath "$SIGNING_KEY_PATH")" >> "$GITHUB_ENV"
