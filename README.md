@@ -67,11 +67,24 @@ health-check and recovery logic.
 16. In the `Filter` box, search for `nordvpn-easy`.
 17. Install `luci-app-nordvpn-easy`.
 18. Log out from LuCI.
-19. Log in again.
-20. Open `Services -> NordVPN Easy`.
-21. Configure the service.
 
-The configuration guide will be expanded separately.
+## Generate NordVPN Token
+
+1. https://my.nordaccount.com/dashboard/nordvpn/access-tokens/
+2. login
+3. Get Access token
+4. Generate new token
+5. Copy the token
+6. Close webpage
+
+## Config NordVPN
+
+1. Open `Services -> NordVPN Easy`
+2. Paste the token
+3. Select nation/server
+4. Flag enable
+5. Save&Apply
+6. Wait green led
 
 ## Runtime model
 
