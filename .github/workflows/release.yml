@@ -572,7 +572,7 @@ jobs:
       - name: Prepare usign signing key
         env:
           USIGN_PRIVATE_KEY: ${{ secrets.USIGN_PRIVATE_KEY }}
-          USIGN_PUBLIC_KEY: ${{ secrets.USIGN_PUBLIC_KEY }}
+          USIGN_PUBLIC_KEY: ${{ secrets.USIGN_PUBBLIC_KEY }}
         run: |
           set -euo pipefail
           SDK_DIR="$(realpath "$SDK_DIR")"
