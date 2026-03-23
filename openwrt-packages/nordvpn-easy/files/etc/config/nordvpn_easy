@@ -1,5 +1,5 @@
 config nordvpn_easy 'main'
-	option enabled '1'
+	option enabled '0'
 	option nordvpn_token ''
 	option wan_if 'wan'
 	option vpn_if 'wg0'

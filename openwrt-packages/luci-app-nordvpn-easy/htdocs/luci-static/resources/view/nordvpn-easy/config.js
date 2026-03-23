@@ -511,7 +511,7 @@ return view.extend({
 		s.addremove = false;
 
 		o = s.option(form.Flag, 'enabled', _('Enabled'));
-		o.default = '1';
+		o.default = '0';
 		o.rmempty = false;
 
 		o = s.option(form.DummyValue, '_vpn_status', _('VPN Status'));
