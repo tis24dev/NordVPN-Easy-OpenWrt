@@ -32,7 +32,7 @@ health-check and recovery logic.
 7. Open `System -> File Browser`.
 8. Open `etc/opkg/keys`.
 9. Download:
-   `https://tis24dev.github.io/NordVPN-Easy-OpenWrt/packages/opkg/<KEY_FINGERPRINT>`
+   `https://github.com/tis24dev/NordVPN-Easy-OpenWrt/raw/gh-pages/packages/opkg/e45702ccdd8637fd`
 10. Upload the key file.
 11. Open `System -> Software`.
 12. Click `Configure opkg` and go: `/etc/opkg/customfeeds.conf`
