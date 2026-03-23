@@ -700,6 +700,10 @@ jobs:
 
           cp "$USIGN_PUBLIC_KEY_PATH" "${OUTPUT_DIR}/vpn-easy-tis24dev.pub"
 
+          # Create a copy named with the key fingerprint for direct use in /etc/opkg/keys/
+          KEY_FINGERPRINT=$("$USIGN_BIN" -F -p "$USIGN_PUBLIC_KEY_PATH")
+          cp "$USIGN_PUBLIC_KEY_PATH" "${OUTPUT_DIR}/${KEY_FINGERPRINT}"
+
           ls -lh "$OUTPUT_DIR/"
 
       - name: Upload OPKG artifacts
@@ -766,6 +770,14 @@ jobs:
              dist-opkg/Packages.sig \
              dist-opkg/vpn-easy-tis24dev.pub \
              "${DEPLOY_DIR}/packages/opkg/"
+
+          # Copy fingerprint-named key for direct use in /etc/opkg/keys/
+          for f in dist-opkg/*; do
+            case "$(basename "$f")" in
+              *.ipk|*.sha256|Packages|Packages.gz|Packages.sig|*.pub) ;;
+              *) cp "$f" "${DEPLOY_DIR}/packages/opkg/" ;;
+            esac
+          done
 
           git -C "$DEPLOY_DIR" add packages/
           git -C "$DEPLOY_DIR" commit \
