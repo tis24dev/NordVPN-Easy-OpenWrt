@@ -1,0 +1,34 @@
+{
+	"luci-app-nordvpn-easy": {
+		"description": "Grant access to NordVPN Easy configuration and actions",
+		"read": {
+			"uci": [
+				"nordvpn_easy"
+			],
+			"file": {
+				"/etc/cron.d/nordvpn-easy": [
+					"read"
+				],
+				"/etc/hotplug.d/iface/95-nordvpn-easy": [
+					"read"
+				],
+				"/tmp/nordvpn-easy-countries.json": [
+					"read"
+				],
+				"/tmp/nordvpn-easy-servers.json": [
+					"read"
+				]
+			}
+		},
+		"write": {
+			"uci": [
+				"nordvpn_easy"
+			],
+			"file": {
+				"/etc/init.d/nordvpn-easy": [
+					"exec"
+				]
+			}
+		}
+	}
+}

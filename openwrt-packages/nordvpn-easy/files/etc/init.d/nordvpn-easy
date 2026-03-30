@@ -1,0 +1,563 @@
+#!/bin/sh /etc/rc.common
+
+START=95
+STOP=10
+
+. /lib/functions.sh
+
+SERVICE_NAME='nordvpn-easy'
+UCI_CONFIG='nordvpn_easy'
+UCI_SECTION='main'
+RUNTIME_CONFIG='/var/etc/nordvpn-easy.conf'
+CORE_SCRIPT='/usr/libexec/nordvpn-easy/core.sh'
+CRON_PATH='/etc/cron.d/nordvpn-easy'
+HOTPLUG_PATH='/etc/hotplug.d/iface/95-nordvpn-easy'
+LOCK_DIR='/tmp/nordvpn-easy.lock'
+EXTRA_COMMANDS='setup check rotate refresh_countries refresh_countries_force server_catalog public_ip public_country operation_status vpn_status status_json diagnostics_log install_hooks remove_hooks disable_runtime render_runtime_config'
+EXTRA_HELP='  setup                 Run setup immediately
+  check                 Run one health check immediately
+  rotate                Force server rotation immediately
+  refresh_countries     Refresh the cached NordVPN country list
+  refresh_countries_force Force-refresh the cached NordVPN country list
+  server_catalog [country] [force] Print the cached or refreshed NordVPN server catalog JSON
+  public_ip             Print the current public IP
+  public_country        Print the detected country code for the current public IP
+  operation_status      Print whether a NordVPN Easy operation is running
+  vpn_status            Print VPN runtime status (active/activating/inactive)
+  status_json           Print local VPN runtime status as JSON
+  diagnostics_log       Print filtered NordVPN Easy log output
+  install_hooks         Install cron and hotplug hooks
+  remove_hooks          Remove cron and hotplug hooks
+  disable_runtime       Disable the VPN interface and remove hooks
+  render_runtime_config Render the temporary shell config'
+
+cfg_enabled='0'
+cfg_nordvpn_token=''
+cfg_wan_if='wan'
+cfg_vpn_if='wg0'
+cfg_vpn_country=''
+cfg_server_selection_mode='auto'
+cfg_preferred_server_hostname=''
+cfg_preferred_server_station=''
+cfg_server_cache_enabled='1'
+cfg_server_cache_ttl='86400'
+cfg_vpn_port='51820'
+cfg_vpn_addr='10.5.0.2/32'
+cfg_vpn_dns1='103.86.99.99'
+cfg_vpn_dns2='103.86.96.96'
+cfg_check_cron_schedule='* * * * *'
+cfg_enable_hotplug='1'
+cfg_failure_retry_delay='6'
+cfg_server_rotate_threshold='5'
+cfg_interface_restart_threshold='10'
+cfg_max_interface_restarts='3'
+cfg_interface_restart_delay='10'
+cfg_post_restart_delay='60'
+
+cleanup_legacy_config() {
+	if uci -q get "${UCI_CONFIG}.${UCI_SECTION}.nordvpn_basic_token" >/dev/null 2>&1; then
+		uci -q delete "${UCI_CONFIG}.${UCI_SECTION}.nordvpn_basic_token"
+		uci -q commit "$UCI_CONFIG"
+	fi
+}
+
+load_service_config() {
+	cleanup_legacy_config
+	config_load "$UCI_CONFIG"
+	config_get_bool cfg_enabled "$UCI_SECTION" enabled 0
+	config_get cfg_nordvpn_token "$UCI_SECTION" nordvpn_token ''
+	config_get cfg_wan_if "$UCI_SECTION" wan_if 'wan'
+	config_get cfg_vpn_if "$UCI_SECTION" vpn_if 'wg0'
+	config_get cfg_vpn_country "$UCI_SECTION" vpn_country ''
+	config_get cfg_server_selection_mode "$UCI_SECTION" server_selection_mode 'auto'
+	config_get cfg_preferred_server_hostname "$UCI_SECTION" preferred_server_hostname ''
+	config_get cfg_preferred_server_station "$UCI_SECTION" preferred_server_station ''
+	config_get cfg_server_cache_enabled "$UCI_SECTION" server_cache_enabled '1'
+	config_get cfg_server_cache_ttl "$UCI_SECTION" server_cache_ttl '86400'
+	config_get cfg_vpn_port "$UCI_SECTION" vpn_port '51820'
+	config_get cfg_vpn_addr "$UCI_SECTION" vpn_addr '10.5.0.2/32'
+	config_get cfg_vpn_dns1 "$UCI_SECTION" vpn_dns1 '103.86.99.99'
+	config_get cfg_vpn_dns2 "$UCI_SECTION" vpn_dns2 '103.86.96.96'
+	config_get cfg_check_cron_schedule "$UCI_SECTION" check_cron_schedule '* * * * *'
+	config_get_bool cfg_enable_hotplug "$UCI_SECTION" enable_hotplug 1
+	config_get cfg_failure_retry_delay "$UCI_SECTION" failure_retry_delay '6'
+	config_get cfg_server_rotate_threshold "$UCI_SECTION" server_rotate_threshold '5'
+	config_get cfg_interface_restart_threshold "$UCI_SECTION" interface_restart_threshold '10'
+	config_get cfg_max_interface_restarts "$UCI_SECTION" max_interface_restarts '3'
+	config_get cfg_interface_restart_delay "$UCI_SECTION" interface_restart_delay '10'
+	config_get cfg_post_restart_delay "$UCI_SECTION" post_restart_delay '60'
+}
+
+shell_quote() {
+	printf "%s" "$1" | sed "s/'/'\\\\''/g"
+}
+
+write_runtime_option() {
+	local key="$1"
+	local value="$2"
+
+	printf "%s='%s'\n" "$key" "$(shell_quote "$value")" >> "$RUNTIME_CONFIG"
+}
+
+render_runtime_config() {
+	load_service_config
+	umask 077
+	mkdir -p /var/etc
+	: > "$RUNTIME_CONFIG" || return 1
+	log_service_info "rendering runtime config to $RUNTIME_CONFIG (enabled=$cfg_enabled, wan_if=$cfg_wan_if, vpn_if=$cfg_vpn_if, vpn_country=${cfg_vpn_country:-automatic})"
+
+	write_runtime_option NORDVPN_TOKEN "$cfg_nordvpn_token"
+	write_runtime_option WAN_IF "$cfg_wan_if"
+	write_runtime_option VPN_IF "$cfg_vpn_if"
+	write_runtime_option VPN_COUNTRY "$cfg_vpn_country"
+	write_runtime_option SERVER_SELECTION_MODE "$cfg_server_selection_mode"
+	write_runtime_option PREFERRED_SERVER_HOSTNAME "$cfg_preferred_server_hostname"
+	write_runtime_option PREFERRED_SERVER_STATION "$cfg_preferred_server_station"
+	write_runtime_option SERVER_CACHE_ENABLED "$cfg_server_cache_enabled"
+	write_runtime_option SERVER_CACHE_TTL "$cfg_server_cache_ttl"
+	write_runtime_option VPN_PORT "$cfg_vpn_port"
+	write_runtime_option VPN_ADDR "$cfg_vpn_addr"
+	write_runtime_option VPN_DNS1 "$cfg_vpn_dns1"
+	write_runtime_option VPN_DNS2 "$cfg_vpn_dns2"
+	write_runtime_option CHECK_CRON_SCHEDULE "$cfg_check_cron_schedule"
+	write_runtime_option ENABLE_HOTPLUG "$cfg_enable_hotplug"
+	write_runtime_option FAILURE_RETRY_DELAY "$cfg_failure_retry_delay"
+	write_runtime_option SERVER_ROTATE_THRESHOLD "$cfg_server_rotate_threshold"
+	write_runtime_option INTERFACE_RESTART_THRESHOLD "$cfg_interface_restart_threshold"
+	write_runtime_option MAX_INTERFACE_RESTARTS "$cfg_max_interface_restarts"
+	write_runtime_option INTERFACE_RESTART_DELAY "$cfg_interface_restart_delay"
+	write_runtime_option POST_RESTART_DELAY "$cfg_post_restart_delay"
+}
+
+run_core_action() {
+	local action="$1"
+	shift
+
+	[ -x "$CORE_SCRIPT" ] || {
+		echo "Missing executable core script: $CORE_SCRIPT" >&2
+		return 1
+	}
+
+	log_service_info "running core action: $action"
+	render_runtime_config || return 1
+	"$CORE_SCRIPT" "$action" "$RUNTIME_CONFIG" "$@"
+}
+
+restart_cron_service() {
+	/etc/init.d/cron restart >/dev/null 2>&1 ||
+	/etc/init.d/cron reload >/dev/null 2>&1 ||
+	true
+}
+
+log_service_error() {
+	local message="$1"
+
+	logger -t "$SERVICE_NAME" "$message"
+	echo "$SERVICE_NAME: $message" >&2
+}
+
+log_service_info() {
+	local message="$1"
+
+	logger -t "$SERVICE_NAME" "$message"
+}
+
+json_escape() {
+	printf '%s' "$1" | sed ':a;N;$!ba;s/\\/\\\\/g;s/"/\\"/g;s/\n/\\n/g;s/\r/\\r/g'
+}
+
+get_operation_status_value() {
+	local lock_pid_file="${LOCK_DIR}/pid"
+	local lock_action_file="${LOCK_DIR}/action"
+	local lock_pid lock_action
+
+	if [ ! -f "$lock_pid_file" ]; then
+		printf '%s\n' 'idle'
+		return 0
+	fi
+
+	lock_pid="$(cat "$lock_pid_file" 2>/dev/null)"
+
+	case "$lock_pid" in
+		''|*[!0-9]*)
+			printf '%s\n' 'idle'
+			return 0
+			;;
+	esac
+
+	if ! kill -0 "$lock_pid" 2>/dev/null; then
+		printf '%s\n' 'idle'
+		return 0
+	fi
+
+	lock_action="$(cat "$lock_action_file" 2>/dev/null)"
+
+	if [ -n "$lock_action" ]; then
+		printf 'busy:%s\n' "$lock_action"
+	else
+		printf '%s\n' 'busy'
+	fi
+}
+
+vpn_status_value() {
+	load_service_config
+
+	if [ "$cfg_enabled" -ne 1 ]; then
+		printf '%s\n' 'inactive'
+		return 0
+	fi
+
+	if [ "$(uci -q get "network.${cfg_vpn_if}.proto" 2>/dev/null)" != 'wireguard' ]; then
+		printf '%s\n' 'inactive'
+		return 0
+	fi
+
+	if [ "$(uci -q get "network.${cfg_vpn_if}.disabled" 2>/dev/null)" = '1' ]; then
+		printf '%s\n' 'inactive'
+		return 0
+	fi
+
+	if command -v ifstatus >/dev/null 2>&1; then
+		if ifstatus "$cfg_vpn_if" 2>/dev/null | jq -er '.up == true' >/dev/null 2>&1; then
+			printf '%s\n' 'active'
+			return 0
+		fi
+
+		printf '%s\n' 'inactive'
+		return 0
+	fi
+
+	if ip link show dev "$cfg_vpn_if" >/dev/null 2>&1; then
+		printf '%s\n' 'active'
+		return 0
+	fi
+
+	printf '%s\n' 'inactive'
+}
+
+peer_section_name() {
+	if uci -q get "network.${cfg_vpn_if}server.endpoint_host" >/dev/null 2>&1; then
+		printf '%s\n' "${cfg_vpn_if}server"
+		return 0
+	fi
+
+	uci show network 2>/dev/null | grep "^network\..*=wireguard_${cfg_vpn_if}$" | head -1 | cut -d. -f2 | cut -d= -f1
+}
+
+handshake_indicates_connection() {
+	local handshake="$1"
+	local hours
+
+	case "$handshake" in
+		''|Never)
+			return 1
+			;;
+		*second*|*minute*)
+			return 0
+			;;
+	esac
+
+	hours="$(printf '%s' "$handshake" | sed -n 's/^\([0-9][0-9]*\) hour.*/\1/p')"
+	[ -n "$hours" ] && [ "$hours" -le 2 ]
+}
+
+validate_cron_schedule() {
+	local schedule="$1"
+
+	printf '%s' "$schedule" | awk '
+		BEGIN { valid = 1 }
+		NR > 1 { valid = 0 }
+		{
+			if ($0 !~ /^[0-9*\/,[:space:]-]+$/)
+				valid = 0
+			if (NF != 5)
+				valid = 0
+			for (i = 1; i <= NF; i++) {
+				if ($i !~ /^[0-9*\/,-]+$/)
+					valid = 0
+			}
+		}
+		END { exit(valid ? 0 : 1) }
+	'
+}
+
+install_cron_hook() {
+	load_service_config
+	mkdir -p /etc/cron.d
+
+	if [ "$cfg_enabled" -eq 1 ] && [ -n "$cfg_check_cron_schedule" ]; then
+		if ! validate_cron_schedule "$cfg_check_cron_schedule"; then
+			rm -f "$CRON_PATH"
+			log_service_error "invalid cron schedule '$cfg_check_cron_schedule'; refusing to write $CRON_PATH"
+			return 1
+		fi
+
+		cat > "$CRON_PATH" <<EOF
+$cfg_check_cron_schedule /etc/init.d/$SERVICE_NAME check 2>&1 | logger -t $SERVICE_NAME-cron
+EOF
+		log_service_info "installed cron hook at $CRON_PATH with schedule '$cfg_check_cron_schedule'"
+	else
+		rm -f "$CRON_PATH"
+		log_service_info "removed cron hook from $CRON_PATH"
+	fi
+
+	restart_cron_service
+}
+
+install_hotplug_hook() {
+	load_service_config
+	mkdir -p /etc/hotplug.d/iface
+
+	if [ "$cfg_enabled" -ne 1 ] || [ "$cfg_enable_hotplug" -ne 1 ]; then
+		rm -f "$HOTPLUG_PATH"
+		log_service_info "removed hotplug hook from $HOTPLUG_PATH"
+		return 0
+	fi
+
+	cat > "$HOTPLUG_PATH" <<EOF
+#!/bin/sh
+WAN_IF='$(shell_quote "$cfg_wan_if")'
+VPN_IF='$(shell_quote "$cfg_vpn_if")'
+
+case "\$ACTION" in
+	ifup|ifupdate|ifdown) ;;
+	*) exit 0 ;;
+esac
+
+[ "\$INTERFACE" = "\$WAN_IF" ] || [ "\$INTERFACE" = "\$VPN_IF" ] || exit 0
+
+/etc/init.d/$SERVICE_NAME check 2>&1 | logger -t $SERVICE_NAME-hotplug
+EOF
+
+	chmod 755 "$HOTPLUG_PATH"
+	log_service_info "installed hotplug hook at $HOTPLUG_PATH for wan_if=$cfg_wan_if vpn_if=$cfg_vpn_if"
+}
+
+install_hooks() {
+	log_service_info 'installing runtime hooks'
+	install_cron_hook || return 1
+	install_hotplug_hook || return 1
+	log_service_info 'runtime hooks installed'
+}
+
+remove_hooks() {
+	log_service_info 'removing runtime hooks'
+	rm -f "$CRON_PATH" "$HOTPLUG_PATH"
+	restart_cron_service
+	log_service_info 'runtime hooks removed'
+}
+
+disable_vpn_runtime() {
+	load_service_config
+	log_service_info "disabling VPN runtime for interface $cfg_vpn_if"
+	remove_hooks
+
+	if [ "$(uci -q get "network.${cfg_vpn_if}.proto" 2>/dev/null)" != 'wireguard' ]; then
+		log_service_info "no WireGuard interface named $cfg_vpn_if is currently configured"
+		return 0
+	fi
+
+	log_service_info "WireGuard interface $cfg_vpn_if will be marked disabled; the UCI configuration is kept and the interface is not removed"
+	uci set "network.${cfg_vpn_if}.disabled"='1'
+	uci commit network || {
+		log_service_error "failed to commit network while disabling ${cfg_vpn_if}"
+		return 1
+	}
+	log_service_info "marked network.${cfg_vpn_if}.disabled=1"
+
+	ifdown "$cfg_vpn_if" >/dev/null 2>&1 || true
+	log_service_info "requested ifdown for $cfg_vpn_if"
+
+	/etc/init.d/network reload >/dev/null 2>&1 ||
+	/etc/init.d/network restart >/dev/null 2>&1 || {
+		log_service_error "failed to reload network while disabling ${cfg_vpn_if}"
+		return 1
+	}
+	log_service_info "VPN runtime disabled for interface $cfg_vpn_if; it may now appear as not present until re-enabled"
+}
+
+start() {
+	load_service_config
+	log_service_info 'service start requested'
+
+	if [ "$cfg_enabled" -ne 1 ]; then
+		disable_vpn_runtime || return 1
+		echo "$SERVICE_NAME is disabled in UCI; hooks removed and VPN interface disabled."
+		return 0
+	fi
+
+	install_hooks || return 1
+
+	if ! run_core_action check; then
+		echo "Initial check failed. Hooks are installed; future cron/hotplug runs will retry."
+	fi
+}
+
+stop() {
+	log_service_info 'service stop requested'
+	remove_hooks
+}
+
+restart() {
+	log_service_info 'service restart requested'
+	stop
+	start
+}
+
+reload() {
+	log_service_info 'service reload requested'
+	restart
+}
+
+setup() {
+	log_service_info 'manual setup requested'
+	run_core_action setup
+}
+
+check() {
+	log_service_info 'manual health-check requested'
+	run_core_action check
+}
+
+rotate() {
+	log_service_info 'manual rotate requested'
+	run_core_action rotate
+}
+
+refresh_countries() {
+	log_service_info 'country cache refresh requested'
+	run_core_action refresh_countries
+}
+
+refresh_countries_force() {
+	log_service_info 'forced country cache refresh requested'
+	run_core_action refresh_countries_force
+}
+
+server_catalog() {
+	local country_query="${1:-}"
+	local force_refresh="${2:-0}"
+
+	log_service_info "server catalog requested (country=${country_query:-configured}, force=${force_refresh})"
+	run_core_action server_catalog "$country_query" "$force_refresh"
+}
+
+public_ip() {
+	run_core_action public_ip
+}
+
+public_country() {
+	run_core_action public_country
+}
+
+operation_status() {
+	get_operation_status_value
+}
+
+vpn_status() {
+	vpn_status_value
+}
+
+status_json() {
+	local peer_section
+	local wg_status
+	local vpn_state
+	local operation
+	local endpoint='N/A'
+	local latest_handshake='Never'
+	local transfer_rx='0 B'
+	local transfer_tx='0 B'
+	local connected='false'
+	local current_hostname=''
+	local current_station=''
+	local current_city=''
+	local current_country=''
+	local current_load=''
+	local preferred_hostname=''
+	local preferred_station=''
+
+	load_service_config
+	peer_section="$(peer_section_name)"
+	vpn_state="$(vpn_status_value)"
+	operation="$(get_operation_status_value)"
+
+	if [ -n "$peer_section" ]; then
+		current_hostname="$(uci -q get "network.${peer_section}.nordvpn_hostname" 2>/dev/null)"
+		current_station="$(uci -q get "network.${peer_section}.nordvpn_station" 2>/dev/null)"
+		current_city="$(uci -q get "network.${peer_section}.nordvpn_city" 2>/dev/null)"
+		current_country="$(uci -q get "network.${peer_section}.nordvpn_country_code" 2>/dev/null)"
+		current_load="$(uci -q get "network.${peer_section}.nordvpn_load" 2>/dev/null)"
+
+		[ -n "$current_hostname" ] || current_hostname="$(uci -q get "network.${peer_section}.description" 2>/dev/null)"
+		[ -n "$current_station" ] || current_station="$(uci -q get "network.${peer_section}.endpoint_host" 2>/dev/null)"
+	fi
+
+	preferred_hostname="$cfg_preferred_server_hostname"
+	preferred_station="$cfg_preferred_server_station"
+
+	wg_status="$(wg show "$cfg_vpn_if" 2>/dev/null)"
+
+	if [ -n "$wg_status" ]; then
+		endpoint="$(printf '%s\n' "$wg_status" | grep 'endpoint:' | awk '{print $2}' | head -1)"
+		latest_handshake="$(printf '%s\n' "$wg_status" | grep 'latest handshake:' | sed 's/.*latest handshake: //' | head -1)"
+		transfer_rx="$(printf '%s\n' "$wg_status" | grep 'transfer:' | awk '{print $2, $3}' | head -1)"
+		transfer_tx="$(printf '%s\n' "$wg_status" | grep 'transfer:' | awk '{print $5, $6}' | head -1)"
+
+		[ -n "$endpoint" ] || endpoint='N/A'
+		[ -n "$latest_handshake" ] || latest_handshake='Never'
+		[ -n "$transfer_rx" ] || transfer_rx='0 B'
+		[ -n "$transfer_tx" ] || transfer_tx='0 B'
+
+		if handshake_indicates_connection "$latest_handshake"; then
+			connected='true'
+		fi
+	fi
+
+	cat <<EOF
+{
+  "enabled": $([ "$cfg_enabled" -eq 1 ] && printf '%s' 'true' || printf '%s' 'false'),
+  "server_selection_mode": "$(json_escape "$cfg_server_selection_mode")",
+  "selected_country": "$(json_escape "$cfg_vpn_country")",
+  "interface": "$(json_escape "$cfg_vpn_if")",
+  "vpn_status": "$(json_escape "$vpn_state")",
+  "operation_status": "$(json_escape "$operation")",
+  "connected": $connected,
+  "endpoint": "$(json_escape "$endpoint")",
+  "latest_handshake": "$(json_escape "$latest_handshake")",
+  "transfer_rx": "$(json_escape "$transfer_rx")",
+  "transfer_tx": "$(json_escape "$transfer_tx")",
+  "current_server_hostname": "$(json_escape "$current_hostname")",
+  "current_server_station": "$(json_escape "$current_station")",
+  "current_server_city": "$(json_escape "$current_city")",
+  "current_server_country": "$(json_escape "$current_country")",
+  "current_server_load": "$(json_escape "$current_load")",
+  "preferred_server_hostname": "$(json_escape "$preferred_hostname")",
+  "preferred_server_station": "$(json_escape "$preferred_station")"
+}
+EOF
+}
+
+diagnostics_log() {
+	local tmp_log
+
+	log_service_info 'diagnostics log export requested'
+	command -v logread >/dev/null 2>&1 || {
+		log_service_error "logread command not found"
+		return 1
+	}
+
+	tmp_log="/tmp/${SERVICE_NAME}.diagnostics.$$"
+
+	logread -e "$SERVICE_NAME" > "$tmp_log" || {
+		rm -f "$tmp_log"
+		return 1
+	}
+
+	tail -n 500 "$tmp_log"
+	rm -f "$tmp_log"
+}
+
+disable_runtime() {
+	log_service_info 'manual disable_runtime requested'
+	disable_vpn_runtime
+}
