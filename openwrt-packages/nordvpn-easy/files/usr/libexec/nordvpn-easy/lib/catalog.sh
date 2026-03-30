@@ -53,7 +53,12 @@ nordvpn_easy_recommendation_candidates_tsv() {
 	jq -r '.[] | [
 		.hostname,
 		.station,
-		([.technologies[]?.metadata[]? | select(.name=="public_key").value][0]),
+		([.technologies[]?
+			| select(.identifier == "wireguard_udp")
+			| .metadata[]?
+			| select(.name == "public_key")
+			| (.value // "")
+		][0] // ""),
 		(.locations[0].country.code // ""),
 		(.locations[0].country.city.name // ""),
 		((.load // 0) | tostring)

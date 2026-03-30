@@ -10,6 +10,7 @@ function formatActionsLabel(actions) {
 
 function formatServerLabel(server) {
 	const parts = [];
+	const numericLoad = Number(server.load);
 	let label;
 
 	if (server.country_name)
@@ -25,8 +26,8 @@ function formatServerLabel(server) {
 
 	label = parts.join(' - ');
 
-	if (server.load !== '')
-		label += (label ? ' - ' : '') + _('Load %s%%').format(server.load);
+	if (server.load != null && server.load !== '' && Number.isFinite(numericLoad))
+		label += (label ? ' - ' : '') + _('Load %s%%').format(numericLoad);
 
 	return label || server.station;
 }
@@ -44,23 +45,35 @@ function pluralize(value, singular, plural) {
 
 function formatRelativeAge(seconds) {
 	let remaining = Math.max(0, Number(seconds || 0));
-	const days = Math.floor(remaining / 86400);
-	const hours = Math.floor((remaining % 86400) / 3600);
-	const minutes = Math.floor((remaining % 3600) / 60);
+	const parts = [];
+	let value;
 
 	if (remaining < 5)
 		return _('just now');
 
-	if (days > 0)
-		return pluralize(days, _('day'), _('days'));
+	value = Math.floor(remaining / 86400);
+	if (value > 0) {
+		parts.push(pluralize(value, _('day'), _('days')));
+		remaining -= value * 86400;
+	}
 
-	if (hours > 0)
-		return pluralize(hours, _('hour'), _('hours'));
+	value = Math.floor(remaining / 3600);
+	if (value > 0) {
+		parts.push(pluralize(value, _('hour'), _('hours')));
+		remaining -= value * 3600;
+	}
 
-	if (minutes > 0)
-		return pluralize(minutes, _('minute'), _('minutes'));
+	value = Math.floor(remaining / 60);
+	if (value > 0) {
+		parts.push(pluralize(value, _('minute'), _('minutes')));
+		remaining -= value * 60;
+	}
 
-	return pluralize(Math.floor(remaining), _('second'), _('seconds'));
+	value = Math.floor(remaining);
+	if (value > 0 || !parts.length)
+		parts.push(pluralize(value, _('second'), _('seconds')));
+
+	return _('%s ago').format(parts.slice(0, 2).join(', '));
 }
 
 function formatRelativeTimestamp(epochSeconds) {
@@ -69,7 +82,7 @@ function formatRelativeTimestamp(epochSeconds) {
 	if (!ts)
 		return '';
 
-	return _('%s ago').format(formatRelativeAge((Date.now() / 1000) - ts));
+	return formatRelativeAge((Date.now() / 1000) - ts);
 }
 
 return {

@@ -109,7 +109,7 @@ write_runtime_option() {
 render_runtime_config() {
 	local option env_name value
 
-	load_service_config
+	load_service_config || return 1
 	umask 077
 	mkdir -p /var/etc
 	: > "$RUNTIME_CONFIG" || return 1

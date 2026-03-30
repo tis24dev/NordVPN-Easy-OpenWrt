@@ -75,11 +75,16 @@ const CountrySelectValue = form.ListValue.extend({
 
 return view.extend({
 	load: function() {
-		return Promise.all([
-			L.resolveDefault(service.execService('refresh_countries'), null),
-			L.resolveDefault(fs.read(COUNTRIES_CACHE_PATH), '[]'),
-			uci.load('nordvpn_easy')
-		]).then(function(results) {
+		const uciLoad = uci.load('nordvpn_easy');
+
+		return L.resolveDefault(service.execService('refresh_countries'), null).then(function() {
+			return L.resolveDefault(fs.read(COUNTRIES_CACHE_PATH), '[]');
+		}).then(function(countriesRaw) {
+			return Promise.all([
+				Promise.resolve(countriesRaw),
+				uciLoad
+			]);
+		}).then(function(results) {
 			const configuredCountry = managerData.normalizeCountryCode(uci.get('nordvpn_easy', 'main', 'vpn_country') || '');
 			const statusPromise = L.resolveDefault(service.execService('status_json'), null);
 			const catalogPromise = configuredCountry

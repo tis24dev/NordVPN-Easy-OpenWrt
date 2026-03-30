@@ -28,11 +28,7 @@ nordvpn_easy_migrate_service_config() {
 		normalized_value="$(nordvpn_easy_normalize_value "$option" "$old_value")"
 
 		if ! uci -q get "${section_ref}.${option}" >/dev/null 2>&1 || [ "$normalized_value" != "$old_value" ]; then
-			if [ -z "$normalized_value" ] && [ -z "$default_value" ]; then
-				uci set "${section_ref}.${option}="
-			else
-				uci set "${section_ref}.${option}=$normalized_value"
-			fi
+			uci set "${section_ref}.${option}=$normalized_value"
 			changed=1
 		fi
 	done

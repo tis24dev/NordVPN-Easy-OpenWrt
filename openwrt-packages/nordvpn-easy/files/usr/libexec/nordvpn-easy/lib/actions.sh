@@ -156,6 +156,7 @@ nordvpn_easy_sync_server_selection() {
 nordvpn_easy_change_vpn_server() {
 	CURRENT_SERVER=$(current_server_station)
 	SERVER_CANDIDATES_FILE="/tmp/nordvpn.candidates.$$"
+	commit_failed=0
 	server_changed=0
 
 	log "Starting VPN server rotation from current endpoint ${CURRENT_SERVER:-none}"
@@ -175,7 +176,8 @@ nordvpn_easy_change_vpn_server() {
 		set_vpn_server_in_uci "$HOST_NAME" "$SERVER_IP" "$PUBLIC_KEY" "$COUNTRY_CODE" "$CITY_NAME" "$SERVER_LOAD" || continue
 		uci commit network || {
 			log 'ERROR: COULD NOT COMMIT NETWORK CONFIGURATION'
-			continue
+			commit_failed=1
+			break
 		}
 
 		log "VPN server changed to $HOST_NAME ( $SERVER_IP )"
@@ -188,6 +190,10 @@ nordvpn_easy_change_vpn_server() {
 
 	rm -f "$SERVER_CANDIDATES_FILE"
 
+	if [ "$commit_failed" -eq 1 ]; then
+		return 1
+	fi
+
 	if [ "$server_changed" -eq 1 ]; then
 		return 0
 	fi
@@ -199,6 +205,7 @@ nordvpn_easy_change_vpn_server() {
 nordvpn_easy_change_manual_server() {
 	CURRENT_SERVER=$(current_server_station)
 	SERVER_CANDIDATES_FILE="/tmp/nordvpn-manual.candidates.$$"
+	commit_failed=0
 	server_changed=0
 
 	require_manual_server_preference || return 1
@@ -221,7 +228,8 @@ nordvpn_easy_change_manual_server() {
 		set_vpn_server_in_uci "$HOST_NAME" "$SERVER_IP" "$PUBLIC_KEY" "$COUNTRY_CODE" "$CITY_NAME" "$SERVER_LOAD" || continue
 		uci commit network || {
 			log 'ERROR: COULD NOT COMMIT NETWORK CONFIGURATION'
-			continue
+			commit_failed=1
+			break
 		}
 		if apply_server_change_runtime "$1"; then
 			set_server_preference_in_uci "$HOST_NAME" "$SERVER_IP"
@@ -239,6 +247,10 @@ nordvpn_easy_change_manual_server() {
 	done < "$SERVER_CANDIDATES_FILE"
 
 	rm -f "$SERVER_CANDIDATES_FILE"
+
+	if [ "$commit_failed" -eq 1 ]; then
+		return 1
+	fi
 
 	if [ "$server_changed" -eq 1 ]; then
 		return 0

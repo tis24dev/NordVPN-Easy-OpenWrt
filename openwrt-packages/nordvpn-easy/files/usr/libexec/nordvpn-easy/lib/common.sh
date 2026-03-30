@@ -2,7 +2,8 @@
 
 nordvpn_easy_log() {
 	[ -t 2 ] && printf '*** %s ***\n' "$*" >&2
-	command -v logger >/dev/null 2>&1 && logger -t 'nordvpn-easy' "$*"
+	command -v logger >/dev/null 2>&1 && logger -t 'nordvpn-easy' "$*" >/dev/null 2>&1 || true
+	return 0
 }
 
 nordvpn_easy_curl_rc_meaning() {
@@ -103,8 +104,11 @@ nordvpn_easy_acquire_lock() {
 	local lock_pid=''
 
 	if mkdir "$LOCK_DIR" 2>/dev/null; then
-		printf '%s\n' "$$" > "$lock_pid_file"
-		printf '%s\n' "$ACTION" > "$lock_action_file"
+		if ! printf '%s\n' "$$" > "$lock_pid_file" || ! printf '%s\n' "$ACTION" > "$lock_action_file"; then
+			rm -rf "$LOCK_DIR" 2>/dev/null
+			nordvpn_easy_log "ERROR: COULD NOT WRITE EXECUTION LOCK METADATA INTO $LOCK_DIR"
+			return 1
+		fi
 		LOCK_ACQUIRED=1
 		trap 'nordvpn_easy_release_lock' EXIT HUP INT TERM
 		nordvpn_easy_log "Acquired execution lock at $LOCK_DIR"
@@ -123,8 +127,11 @@ nordvpn_easy_acquire_lock() {
 	rm -rf "$LOCK_DIR" 2>/dev/null || return 1
 
 	mkdir "$LOCK_DIR" 2>/dev/null || return 1
-	printf '%s\n' "$$" > "$lock_pid_file"
-	printf '%s\n' "$ACTION" > "$lock_action_file"
+	if ! printf '%s\n' "$$" > "$lock_pid_file" || ! printf '%s\n' "$ACTION" > "$lock_action_file"; then
+		rm -rf "$LOCK_DIR" 2>/dev/null
+		nordvpn_easy_log "ERROR: COULD NOT WRITE EXECUTION LOCK METADATA INTO $LOCK_DIR"
+		return 1
+	fi
 	LOCK_ACQUIRED=1
 	trap 'nordvpn_easy_release_lock' EXIT HUP INT TERM
 	nordvpn_easy_log "Recovered and acquired execution lock at $LOCK_DIR"
