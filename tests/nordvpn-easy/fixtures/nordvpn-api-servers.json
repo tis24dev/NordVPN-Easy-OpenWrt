@@ -1,0 +1,109 @@
+[
+  {
+    "hostname": "it12.nordvpn.com",
+    "station": "it123",
+    "load": 12,
+    "status": "online",
+    "locations": [
+      {
+        "country": {
+          "code": "IT",
+          "name": "Italy",
+          "city": {
+            "name": "Milan"
+          }
+        }
+      }
+    ],
+    "technologies": [
+      {
+        "identifier": "wireguard_udp",
+        "metadata": [
+          {
+            "name": "public_key",
+            "value": "PUBKEY-123"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "hostname": "it45.nordvpn.com",
+    "station": "it456",
+    "load": 45,
+    "status": "online",
+    "locations": [
+      {
+        "country": {
+          "code": "IT",
+          "name": "Italy",
+          "city": {
+            "name": "Rome"
+          }
+        }
+      }
+    ],
+    "technologies": [
+      {
+        "identifier": "wireguard_udp",
+        "metadata": [
+          {
+            "name": "public_key",
+            "value": "PUBKEY-456"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "hostname": "it99.nordvpn.com",
+    "station": "it999",
+    "load": 2,
+    "status": "offline",
+    "locations": [
+      {
+        "country": {
+          "code": "IT",
+          "name": "Italy",
+          "city": {
+            "name": "Turin"
+          }
+        }
+      }
+    ],
+    "technologies": [
+      {
+        "identifier": "wireguard_udp",
+        "metadata": [
+          {
+            "name": "public_key",
+            "value": "PUBKEY-999"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "hostname": "it-no-key.nordvpn.com",
+    "station": "it000",
+    "load": 1,
+    "status": "online",
+    "locations": [
+      {
+        "country": {
+          "code": "IT",
+          "name": "Italy",
+          "city": {
+            "name": "Bologna"
+          }
+        }
+      }
+    ],
+    "technologies": [
+      {
+        "identifier": "wireguard_udp",
+        "metadata": []
+      }
+    ]
+  }
+]
