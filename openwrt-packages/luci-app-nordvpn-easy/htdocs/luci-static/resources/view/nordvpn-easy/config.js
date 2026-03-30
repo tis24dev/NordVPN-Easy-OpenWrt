@@ -659,6 +659,18 @@ function runServiceActions(actions) {
 		return chain.then(function() {
 			return runServiceAction(action).then(function(result) {
 				results.push(result);
+
+				if (result.code !== 0) {
+					const error = new Error(
+						_('%s failed with exit code %d: %s').format(result.action, result.code, result.message)
+					);
+
+					error.result = result;
+					error.results = results.slice();
+					throw error;
+				}
+
+				return result;
 			});
 		});
 	}, Promise.resolve()).then(function() {
