@@ -15,10 +15,7 @@ const MODE_FIELD_ID = 'cbid.nordvpn_easy.main.server_selection_mode';
 const SERVER_FIELD_ID = 'cbid.nordvpn_easy.main.preferred_server_station';
 const SERVER_CACHE_ENABLED_FIELD_ID = 'cbid.nordvpn_easy.main.server_cache_enabled';
 const SERVER_CACHE_TTL_FIELD_ID = 'cbid.nordvpn_easy.main.server_cache_ttl';
-const ACTION_BAR_ID = 'nordvpn-easy-manager-actions';
 const SERVER_REFRESH_BUTTON_ID = 'cbid.nordvpn_easy.main._refresh_servers';
-const SERVER_REFRESH_BUTTON_ID_TOP = 'nordvpn-easy-refresh-servers-top';
-const SAVE_APPLY_BUTTON_ID = 'nordvpn-easy-save-apply-top';
 const VPN_STATUS_ID = 'nordvpn-easy-vpn-status';
 const CURRENT_SERVER_STATUS_ID = 'nordvpn-easy-current-server-status';
 const PREFERRED_SERVER_STATUS_ID = 'nordvpn-easy-preferred-server-status';
@@ -406,9 +403,7 @@ function setManagerControlsDisabled(disabled) {
 		SERVER_FIELD_ID,
 		SERVER_CACHE_ENABLED_FIELD_ID,
 		SERVER_CACHE_TTL_FIELD_ID,
-		SERVER_REFRESH_BUTTON_ID,
-		SERVER_REFRESH_BUTTON_ID_TOP,
-		SAVE_APPLY_BUTTON_ID
+		SERVER_REFRESH_BUTTON_ID
 	].forEach(function(id) {
 		const fieldEl = document.getElementById(id);
 		const selectEl = getSelectElement(id);
@@ -469,14 +464,6 @@ function updateServerSelectionState() {
 		{
 			element: getInputElement(SERVER_REFRESH_BUTTON_ID, 'button'),
 			disabled: busy || !country
-		},
-		{
-			element: document.getElementById(SERVER_REFRESH_BUTTON_ID_TOP),
-			disabled: busy || !country
-		},
-		{
-			element: document.getElementById(SAVE_APPLY_BUTTON_ID),
-			disabled: busy
 		}
 	];
 
@@ -861,26 +848,6 @@ function renderStatusSection() {
 	]);
 }
 
-function renderActionBar(viewInstance) {
-	return E('div', { id: ACTION_BAR_ID, class: 'cbi-page-actions' }, [
-		E('button', {
-			id: SERVER_REFRESH_BUTTON_ID_TOP,
-			class: 'btn cbi-button cbi-button-action',
-			type: 'button',
-			click: ui.createHandlerFn(viewInstance, 'handleRefreshServerCatalog')
-		}, [ _('Refresh Server List') ]),
-		' ',
-		E('button', {
-			id: SAVE_APPLY_BUTTON_ID,
-			class: 'btn cbi-button cbi-button-apply',
-			type: 'button',
-			click: ui.createHandlerFn(viewInstance, function(ev) {
-				return this.handleSaveApply(ev, '0');
-			})
-		}, [ _('Save & Apply') ])
-	]);
-}
-
 return view.extend({
 	load: function() {
 		return Promise.all([
@@ -900,7 +867,7 @@ return view.extend({
 
 	handleRefreshServerCatalog: function(ev) {
 		const country = getSelectedCountry();
-		const button = ev ? ev.currentTarget : document.getElementById(SERVER_REFRESH_BUTTON_ID_TOP);
+		const button = ev ? ev.currentTarget : getInputElement(SERVER_REFRESH_BUTTON_ID, 'button');
 
 		if (!country) {
 			ui.addNotification(null, E('p', _('Select a country before refreshing the server catalog.')), 'warning');
@@ -1022,27 +989,9 @@ return view.extend({
 		});
 		o.inputtitle = _('Refresh Server List');
 
-		s = m.section(form.NamedSection, 'main', 'nordvpn_easy', _('Cache'));
-		s.anonymous = true;
-		s.addremove = false;
-
-		o = s.option(form.Flag, 'server_cache_enabled', _('Enable Server Catalog Cache'));
-		o.default = '1';
-		o.rmempty = false;
-		o.description = _('Cache the NordVPN manual server catalog for the selected country.');
-
-		o = s.option(form.Value, 'server_cache_ttl', _('Server Catalog Cache TTL'));
-		o.datatype = 'uinteger';
-		o.placeholder = '86400';
-		o.rmempty = false;
-		o.depends('server_cache_enabled', '1');
-		o.description = _('How long to keep the manual server catalog before refreshing it again.');
-
 		return m.render().then(function(node) {
 			const countrySelect = getSelectElement(COUNTRY_FIELD_ID);
 			const modeSelect = getSelectElement(MODE_FIELD_ID);
-
-			node.appendChild(renderActionBar(this));
 
 			renderServerChoices(getSelectElement(SERVER_FIELD_ID), currentServerCatalog, currentPreferredStation);
 			updateLocalStatus();

@@ -116,6 +116,23 @@ return view.extend({
 		o.datatype = 'uinteger';
 		o.rmempty = false;
 
+		s = m.section(form.NamedSection, 'main', 'nordvpn_easy', _('Cache'));
+		s.anonymous = true;
+		s.addremove = false;
+
+		o = s.option(form.Flag, 'server_cache_enabled', _('Enable Server Catalog Cache'));
+		o.default = '1';
+		o.rmempty = false;
+		o.description = _('Cache the NordVPN manual server catalog for the selected country.');
+
+		o = s.option(form.Value, 'server_cache_ttl', _('Server Catalog Cache TTL'));
+		o.datatype = 'uinteger';
+		o.default = '86400';
+		o.placeholder = '86400';
+		o.rmempty = false;
+		o.depends('server_cache_enabled', '1');
+		o.description = _('How long to keep the manual server catalog before refreshing it again.');
+
 		s = m.section(form.NamedSection, 'main', 'nordvpn_easy', _('Runtime'));
 		s.anonymous = true;
 		s.addremove = false;
