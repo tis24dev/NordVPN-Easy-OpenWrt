@@ -37,7 +37,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -65,7 +65,7 @@ jobs:
           echo "PACKAGE_VERSION=${RAW}" >> "$GITHUB_ENV"
 
       - name: Cache OpenWrt SDK
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .build/openwrt-sdk
           key: openwrt-sdk-${{ runner.os }}-${{ env.OPENWRT_APK_VERSION }}-${{ env.OPENWRT_TARGET }}-${{ env.OPENWRT_SUBTARGET }}-${{ env.OPENWRT_APK_TOOLCHAIN }}
@@ -371,7 +371,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -399,7 +399,7 @@ jobs:
           echo "PACKAGE_VERSION=${RAW}" >> "$GITHUB_ENV"
 
       - name: Cache OpenWrt SDK
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .build/openwrt-sdk-opkg
           key: openwrt-sdk-${{ runner.os }}-${{ env.OPENWRT_OPKG_VERSION }}-${{ env.OPENWRT_TARGET }}-${{ env.OPENWRT_SUBTARGET }}-${{ env.OPENWRT_OPKG_TOOLCHAIN }}
@@ -728,7 +728,7 @@ jobs:
 
     steps:
       - name: Checkout main
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: main
           fetch-depth: 0
