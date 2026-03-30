@@ -7,7 +7,7 @@
 		}
 	},
 	"admin/services/nordvpn-easy/setup": {
-		"title": "Setup",
+		"title": "Manager",
 		"order": 10,
 		"action": {
 			"type": "view",

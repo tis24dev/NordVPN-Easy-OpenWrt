@@ -6,7 +6,7 @@
 
 function runAction(action) {
 	return fs.exec('/etc/init.d/nordvpn-easy', [ action ]).then(function(res) {
-		var lines = [];
+		const lines = [];
 
 		if (res.stdout)
 			lines.push(res.stdout.trim());
@@ -39,9 +39,9 @@ return view.extend({
 	},
 
 	render: function(stats) {
-		var cronInstalled = !!stats[0];
-		var hotplugInstalled = !!stats[1];
-		var m, s, o;
+		const cronInstalled = !!stats[0];
+		const hotplugInstalled = !!stats[1];
+		let m, s, o;
 
 		m = new form.Map('nordvpn_easy', _('NordVPN Easy Advanced'),
 			_('Adjust advanced network, health-check and recovery settings.'));
@@ -122,7 +122,7 @@ return view.extend({
 
 		o = s.option(form.DummyValue, '_hooks', _('Installed Hooks'));
 		o.cfgvalue = function() {
-			var state = [];
+			const state = [];
 
 			state.push(cronInstalled ? _('cron: installed') : _('cron: missing'));
 			state.push(hotplugInstalled ? _('hotplug: installed') : _('hotplug: missing'));

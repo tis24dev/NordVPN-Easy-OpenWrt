@@ -11,6 +11,12 @@
 				],
 				"/etc/hotplug.d/iface/95-nordvpn-easy": [
 					"read"
+				],
+				"/tmp/nordvpn-easy-countries.json": [
+					"read"
+				],
+				"/tmp/nordvpn-easy-servers.json": [
+					"read"
 				]
 			}
 		},

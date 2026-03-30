@@ -4,8 +4,8 @@
 'require view';
 
 function downloadLogFile(content) {
-	var now = new Date();
-	var name = 'nordvpn-easy-diagnostics-%04d-%02d-%02d_%02d-%02d-%02d.log'.format(
+	const now = new Date();
+	const name = 'nordvpn-easy-diagnostics-%04d-%02d-%02d_%02d-%02d-%02d.log'.format(
 		now.getFullYear(),
 		now.getMonth() + 1,
 		now.getDate(),
@@ -13,9 +13,9 @@ function downloadLogFile(content) {
 		now.getMinutes(),
 		now.getSeconds()
 	);
-	var blob = new Blob([ content ], { type: 'text/plain;charset=utf-8' });
-	var url = window.URL.createObjectURL(blob);
-	var link = E('a', {
+	const blob = new Blob([ content ], { type: 'text/plain;charset=utf-8' });
+	const url = window.URL.createObjectURL(blob);
+	const link = E('a', {
 		'style': 'display:none',
 		'href': url,
 		'download': name
@@ -46,13 +46,13 @@ return view.extend({
 							'class': 'cbi-button cbi-button-apply',
 							'type': 'button',
 							'click': ui.createHandlerFn(this, function(ev) {
-								var button = ev.currentTarget;
+								const button = ev.currentTarget;
 
 								button.disabled = true;
 
 								return fs.exec('/etc/init.d/nordvpn-easy', [ 'diagnostics_log' ]).then(function(res) {
-									var content = res.stdout || '';
-									var message = res.stderr ? res.stderr.trim() : '';
+									const content = res.stdout || '';
+									const message = res.stderr ? res.stderr.trim() : '';
 
 									if (res.code !== 0) {
 										ui.addNotification(null, E('p', _(
@@ -68,7 +68,7 @@ return view.extend({
 
 									downloadLogFile(content);
 								}).catch(function(err) {
-									var message = (err && err.message) ||
+									const message = (err && err.message) ||
 										(typeof err === 'string' ? err : JSON.stringify(err)) ||
 										_('Unknown error');
 
