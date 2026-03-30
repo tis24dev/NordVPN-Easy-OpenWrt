@@ -10,6 +10,9 @@ UCI_CONFIG='nordvpn_easy'
 UCI_SECTION='main'
 RUNTIME_CONFIG='/var/etc/nordvpn-easy.conf'
 CORE_SCRIPT='/usr/libexec/nordvpn-easy/core.sh'
+SCHEMA_LIB='/usr/libexec/nordvpn-easy/lib/schema.sh'
+RUNTIME_LIB='/usr/libexec/nordvpn-easy/lib/runtime.sh'
+SERVICE_CONFIG_LIB='/usr/libexec/nordvpn-easy/lib/service-config.sh'
 CRON_PATH='/etc/cron.d/nordvpn-easy'
 HOTPLUG_PATH='/etc/hotplug.d/iface/95-nordvpn-easy'
 LOCK_DIR='/tmp/nordvpn-easy.lock'
@@ -31,102 +34,92 @@ EXTRA_HELP='  setup                 Run setup immediately
   disable_runtime       Disable the VPN interface and remove hooks
   render_runtime_config Render the temporary shell config'
 
-cfg_enabled='0'
-cfg_nordvpn_token=''
-cfg_wan_if='wan'
-cfg_vpn_if='wg0'
-cfg_vpn_country=''
-cfg_server_selection_mode='auto'
-cfg_preferred_server_hostname=''
-cfg_preferred_server_station=''
-cfg_server_cache_enabled='1'
-cfg_server_cache_ttl='86400'
-cfg_vpn_port='51820'
-cfg_vpn_addr='10.5.0.2/32'
-cfg_vpn_dns1='103.86.99.99'
-cfg_vpn_dns2='103.86.96.96'
-cfg_check_cron_schedule='* * * * *'
-cfg_enable_hotplug='1'
-cfg_failure_retry_delay='6'
-cfg_server_rotate_threshold='5'
-cfg_interface_restart_threshold='10'
-cfg_max_interface_restarts='3'
-cfg_interface_restart_delay='10'
-cfg_post_restart_delay='60'
+SCHEMA_LIB_LOADED=0
+RUNTIME_LIB_LOADED=0
+SERVICE_CONFIG_LIB_LOADED=0
 
-cleanup_legacy_config() {
-	if uci -q get "${UCI_CONFIG}.${UCI_SECTION}.nordvpn_basic_token" >/dev/null 2>&1; then
-		uci -q delete "${UCI_CONFIG}.${UCI_SECTION}.nordvpn_basic_token"
-		uci -q commit "$UCI_CONFIG"
-	fi
+load_schema_library() {
+	[ "$SCHEMA_LIB_LOADED" -eq 1 ] && return 0
+	[ -r "$SCHEMA_LIB" ] || {
+		printf '%s\n' "nordvpn-easy: missing schema library $SCHEMA_LIB" >&2
+		return 1
+	}
+
+	# shellcheck disable=SC1090
+	. "$SCHEMA_LIB" || return 1
+	SCHEMA_LIB_LOADED=1
+}
+
+load_runtime_library() {
+	[ "$RUNTIME_LIB_LOADED" -eq 1 ] && return 0
+	[ -r "$RUNTIME_LIB" ] || {
+		printf '%s\n' "nordvpn-easy: missing runtime library $RUNTIME_LIB" >&2
+		return 1
+	}
+
+	# shellcheck disable=SC1090
+	. "$RUNTIME_LIB" || return 1
+	RUNTIME_LIB_LOADED=1
+}
+
+load_service_config_library() {
+	[ "$SERVICE_CONFIG_LIB_LOADED" -eq 1 ] && return 0
+	[ -r "$SERVICE_CONFIG_LIB" ] || {
+		printf '%s\n' "nordvpn-easy: missing service config library $SERVICE_CONFIG_LIB" >&2
+		return 1
+	}
+
+	load_schema_library || return 1
+	# shellcheck disable=SC1090
+	. "$SERVICE_CONFIG_LIB" || return 1
+	SERVICE_CONFIG_LIB_LOADED=1
+}
+
+migrate_service_config() {
+	load_service_config_library || return 1
+	nordvpn_easy_migrate_service_config "$UCI_CONFIG" "$UCI_SECTION"
 }
 
 load_service_config() {
-	cleanup_legacy_config
-	config_load "$UCI_CONFIG"
-	config_get_bool cfg_enabled "$UCI_SECTION" enabled 0
-	config_get cfg_nordvpn_token "$UCI_SECTION" nordvpn_token ''
-	config_get cfg_wan_if "$UCI_SECTION" wan_if 'wan'
-	config_get cfg_vpn_if "$UCI_SECTION" vpn_if 'wg0'
-	config_get cfg_vpn_country "$UCI_SECTION" vpn_country ''
-	config_get cfg_server_selection_mode "$UCI_SECTION" server_selection_mode 'auto'
-	config_get cfg_preferred_server_hostname "$UCI_SECTION" preferred_server_hostname ''
-	config_get cfg_preferred_server_station "$UCI_SECTION" preferred_server_station ''
-	config_get cfg_server_cache_enabled "$UCI_SECTION" server_cache_enabled '1'
-	config_get cfg_server_cache_ttl "$UCI_SECTION" server_cache_ttl '86400'
-	config_get cfg_vpn_port "$UCI_SECTION" vpn_port '51820'
-	config_get cfg_vpn_addr "$UCI_SECTION" vpn_addr '10.5.0.2/32'
-	config_get cfg_vpn_dns1 "$UCI_SECTION" vpn_dns1 '103.86.99.99'
-	config_get cfg_vpn_dns2 "$UCI_SECTION" vpn_dns2 '103.86.96.96'
-	config_get cfg_check_cron_schedule "$UCI_SECTION" check_cron_schedule '* * * * *'
-	config_get_bool cfg_enable_hotplug "$UCI_SECTION" enable_hotplug 1
-	config_get cfg_failure_retry_delay "$UCI_SECTION" failure_retry_delay '6'
-	config_get cfg_server_rotate_threshold "$UCI_SECTION" server_rotate_threshold '5'
-	config_get cfg_interface_restart_threshold "$UCI_SECTION" interface_restart_threshold '10'
-	config_get cfg_max_interface_restarts "$UCI_SECTION" max_interface_restarts '3'
-	config_get cfg_interface_restart_delay "$UCI_SECTION" interface_restart_delay '10'
-	config_get cfg_post_restart_delay "$UCI_SECTION" post_restart_delay '60'
-}
+	local option default_value
 
-shell_quote() {
-	printf "%s" "$1" | sed "s/'/'\\\\''/g"
+	load_schema_library || return 1
+	migrate_service_config || return 1
+	config_load "$UCI_CONFIG"
+
+	for option in $(nordvpn_easy_uci_options); do
+		[ "$option" = 'config_schema_version' ] && continue
+		default_value="$(nordvpn_easy_default "$option" 2>/dev/null || printf '%s' '')"
+
+		if nordvpn_easy_is_bool_option "$option"; then
+			config_get_bool "cfg_${option}" "$UCI_SECTION" "$option" "$default_value"
+		else
+			config_get "cfg_${option}" "$UCI_SECTION" "$option" "$default_value"
+		fi
+	done
 }
 
 write_runtime_option() {
 	local key="$1"
 	local value="$2"
 
-	printf "%s='%s'\n" "$key" "$(shell_quote "$value")" >> "$RUNTIME_CONFIG"
+	printf "%s='%s'\n" "$key" "$(nordvpn_easy_shell_quote "$value")" >> "$RUNTIME_CONFIG"
 }
 
 render_runtime_config() {
+	local option env_name value
+
 	load_service_config
 	umask 077
 	mkdir -p /var/etc
 	: > "$RUNTIME_CONFIG" || return 1
 	log_service_info "rendering runtime config to $RUNTIME_CONFIG (enabled=$cfg_enabled, wan_if=$cfg_wan_if, vpn_if=$cfg_vpn_if, vpn_country=${cfg_vpn_country:-automatic})"
 
-	write_runtime_option NORDVPN_TOKEN "$cfg_nordvpn_token"
-	write_runtime_option WAN_IF "$cfg_wan_if"
-	write_runtime_option VPN_IF "$cfg_vpn_if"
-	write_runtime_option VPN_COUNTRY "$cfg_vpn_country"
-	write_runtime_option SERVER_SELECTION_MODE "$cfg_server_selection_mode"
-	write_runtime_option PREFERRED_SERVER_HOSTNAME "$cfg_preferred_server_hostname"
-	write_runtime_option PREFERRED_SERVER_STATION "$cfg_preferred_server_station"
-	write_runtime_option SERVER_CACHE_ENABLED "$cfg_server_cache_enabled"
-	write_runtime_option SERVER_CACHE_TTL "$cfg_server_cache_ttl"
-	write_runtime_option VPN_PORT "$cfg_vpn_port"
-	write_runtime_option VPN_ADDR "$cfg_vpn_addr"
-	write_runtime_option VPN_DNS1 "$cfg_vpn_dns1"
-	write_runtime_option VPN_DNS2 "$cfg_vpn_dns2"
-	write_runtime_option CHECK_CRON_SCHEDULE "$cfg_check_cron_schedule"
-	write_runtime_option ENABLE_HOTPLUG "$cfg_enable_hotplug"
-	write_runtime_option FAILURE_RETRY_DELAY "$cfg_failure_retry_delay"
-	write_runtime_option SERVER_ROTATE_THRESHOLD "$cfg_server_rotate_threshold"
-	write_runtime_option INTERFACE_RESTART_THRESHOLD "$cfg_interface_restart_threshold"
-	write_runtime_option MAX_INTERFACE_RESTARTS "$cfg_max_interface_restarts"
-	write_runtime_option INTERFACE_RESTART_DELAY "$cfg_interface_restart_delay"
-	write_runtime_option POST_RESTART_DELAY "$cfg_post_restart_delay"
+	for option in $(nordvpn_easy_runtime_options); do
+		env_name="$(nordvpn_easy_env_name "$option")"
+		eval "value=\${cfg_${option}}"
+		write_runtime_option "$env_name" "$value"
+	done
 }
 
 run_core_action() {
@@ -244,23 +237,6 @@ peer_section_name() {
 	uci show network 2>/dev/null | grep "^network\..*=wireguard_${cfg_vpn_if}$" | head -1 | cut -d. -f2 | cut -d= -f1
 }
 
-handshake_indicates_connection() {
-	local handshake="$1"
-	local hours
-
-	case "$handshake" in
-		''|Never)
-			return 1
-			;;
-		*second*|*minute*)
-			return 0
-			;;
-	esac
-
-	hours="$(printf '%s' "$handshake" | sed -n 's/^\([0-9][0-9]*\) hour.*/\1/p')"
-	[ -n "$hours" ] && [ "$hours" -le 2 ]
-}
-
 validate_cron_schedule() {
 	local schedule="$1"
 
@@ -316,8 +292,8 @@ install_hotplug_hook() {
 
 	cat > "$HOTPLUG_PATH" <<EOF
 #!/bin/sh
-WAN_IF='$(shell_quote "$cfg_wan_if")'
-VPN_IF='$(shell_quote "$cfg_vpn_if")'
+WAN_IF='$(nordvpn_easy_shell_quote "$cfg_wan_if")'
+VPN_IF='$(nordvpn_easy_shell_quote "$cfg_vpn_if")'
 
 case "\$ACTION" in
 	ifup|ifupdate|ifdown) ;;
@@ -460,13 +436,16 @@ vpn_status() {
 
 status_json() {
 	local peer_section
-	local wg_status
+	local wg_dump
 	local vpn_state
 	local operation
 	local endpoint='N/A'
 	local latest_handshake='Never'
+	local latest_handshake_epoch='0'
 	local transfer_rx='0 B'
+	local transfer_rx_bytes='0'
 	local transfer_tx='0 B'
+	local transfer_tx_bytes='0'
 	local connected='false'
 	local current_hostname=''
 	local current_station=''
@@ -477,6 +456,7 @@ status_json() {
 	local preferred_station=''
 
 	load_service_config
+	load_runtime_library || return 1
 	peer_section="$(peer_section_name)"
 	vpn_state="$(vpn_status_value)"
 	operation="$(get_operation_status_value)"
@@ -495,20 +475,18 @@ status_json() {
 	preferred_hostname="$cfg_preferred_server_hostname"
 	preferred_station="$cfg_preferred_server_station"
 
-	wg_status="$(wg show "$cfg_vpn_if" 2>/dev/null)"
+	wg_dump="$(wg show "$cfg_vpn_if" dump 2>/dev/null)"
 
-	if [ -n "$wg_status" ]; then
-		endpoint="$(printf '%s\n' "$wg_status" | grep 'endpoint:' | awk '{print $2}' | head -1)"
-		latest_handshake="$(printf '%s\n' "$wg_status" | grep 'latest handshake:' | sed 's/.*latest handshake: //' | head -1)"
-		transfer_rx="$(printf '%s\n' "$wg_status" | grep 'transfer:' | awk '{print $2, $3}' | head -1)"
-		transfer_tx="$(printf '%s\n' "$wg_status" | grep 'transfer:' | awk '{print $5, $6}' | head -1)"
+	if [ -n "$wg_dump" ]; then
+		IFS="$(printf '\t')" read -r endpoint latest_handshake_epoch transfer_rx_bytes transfer_tx_bytes <<EOF
+$(nordvpn_easy_parse_wg_dump_peer "$wg_dump")
+EOF
 
-		[ -n "$endpoint" ] || endpoint='N/A'
-		[ -n "$latest_handshake" ] || latest_handshake='Never'
-		[ -n "$transfer_rx" ] || transfer_rx='0 B'
-		[ -n "$transfer_tx" ] || transfer_tx='0 B'
+		latest_handshake="$(nordvpn_easy_humanize_handshake_age "$latest_handshake_epoch")"
+		transfer_rx="$(nordvpn_easy_format_human_bytes "$transfer_rx_bytes")"
+		transfer_tx="$(nordvpn_easy_format_human_bytes "$transfer_tx_bytes")"
 
-		if handshake_indicates_connection "$latest_handshake"; then
+		if nordvpn_easy_handshake_epoch_indicates_connection "$latest_handshake_epoch"; then
 			connected='true'
 		fi
 	fi
@@ -524,8 +502,11 @@ status_json() {
   "connected": $connected,
   "endpoint": "$(json_escape "$endpoint")",
   "latest_handshake": "$(json_escape "$latest_handshake")",
+  "latest_handshake_epoch": $latest_handshake_epoch,
   "transfer_rx": "$(json_escape "$transfer_rx")",
+  "transfer_rx_bytes": $transfer_rx_bytes,
   "transfer_tx": "$(json_escape "$transfer_tx")",
+  "transfer_tx_bytes": $transfer_tx_bytes,
   "current_server_hostname": "$(json_escape "$current_hostname")",
   "current_server_station": "$(json_escape "$current_station")",
   "current_server_city": "$(json_escape "$current_city")",

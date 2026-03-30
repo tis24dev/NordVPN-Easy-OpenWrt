@@ -40,6 +40,8 @@ endef
 define Package/nordvpn-easy/install
 	$(INSTALL_DIR) $(1)/usr/libexec/nordvpn-easy
 	$(INSTALL_BIN) ./files/usr/libexec/nordvpn-easy/core.sh $(1)/usr/libexec/nordvpn-easy/core.sh
+	$(INSTALL_DIR) $(1)/usr/libexec/nordvpn-easy/lib
+	$(CP) ./files/usr/libexec/nordvpn-easy/lib/. $(1)/usr/libexec/nordvpn-easy/lib/
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_CONF) ./files/etc/config/nordvpn_easy $(1)/etc/config/nordvpn_easy
 	$(INSTALL_DIR) $(1)/etc/init.d
