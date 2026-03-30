@@ -18,6 +18,7 @@ const SERVER_CACHE_TTL_FIELD_ID = 'cbid.nordvpn_easy.main.server_cache_ttl';
 const ACTION_BAR_ID = 'nordvpn-easy-manager-actions';
 const SERVER_REFRESH_BUTTON_ID = 'cbid.nordvpn_easy.main._refresh_servers';
 const SERVER_REFRESH_BUTTON_ID_TOP = 'nordvpn-easy-refresh-servers-top';
+const SAVE_APPLY_BUTTON_ID = 'nordvpn-easy-save-apply-top';
 const VPN_STATUS_ID = 'nordvpn-easy-vpn-status';
 const CURRENT_SERVER_STATUS_ID = 'nordvpn-easy-current-server-status';
 const PREFERRED_SERVER_STATUS_ID = 'nordvpn-easy-preferred-server-status';
@@ -39,6 +40,7 @@ let appliedCountryCode = '';
 let currentLocalStatus = {};
 let currentServerCatalog = emptyServerCatalog();
 let serverCatalogIndex = {};
+let latestServerCatalogRequestId = 0;
 
 function emptyServerCatalog() {
 	return {
@@ -405,7 +407,8 @@ function setManagerControlsDisabled(disabled) {
 		SERVER_CACHE_ENABLED_FIELD_ID,
 		SERVER_CACHE_TTL_FIELD_ID,
 		SERVER_REFRESH_BUTTON_ID,
-		SERVER_REFRESH_BUTTON_ID_TOP
+		SERVER_REFRESH_BUTTON_ID_TOP,
+		SAVE_APPLY_BUTTON_ID
 	].forEach(function(id) {
 		const fieldEl = document.getElementById(id);
 		const selectEl = getSelectElement(id);
@@ -462,9 +465,19 @@ function updateServerSelectionState() {
 	const country = getSelectedCountry();
 	const busy = currentOperationStatus.indexOf('busy') === 0;
 	const selectEl = getSelectElement(SERVER_FIELD_ID);
-	const refreshButtons = [
-		getInputElement(SERVER_REFRESH_BUTTON_ID, 'button'),
-		document.getElementById(SERVER_REFRESH_BUTTON_ID_TOP)
+	const actionButtons = [
+		{
+			element: getInputElement(SERVER_REFRESH_BUTTON_ID, 'button'),
+			disabled: busy || !country
+		},
+		{
+			element: document.getElementById(SERVER_REFRESH_BUTTON_ID_TOP),
+			disabled: busy || !country
+		},
+		{
+			element: document.getElementById(SAVE_APPLY_BUTTON_ID),
+			disabled: busy
+		}
 	];
 
 	updateServerCatalogStatus();
@@ -472,9 +485,9 @@ function updateServerSelectionState() {
 	if (selectEl)
 		selectEl.disabled = busy || mode !== 'manual' || !country || !currentServerCatalog.servers.length;
 
-	refreshButtons.forEach(function(button) {
-		if (button)
-			button.disabled = busy || !country;
+	actionButtons.forEach(function(button) {
+		if (button.element)
+			button.element.disabled = button.disabled;
 	});
 }
 
@@ -518,6 +531,8 @@ function parseExecJsonResponse(res, fallback) {
 }
 
 function loadServerCatalog(country, forceRefresh) {
+	const requestId = ++latestServerCatalogRequestId;
+	const requestedCountry = normalizeCountryCode(country || '');
 	const args = [ 'server_catalog', country || '' ];
 
 	if (!country) {
@@ -533,15 +548,20 @@ function loadServerCatalog(country, forceRefresh) {
 
 	return fs.exec('/etc/init.d/nordvpn-easy', args).then(function(res) {
 		let message;
+		let parsedCatalog;
+
+		if (requestId !== latestServerCatalogRequestId || requestedCountry !== getSelectedCountry())
+			return null;
 
 		if (res.code !== 0) {
 			message = (res.stderr || '').trim() || _('Server catalog refresh failed.');
 			throw new Error(message);
 		}
 
-		currentServerCatalog = parseServerCatalog(res.stdout || '');
-		serverCatalogIndex = buildServerCatalogIndex(currentServerCatalog);
-		renderServerChoices(getSelectElement(SERVER_FIELD_ID), currentServerCatalog, getSelectedPreferredStation());
+		parsedCatalog = parseServerCatalog(res.stdout || '');
+		currentServerCatalog = parsedCatalog;
+		serverCatalogIndex = buildServerCatalogIndex(parsedCatalog);
+		renderServerChoices(getSelectElement(SERVER_FIELD_ID), parsedCatalog, getSelectedPreferredStation());
 		updateServerSelectionState();
 		return currentServerCatalog;
 	});
@@ -753,6 +773,7 @@ function onCountryChanged() {
 		selectEl.value = '';
 
 	if (!country) {
+		latestServerCatalogRequestId++;
 		currentServerCatalog = emptyServerCatalog();
 		serverCatalogIndex = {};
 		renderServerChoices(selectEl, currentServerCatalog, '');
@@ -838,6 +859,7 @@ function renderActionBar(viewInstance) {
 		}, [ _('Refresh Server List') ]),
 		' ',
 		E('button', {
+			id: SAVE_APPLY_BUTTON_ID,
 			class: 'btn cbi-button cbi-button-apply',
 			type: 'button',
 			click: ui.createHandlerFn(viewInstance, function(ev) {
@@ -880,8 +902,9 @@ return view.extend({
 			E('p', { class: 'spinning' }, _('Downloading the NordVPN WireGuard server catalog...'))
 		]);
 
-		return loadServerCatalog(country, true).then(function() {
-			ui.addNotification(null, E('p', _('Server catalog refreshed.')), 'info');
+		return loadServerCatalog(country, true).then(function(catalog) {
+			if (catalog)
+				ui.addNotification(null, E('p', _('Server catalog refreshed.')), 'info');
 		}).catch(function(err) {
 			ui.addNotification(null, E('p', err.message), 'error');
 		}).finally(function() {
@@ -1051,7 +1074,10 @@ return view.extend({
 		const currentMode = getSelectedMode();
 		const currentCountry = getSelectedCountry();
 		const preferredStation = getSelectedPreferredStation();
-		const selectedServer = serverCatalogIndex[preferredStation];
+		const preferredStationChanged = (currentMode === 'manual' && preferredStation !== previousPreferredStation);
+		const selectedServer = (preferredStationChanged && preferredStation)
+			? serverCatalogIndex[preferredStation]
+			: null;
 		let confirmationPromise = Promise.resolve(true);
 
 		if (currentMode === 'manual') {
@@ -1060,13 +1086,15 @@ return view.extend({
 				return Promise.resolve();
 			}
 
-			if (!preferredStation || !selectedServer) {
-				ui.addNotification(null, E('p', _('Manual mode requires a valid preferred server from the current catalog.')), 'error');
-				return Promise.resolve();
-			}
+			if (preferredStationChanged) {
+				if (!preferredStation || !selectedServer) {
+					ui.addNotification(null, E('p', _('Manual mode requires a valid preferred server from the current catalog.')), 'error');
+					return Promise.resolve();
+				}
 
-			uci.set('nordvpn_easy', 'main', 'preferred_server_hostname', selectedServer.hostname);
-			uci.set('nordvpn_easy', 'main', 'preferred_server_station', preferredStation);
+				uci.set('nordvpn_easy', 'main', 'preferred_server_hostname', selectedServer.hostname);
+				uci.set('nordvpn_easy', 'main', 'preferred_server_station', preferredStation);
+			}
 		}
 		else {
 			uci.set('nordvpn_easy', 'main', 'preferred_server_hostname', '');
@@ -1091,8 +1119,12 @@ return view.extend({
 				_('Confirm Server Change'),
 				[
 					_('Applying these changes will briefly interrupt the VPN connection while NordVPN Easy reconfigures the tunnel.'),
-					currentMode === 'manual' && selectedServer
-						? _('Preferred server: %s').format(formatServerLabel(selectedServer))
+					currentMode === 'manual'
+						? (selectedServer
+							? _('Preferred server: %s').format(formatServerLabel(selectedServer))
+							: (preferredStation
+								? _('Preferred server unchanged: %s').format(preferredStation)
+								: _('Manual mode will keep the existing preferred server settings.')))
 						: _('Automatic mode will use NordVPN recommended servers.')
 				]
 			);

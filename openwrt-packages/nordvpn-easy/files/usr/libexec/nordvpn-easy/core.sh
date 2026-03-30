@@ -1170,26 +1170,28 @@ change_manual_server () {
     log "Trying manual VPN server candidate $HOST_NAME ($SERVER_IP)"
 
     set_vpn_server_in_uci "$HOST_NAME" "$SERVER_IP" "$PUBLIC_KEY" "$COUNTRY_CODE" "$CITY_NAME" "$SERVER_LOAD" || continue
-    set_server_preference_in_uci "$HOST_NAME" "$SERVER_IP"
     uci commit network || {
       rm -f "$SERVER_CANDIDATES_FILE"
       log 'ERROR: COULD NOT COMMIT NETWORK CONFIGURATION'
       return 1
     }
-    uci commit nordvpn_easy || {
-      rm -f "$SERVER_CANDIDATES_FILE"
-      log 'ERROR: COULD NOT COMMIT MANUAL SERVER PREFERENCE'
-      return 1
-    }
-
-    PREFERRED_SERVER_HOSTNAME="$HOST_NAME"
-    PREFERRED_SERVER_STATION="$SERVER_IP"
-    log "Manual preferred VPN server updated to $HOST_NAME ($SERVER_IP)"
-
     if apply_server_change_runtime "$1"; then
+      set_server_preference_in_uci "$HOST_NAME" "$SERVER_IP"
+      uci commit nordvpn_easy || {
+        rm -f "$SERVER_CANDIDATES_FILE"
+        log 'ERROR: COULD NOT COMMIT MANUAL SERVER PREFERENCE'
+        return 1
+      }
+
+      PREFERRED_SERVER_HOSTNAME="$HOST_NAME"
+      PREFERRED_SERVER_STATION="$SERVER_IP"
+      log "Manual preferred VPN server updated to $HOST_NAME ($SERVER_IP)"
       rm -f "$SERVER_CANDIDATES_FILE"
       return 0
     fi
+
+    rm -f "$SERVER_CANDIDATES_FILE"
+    return 1
   done < "$SERVER_CANDIDATES_FILE"
 
   rm -f "$SERVER_CANDIDATES_FILE"
