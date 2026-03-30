@@ -30,17 +30,5 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y jq shellcheck
 
-      - name: Make check scripts executable
-        run: |
-          set -euo pipefail
-          chmod +x \
-            scripts/check-nordvpn-easy.sh \
-            tests/nordvpn-easy/test-schema.sh \
-            tests/nordvpn-easy/test-catalog-fixtures.sh \
-            tests/nordvpn-easy/test-common-lock.sh \
-            tests/nordvpn-easy/test-runtime.sh \
-            tests/nordvpn-easy/test-service-config.sh \
-            tests/nordvpn-easy/test-actions.sh
-
       - name: Run NordVPN Easy checks
-        run: ./scripts/check-nordvpn-easy.sh
+        run: bash ./scripts/check-nordvpn-easy.sh
