@@ -1178,9 +1178,9 @@ change_manual_server () {
     if apply_server_change_runtime "$1"; then
       set_server_preference_in_uci "$HOST_NAME" "$SERVER_IP"
       uci commit nordvpn_easy || {
-        rm -f "$SERVER_CANDIDATES_FILE"
         log 'ERROR: COULD NOT COMMIT MANUAL SERVER PREFERENCE'
-        return 1
+        rm -f "$SERVER_CANDIDATES_FILE"
+        continue
       }
 
       PREFERRED_SERVER_HOSTNAME="$HOST_NAME"
@@ -1191,7 +1191,7 @@ change_manual_server () {
     fi
 
     rm -f "$SERVER_CANDIDATES_FILE"
-    return 1
+    continue
   done < "$SERVER_CANDIDATES_FILE"
 
   rm -f "$SERVER_CANDIDATES_FILE"
@@ -1413,11 +1413,6 @@ fi
 if [ "$ACTION" = 'server_catalog' ]; then
   SERVER_CATALOG_QUERY="${1:-$VPN_COUNTRY}"
   SERVER_CATALOG_FORCE="${2:-0}"
-
-  require_commands || exit 1
-  fetch_server_catalog "$SERVER_CATALOG_FORCE" "$SERVER_CATALOG_QUERY" || exit $?
-  cat "$SERVER_CATALOG_FILE"
-  exit $?
 fi
 
 require_commands || exit 1
@@ -1457,7 +1452,7 @@ case "$ACTION" in
     refresh_countries_cache 1
     ;;
   server_catalog)
-    fetch_server_catalog "$SERVER_CATALOG_FORCE" "$SERVER_CATALOG_QUERY"
+    fetch_server_catalog "$SERVER_CATALOG_FORCE" "$SERVER_CATALOG_QUERY" && cat "$SERVER_CATALOG_FILE"
     ;;
   *)
     usage

@@ -1075,9 +1075,15 @@ return view.extend({
 		const currentCountry = getSelectedCountry();
 		const preferredStation = getSelectedPreferredStation();
 		const preferredStationChanged = (currentMode === 'manual' && preferredStation !== previousPreferredStation);
-		const selectedServer = (preferredStationChanged && preferredStation)
-			? serverCatalogIndex[preferredStation]
-			: null;
+		const enteringManualMode = (currentMode === 'manual' && previousMode !== 'manual');
+		const selectedServer = preferredStation ? serverCatalogIndex[preferredStation] : null;
+		const preservingExistingManualPreference = (
+			currentMode === 'manual' &&
+			previousMode === 'manual' &&
+			!preferredStationChanged &&
+			preferredStation === previousPreferredStation &&
+			!!preferredStation
+		);
 		let confirmationPromise = Promise.resolve(true);
 
 		if (currentMode === 'manual') {
@@ -1086,12 +1092,12 @@ return view.extend({
 				return Promise.resolve();
 			}
 
-			if (preferredStationChanged) {
-				if (!preferredStation || !selectedServer) {
-					ui.addNotification(null, E('p', _('Manual mode requires a valid preferred server from the current catalog.')), 'error');
-					return Promise.resolve();
-				}
+			if ((!preferredStation || !selectedServer) && !preservingExistingManualPreference) {
+				ui.addNotification(null, E('p', _('Manual mode requires a valid preferred server from the current catalog.')), 'error');
+				return Promise.resolve();
+			}
 
+			if (preferredStationChanged || enteringManualMode) {
 				uci.set('nordvpn_easy', 'main', 'preferred_server_hostname', selectedServer.hostname);
 				uci.set('nordvpn_easy', 'main', 'preferred_server_station', preferredStation);
 			}
