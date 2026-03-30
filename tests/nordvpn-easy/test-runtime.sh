@@ -2,7 +2,7 @@
 
 set -eu
 
-ROOT_DIR="$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)"
+ROOT_DIR="$(CDPATH='' cd -- "$(dirname "$0")/../.." && pwd)"
 RUNTIME_LIB="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/runtime.sh"
 
 # shellcheck disable=SC1090

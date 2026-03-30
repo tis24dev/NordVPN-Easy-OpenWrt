@@ -2,7 +2,7 @@
 
 set -eu
 
-ROOT_DIR="$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)"
+ROOT_DIR="$(CDPATH='' cd -- "$(dirname "$0")/../.." && pwd)"
 SCHEMA_LIB="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/schema.sh"
 SERVICE_CONFIG_LIB="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/service-config.sh"
 TMP_DIR="$(mktemp -d)"

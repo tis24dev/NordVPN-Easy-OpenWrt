@@ -305,7 +305,7 @@ valid_country_code () {
 }
 
 get_public_ip () {
-  local curl_out curl_rc valid_ip_check
+  local curl_out curl_rc
 
   log "get_public_ip: starting IPv4-only public IP lookup (system DNS: $(grep '^nameserver' /etc/resolv.conf 2>/dev/null | awk '{print $2}' | tr '\n' ' ' | sed 's/ $//'))"
 
@@ -396,8 +396,12 @@ lookup_public_country_by_ip () {
 
   log "lookup_public_country_by_ip: raw response for $LOOKUP_IP: $curl_raw"
 
-  country_raw=$(printf '%s' "$curl_raw" | jq -er '.country // empty' 2>/dev/null)
-  if [ $? -ne 0 ] || [ -z "$country_raw" ]; then
+  if ! country_raw=$(printf '%s' "$curl_raw" | jq -er '.country // empty' 2>/dev/null); then
+    log "ERROR: COULD NOT PARSE COUNTRY FROM RESPONSE FOR $LOOKUP_IP (raw='$curl_raw')"
+    return 1
+  fi
+
+  if [ -z "$country_raw" ]; then
     log "ERROR: COULD NOT PARSE COUNTRY FROM RESPONSE FOR $LOOKUP_IP (raw='$curl_raw')"
     return 1
   fi

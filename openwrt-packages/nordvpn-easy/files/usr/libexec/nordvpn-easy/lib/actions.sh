@@ -156,6 +156,7 @@ nordvpn_easy_sync_server_selection() {
 nordvpn_easy_change_vpn_server() {
 	CURRENT_SERVER=$(current_server_station)
 	SERVER_CANDIDATES_FILE="/tmp/nordvpn.candidates.$$"
+	server_changed=0
 
 	log "Starting VPN server rotation from current endpoint ${CURRENT_SERVER:-none}"
 
@@ -173,20 +174,24 @@ nordvpn_easy_change_vpn_server() {
 
 		set_vpn_server_in_uci "$HOST_NAME" "$SERVER_IP" "$PUBLIC_KEY" "$COUNTRY_CODE" "$CITY_NAME" "$SERVER_LOAD" || continue
 		uci commit network || {
-			rm -f "$SERVER_CANDIDATES_FILE"
 			log 'ERROR: COULD NOT COMMIT NETWORK CONFIGURATION'
-			return 1
+			continue
 		}
 
 		log "VPN server changed to $HOST_NAME ( $SERVER_IP )"
 
 		if apply_server_change_runtime "$1"; then
-			rm -f "$SERVER_CANDIDATES_FILE"
-			return 0
+			server_changed=1
+			break
 		fi
 	done < "$SERVER_CANDIDATES_FILE"
 
 	rm -f "$SERVER_CANDIDATES_FILE"
+
+	if [ "$server_changed" -eq 1 ]; then
+		return 0
+	fi
+
 	log 'NO RECOMMENDED VPN SERVER RESTORED CONNECTIVITY'
 	return 1
 }
@@ -194,6 +199,7 @@ nordvpn_easy_change_vpn_server() {
 nordvpn_easy_change_manual_server() {
 	CURRENT_SERVER=$(current_server_station)
 	SERVER_CANDIDATES_FILE="/tmp/nordvpn-manual.candidates.$$"
+	server_changed=0
 
 	require_manual_server_preference || return 1
 	fetch_server_catalog 0 "$VPN_COUNTRY" || return 1
@@ -215,29 +221,29 @@ nordvpn_easy_change_manual_server() {
 		set_vpn_server_in_uci "$HOST_NAME" "$SERVER_IP" "$PUBLIC_KEY" "$COUNTRY_CODE" "$CITY_NAME" "$SERVER_LOAD" || continue
 		uci commit network || {
 			log 'ERROR: COULD NOT COMMIT NETWORK CONFIGURATION'
-			rm -f "$SERVER_CANDIDATES_FILE"
 			continue
 		}
 		if apply_server_change_runtime "$1"; then
 			set_server_preference_in_uci "$HOST_NAME" "$SERVER_IP"
 			uci commit nordvpn_easy || {
 				log 'ERROR: COULD NOT COMMIT MANUAL SERVER PREFERENCE'
-				rm -f "$SERVER_CANDIDATES_FILE"
 				continue
 			}
 
 			PREFERRED_SERVER_HOSTNAME="$HOST_NAME"
 			PREFERRED_SERVER_STATION="$SERVER_IP"
 			log "Manual preferred VPN server updated to $HOST_NAME ($SERVER_IP)"
-			rm -f "$SERVER_CANDIDATES_FILE"
-			return 0
+			server_changed=1
+			break
 		fi
-
-		rm -f "$SERVER_CANDIDATES_FILE"
-		continue
 	done < "$SERVER_CANDIDATES_FILE"
 
 	rm -f "$SERVER_CANDIDATES_FILE"
+
+	if [ "$server_changed" -eq 1 ]; then
+		return 0
+	fi
+
 	log 'NO MANUAL VPN SERVER RESTORED CONNECTIVITY'
 	return 1
 }

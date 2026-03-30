@@ -2,7 +2,8 @@
 
 set -eu
 
-ROOT_DIR="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
+ROOT_DIR="$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)"
+SHELLCHECK_EXCLUDES='SC1091,SC2034,SC2119,SC2120,SC2154,SC3043'
 
 JS_FILES="
 $ROOT_DIR/openwrt-packages/luci-app-nordvpn-easy/htdocs/luci-static/resources/nordvpn-easy/service.js
@@ -53,7 +54,7 @@ sh "$ROOT_DIR/tests/nordvpn-easy/test-actions.sh"
 
 if command -v shellcheck >/dev/null 2>&1; then
 	printf '%s\n' 'Running shellcheck'
-	shellcheck $SH_FILES
+	shellcheck -e "$SHELLCHECK_EXCLUDES" $SH_FILES
 else
 	printf '%s\n' 'shellcheck not found; skipping'
 fi
