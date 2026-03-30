@@ -2,7 +2,9 @@
 
 nordvpn_easy_log() {
 	[ -t 2 ] && printf '*** %s ***\n' "$*" >&2
-	command -v logger >/dev/null 2>&1 && logger -t 'nordvpn-easy' "$*" >/dev/null 2>&1 || true
+	if command -v logger >/dev/null 2>&1; then
+		logger -t 'nordvpn-easy' "$*" >/dev/null 2>&1 || true
+	fi
 	return 0
 }
 
