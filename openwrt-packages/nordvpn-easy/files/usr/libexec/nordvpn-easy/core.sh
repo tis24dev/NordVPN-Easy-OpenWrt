@@ -1,4 +1,8 @@
 #!/bin/sh
+# shellcheck disable=SC2317
+# core.sh exports compatibility and orchestration helpers consumed indirectly by
+# sourced lib/*.sh modules. Recent shellcheck versions flag these helpers as
+# unreachable even though they are valid entrypoints for the sourced modules.
 
 # Use NORDVPN_TOKEN with the token you get from https://my.nordaccount.com/dashboard/nordvpn/access-tokens/
 
