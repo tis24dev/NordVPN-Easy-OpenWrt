@@ -21,6 +21,7 @@ function buildSaveApplyDebugLines(previousEnabled, currentEnabled, previousCount
 	const tokenField = managerUI.getInputElement(managerUI.ids.TOKEN_FIELD_ID, 'input');
 	const existingToken = String(uci.get('nordvpn_easy', 'main', 'nordvpn_token') || '');
 	const tokenFieldValue = String(tokenField && tokenField.value != null ? tokenField.value : '').trim();
+	const tokenFieldMasked = !!(tokenField && tokenField.getAttribute('data-token-masked') === '1');
 	let tokenSourceLabel = _('missing');
 	let preferredLabel = _('Automatic / Best recommended');
 
@@ -29,7 +30,7 @@ function buildSaveApplyDebugLines(previousEnabled, currentEnabled, previousCount
 	else if (preferredStation)
 		preferredLabel = preferredStation;
 
-	if (tokenFieldValue)
+	if (tokenFieldValue && !tokenFieldMasked)
 		tokenSourceLabel = _('provided in form');
 	else if (existingToken)
 		tokenSourceLabel = _('preserving saved token');

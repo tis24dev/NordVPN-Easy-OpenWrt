@@ -13,6 +13,7 @@
 'require view';
 
 const COUNTRIES_CACHE_PATH = '/tmp/nordvpn-easy-countries.json';
+const TOKEN_MASK_DISPLAY = '********';
 const state = managerStore.createState();
 
 const CountrySelectValue = form.ListValue.extend({
@@ -84,7 +85,12 @@ const TokenValue = form.Value.extend({
 	},
 
 	formvalue: function(section_id) {
+		const inputEl = managerUI.getInputElement(this.cbid(section_id), 'input');
 		const enteredValue = String(this.super('formvalue', arguments) || '').trim();
+		const isMasked = !!(inputEl && inputEl.getAttribute('data-token-masked') === '1');
+
+		if (isMasked)
+			return this.storedValue(section_id);
 
 		return enteredValue || this.storedValue(section_id);
 	},
@@ -100,14 +106,35 @@ const TokenValue = form.Value.extend({
 	},
 
 	renderWidget: function(section_id, option_index, cfgvalue) {
-		const originalPlaceholder = this.placeholder;
+		const storedValue = this.storedValue(section_id);
+		const widget = this.super('renderWidget', [ section_id, option_index, storedValue ? TOKEN_MASK_DISPLAY : cfgvalue ]);
+		const inputEl = widget && widget.querySelector ? widget.querySelector('input') : null;
 
-		if (!cfgvalue && this.storedValue(section_id))
-			this.placeholder = _('Saved token present');
+		if (!storedValue || !inputEl)
+			return widget;
 
-		const widget = this.super('renderWidget', arguments);
+		const setMaskedState = function(masked) {
+			if (masked) {
+				inputEl.value = TOKEN_MASK_DISPLAY;
+				inputEl.setAttribute('data-token-masked', '1');
+			}
+			else {
+				inputEl.removeAttribute('data-token-masked');
+			}
+		};
 
-		this.placeholder = originalPlaceholder;
+		setMaskedState(true);
+		inputEl.addEventListener('focus', function() {
+			if (inputEl.getAttribute('data-token-masked') === '1') {
+				inputEl.value = '';
+				setMaskedState(false);
+			}
+		});
+		inputEl.addEventListener('blur', function() {
+			if (!String(inputEl.value || '').trim())
+				setMaskedState(true);
+		});
+
 		return widget;
 	},
 
@@ -190,6 +217,7 @@ return view.extend({
 		o = s.option(TokenValue, 'nordvpn_token', _('NordVPN Token'));
 		o.password = true;
 		o.rmempty = false;
+		o.optional = true;
 		o.description = _('Required. NordVPN access token. If this password field submits empty, the saved token is preserved.');
 
 		o = s.option(CountrySelectValue, 'vpn_country', _('Server Country'));
