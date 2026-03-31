@@ -1,4 +1,5 @@
 'use strict';
+'require baseclass';
 'require nordvpn-easy/manager-data as managerData';
 'require nordvpn-easy/manager-format as managerFormat';
 'require ui';
@@ -415,7 +416,7 @@ function renderStatusSection() {
 	]);
 }
 
-return {
+return baseclass.extend({
 	ids: ids,
 	getSelectElement: getSelectElement,
 	getInputElement: getInputElement,
@@ -436,4 +437,4 @@ return {
 	updateServerSelectionState: updateServerSelectionState,
 	showConfirmationModal: showConfirmationModal,
 	renderStatusSection: renderStatusSection
-};
+});

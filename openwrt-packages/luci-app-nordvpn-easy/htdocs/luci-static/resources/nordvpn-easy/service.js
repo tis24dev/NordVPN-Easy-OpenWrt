@@ -1,4 +1,5 @@
 'use strict';
+'require baseclass';
 'require fs';
 'require ui';
 
@@ -116,7 +117,7 @@ function downloadTextFile(name, content) {
 	window.URL.revokeObjectURL(url);
 }
 
-return {
+return baseclass.extend({
 	parseJson: parseJson,
 	parseExecJsonResponse: parseExecJsonResponse,
 	responseMessage: responseMessage,
@@ -127,4 +128,4 @@ return {
 	notifyInfo: notifyInfo,
 	notifyError: notifyError,
 	downloadTextFile: downloadTextFile
-};
+});

@@ -1,4 +1,5 @@
 'use strict';
+'require baseclass';
 
 function humanizeAction(action) {
 	return String(action || _('operation')).replace(/_/g, ' ');
@@ -90,11 +91,11 @@ function formatRelativeTimestamp(epochSeconds) {
 	return formatRelativeAge((Date.now() / 1000) - ts);
 }
 
-return {
+return baseclass.extend({
 	humanizeAction: humanizeAction,
 	formatActionsLabel: formatActionsLabel,
 	formatServerLabel: formatServerLabel,
 	formatServerSummary: formatServerSummary,
 	formatRelativeAge: formatRelativeAge,
 	formatRelativeTimestamp: formatRelativeTimestamp
-};
+});
