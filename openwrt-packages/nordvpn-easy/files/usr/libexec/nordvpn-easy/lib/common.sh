@@ -78,7 +78,7 @@ nordvpn_easy_cleanup_temp_paths() {
 nordvpn_easy_mktemp_dir() {
 	local prefix="${1:-runtime}"
 	local result_var="${2:-}"
-	local temp_dir=''
+	local workspace_dir=''
 
 	command -v mktemp >/dev/null 2>&1 || {
 		nordvpn_easy_log_blocker 'runtime' "required command 'mktemp' is missing"
@@ -86,20 +86,20 @@ nordvpn_easy_mktemp_dir() {
 	}
 
 	umask 077
-	temp_dir="$(mktemp -d "/tmp/nordvpn-easy.${prefix}.XXXXXX" 2>/dev/null)" || {
+	workspace_dir="$(mktemp -d "/tmp/nordvpn-easy.${prefix}.XXXXXX" 2>/dev/null)" || {
 		nordvpn_easy_log_blocker 'runtime' "could not create secure temporary workspace for ${prefix}"
 		return 1
 	}
 
-	nordvpn_easy_register_temp_path "$temp_dir" || {
-		rm -rf -- "$temp_dir"
+	nordvpn_easy_register_temp_path "$workspace_dir" || {
+		rm -rf -- "$workspace_dir"
 		return 1
 	}
 
 	if [ -n "$result_var" ]; then
-		eval "$result_var='$(printf "%s" "$temp_dir" | sed "s/'/'\\\\''/g")'"
+		eval "$result_var='$(printf "%s" "$workspace_dir" | sed "s/'/'\\\\''/g")'"
 	else
-		printf '%s\n' "$temp_dir"
+		printf '%s\n' "$workspace_dir"
 	fi
 }
 
