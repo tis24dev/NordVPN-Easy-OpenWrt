@@ -73,6 +73,7 @@ run_core_action() {
 	local action_temp_dir=''
 	local action_config=''
 	local written_options=0
+	local failure_log_mode="${RUN_CORE_ACTION_FAILURE_LOG_MODE:-error}"
 	local rc=0
 	shift
 
@@ -118,6 +119,8 @@ run_core_action() {
 
 	if [ "$rc" -eq 0 ]; then
 		log_service_info "apply: core action '$action' completed successfully (duration=${action_duration}s)"
+	elif [ "$failure_log_mode" = 'info' ]; then
+		log_service_info "apply: core action '$action' failed but is deferred (duration=${action_duration}s, rc=$rc)"
 	else
 		log_service_error "apply: BLOCKER: core action '$action' failed (duration=${action_duration}s, rc=$rc)"
 	fi
@@ -327,6 +330,8 @@ disable_vpn_runtime() {
 }
 
 start() {
+	local previous_failure_log_mode="${RUN_CORE_ACTION_FAILURE_LOG_MODE-}"
+
 	load_service_config
 	log_service_info 'service start requested'
 
@@ -338,9 +343,11 @@ start() {
 
 	install_hooks || return 1
 
+	RUN_CORE_ACTION_FAILURE_LOG_MODE='info'
 	if ! run_core_action check; then
-		echo "Initial check failed. Hooks are installed; future cron/hotplug runs will retry."
+		log_service_info 'service: initial check failed; hooks are installed and future cron/hotplug runs will retry'
 	fi
+	RUN_CORE_ACTION_FAILURE_LOG_MODE="$previous_failure_log_mode"
 }
 
 stop() {
