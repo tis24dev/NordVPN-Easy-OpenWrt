@@ -70,18 +70,24 @@ PREFERRED_SERVER_HOSTNAME='it12.nordvpn.com'
 PREFERRED_SERVER_STATION='it123'
 
 log() { :; }
-require_manual_server_preference() { return 0; }
 fetch_server_catalog() { return 0; }
-current_server_station() { printf '%s\n' "$CURRENT_SERVER_VALUE"; }
-set_vpn_server_in_uci() { LAST_SET_SERVER="$1|$2"; LAST_SET_PUBLIC_KEY="$3"; return 0; }
-set_server_preference_in_uci() { SAVED_PREFERENCE="$1|$2"; }
-verify_public_country_selection() { :; }
-ping_interface() { return 0; }
-get_servers_list() { return 0; }
-server_selection_is_manual() { [ "${SERVER_SELECTION_MODE:-auto}" = 'manual' ]; }
-vpn_is_configured() { return 0; }
-preferred_server_matches_current() { return 1; }
-apply_preferred_server_from_catalog() { return 0; }
+nordvpn_easy_require_manual_server_preference() { return 0; }
+nordvpn_easy_current_server_station() { printf '%s\n' "$CURRENT_SERVER_VALUE"; }
+nordvpn_easy_set_vpn_server_in_uci() { LAST_SET_SERVER="$1|$2"; LAST_SET_PUBLIC_KEY="$3"; return 0; }
+nordvpn_easy_set_server_preference_in_uci() { SAVED_PREFERENCE="$1|$2"; }
+nordvpn_easy_ping_interface() { return 0; }
+nordvpn_easy_get_servers_list() { return 0; }
+nordvpn_easy_server_selection_is_manual() { [ "${SERVER_SELECTION_MODE:-auto}" = 'manual' ]; }
+nordvpn_easy_vpn_is_configured() { return 0; }
+nordvpn_easy_preferred_server_matches_current() { return 1; }
+nordvpn_easy_apply_preferred_server_from_catalog() { return 0; }
+nordvpn_easy_apply_server_change_runtime() {
+	APPLY_COUNT=$((APPLY_COUNT + 1))
+	if [ "$APPLY_COUNT" -le "$APPLY_FAIL_UNTIL" ]; then
+		return 1
+	fi
+	return 0
+}
 
 uci() {
 	if [ "$1" = 'commit' ] && [ "$2" = 'network' ]; then
@@ -97,14 +103,6 @@ uci() {
 		return 0
 	fi
 
-	return 0
-}
-
-apply_server_change_runtime() {
-	APPLY_COUNT=$((APPLY_COUNT + 1))
-	if [ "$APPLY_COUNT" -le "$APPLY_FAIL_UNTIL" ]; then
-		return 1
-	fi
 	return 0
 }
 

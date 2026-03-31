@@ -538,6 +538,7 @@ fetch_server_catalog () {
   COUNTRY_QUERY="${2:-$VPN_COUNTRY}"
   SERVER_CATALOG_TMP="${SERVER_CATALOG_FILE}.tmp.$$"
   SERVER_CATALOG_TS_TMP="${SERVER_CATALOG_TS_FILE}.tmp.$$"
+  SERVER_CATALOG_RAW_TMP="${SERVER_CATALOG_TMP}.raw"
   SERVER_CATALOG_URL=''
 
   [ -n "$COUNTRY_QUERY" ] || {
@@ -555,38 +556,53 @@ fetch_server_catalog () {
   SERVER_CATALOG_URL="${SERVER_CATALOG_URL_BASE}&filters[country_id]=$RESOLVED_COUNTRY_ID"
   log "Refreshing NordVPN server catalog for $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
 
-  curl -g -fsS --connect-timeout 15 --max-time 45 "$SERVER_CATALOG_URL" | \
-    nordvpn_easy_build_server_catalog_json "$RESOLVED_COUNTRY_ID" "$RESOLVED_COUNTRY_CODE" "$RESOLVED_COUNTRY_NAME" \
-    > "$SERVER_CATALOG_TMP" 2>/dev/null || {
-      rm -f "$SERVER_CATALOG_TMP" "$SERVER_CATALOG_TS_TMP"
+  curl -g -fsS --connect-timeout 15 --max-time 45 -o "$SERVER_CATALOG_RAW_TMP" "$SERVER_CATALOG_URL" || {
+      rm -f "$SERVER_CATALOG_RAW_TMP" "$SERVER_CATALOG_TMP" "$SERVER_CATALOG_TS_TMP"
       server_catalog_cache_matches_country "$RESOLVED_COUNTRY_ID" && return 0
-      log "ERROR: COULD NOT REFRESH SERVER CATALOG FOR $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
+      log "ERROR: COULD NOT DOWNLOAD SERVER CATALOG FOR $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
       return 1
     }
 
+  [ -s "$SERVER_CATALOG_RAW_TMP" ] || {
+    rm -f "$SERVER_CATALOG_RAW_TMP" "$SERVER_CATALOG_TMP" "$SERVER_CATALOG_TS_TMP"
+    server_catalog_cache_matches_country "$RESOLVED_COUNTRY_ID" && return 0
+    log "ERROR: EMPTY SERVER CATALOG RESPONSE FOR $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
+    return 1
+  }
+
+  nordvpn_easy_build_server_catalog_json "$RESOLVED_COUNTRY_ID" "$RESOLVED_COUNTRY_CODE" "$RESOLVED_COUNTRY_NAME" \
+    < "$SERVER_CATALOG_RAW_TMP" > "$SERVER_CATALOG_TMP" 2>/dev/null || {
+      rm -f "$SERVER_CATALOG_RAW_TMP" "$SERVER_CATALOG_TMP" "$SERVER_CATALOG_TS_TMP"
+      server_catalog_cache_matches_country "$RESOLVED_COUNTRY_ID" && return 0
+      log "ERROR: COULD NOT TRANSFORM SERVER CATALOG FOR $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
+      return 1
+    }
+
+  rm -f "$SERVER_CATALOG_RAW_TMP"
+
   nordvpn_easy_server_catalog_has_servers "$SERVER_CATALOG_TMP" || {
-    rm -f "$SERVER_CATALOG_TMP" "$SERVER_CATALOG_TS_TMP"
+    rm -f "$SERVER_CATALOG_RAW_TMP" "$SERVER_CATALOG_TMP" "$SERVER_CATALOG_TS_TMP"
     server_catalog_cache_matches_country "$RESOLVED_COUNTRY_ID" && return 0
     log "ERROR: NO WIREGUARD SERVERS FOUND FOR COUNTRY '$COUNTRY_QUERY'"
     return 1
   }
 
   date +%s > "$SERVER_CATALOG_TS_TMP" || {
-    rm -f "$SERVER_CATALOG_TMP" "$SERVER_CATALOG_TS_TMP"
+    rm -f "$SERVER_CATALOG_RAW_TMP" "$SERVER_CATALOG_TMP" "$SERVER_CATALOG_TS_TMP"
     server_catalog_cache_matches_country "$RESOLVED_COUNTRY_ID" && return 0
     log 'ERROR: COULD NOT WRITE SERVER CATALOG TIMESTAMP'
     return 1
   }
 
   mv "$SERVER_CATALOG_TMP" "$SERVER_CATALOG_FILE" || {
-    rm -f "$SERVER_CATALOG_TMP" "$SERVER_CATALOG_TS_TMP"
+    rm -f "$SERVER_CATALOG_RAW_TMP" "$SERVER_CATALOG_TMP" "$SERVER_CATALOG_TS_TMP"
     server_catalog_cache_matches_country "$RESOLVED_COUNTRY_ID" && return 0
     log 'ERROR: COULD NOT UPDATE SERVER CATALOG CACHE'
     return 1
   }
 
   mv "$SERVER_CATALOG_TS_TMP" "$SERVER_CATALOG_TS_FILE" || {
-    rm -f "$SERVER_CATALOG_TS_TMP"
+    rm -f "$SERVER_CATALOG_RAW_TMP" "$SERVER_CATALOG_TS_TMP"
     server_catalog_cache_matches_country "$RESOLVED_COUNTRY_ID" && return 0
     log 'ERROR: COULD NOT UPDATE SERVER CATALOG TIMESTAMP'
     return 1

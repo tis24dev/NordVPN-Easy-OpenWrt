@@ -1,7 +1,24 @@
 #!/bin/sh
 
+# This module is sourced by core.sh. Some orchestration helpers remain provided
+# by core.sh (for example fetch_server_catalog, resolve_country_filter,
+# refresh_countries_cache and get_private_key), so validate that sourcing
+# contract when these code paths execute.
+
+nordvpn_easy_require_core_action_helpers() {
+	local helper
+
+	for helper in "$@"; do
+		command -v "$helper" >/dev/null 2>&1 || {
+			printf '%s\n' "nordvpn-easy: lib/actions.sh requires helper '$helper' from core.sh before invocation" >&2
+			return 1
+		}
+	done
+}
+
 nordvpn_easy_find_preferred_server_in_catalog() {
-	require_manual_server_preference || return 1
+	nordvpn_easy_require_core_action_helpers fetch_server_catalog || return 1
+	nordvpn_easy_require_manual_server_preference || return 1
 	fetch_server_catalog 0 "$VPN_COUNTRY" || return 1
 
 	PREFERRED_SERVER_LINE=$(jq -er \
@@ -28,24 +45,25 @@ nordvpn_easy_find_preferred_server_in_catalog() {
 
 nordvpn_easy_preferred_server_matches_current() {
 	[ -n "$PREFERRED_SERVER_STATION" ] || return 1
-	[ "$(current_server_station)" = "$PREFERRED_SERVER_STATION" ]
+	[ "$(nordvpn_easy_current_server_station)" = "$PREFERRED_SERVER_STATION" ]
 }
 
 nordvpn_easy_apply_preferred_server_from_catalog() {
-	find_preferred_server_in_catalog || return 1
+	nordvpn_easy_find_preferred_server_in_catalog || return 1
 
 	IFS="$(printf '\t')" read -r HOST_NAME SERVER_IP PUBLIC_KEY COUNTRY_CODE CITY_NAME SERVER_LOAD <<EOF
 $PREFERRED_SERVER_LINE
 EOF
 
 	log "Applying preferred VPN server $HOST_NAME ($SERVER_IP) for $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
-	set_vpn_server_in_uci "$HOST_NAME" "$SERVER_IP" "$PUBLIC_KEY" "$COUNTRY_CODE" "$CITY_NAME" "$SERVER_LOAD"
+	nordvpn_easy_set_vpn_server_in_uci "$HOST_NAME" "$SERVER_IP" "$PUBLIC_KEY" "$COUNTRY_CODE" "$CITY_NAME" "$SERVER_LOAD"
 }
 
 nordvpn_easy_build_server_recommendations_url() {
 	SERVER_RECOMMENDATIONS_URL="$SERVER_RECOMMENDATIONS_URL_BASE"
 
 	if [ -n "$VPN_COUNTRY" ]; then
+		nordvpn_easy_require_core_action_helpers resolve_country_filter || return 1
 		resolve_country_filter || return 1
 		SERVER_RECOMMENDATIONS_URL="${SERVER_RECOMMENDATIONS_URL}&filters[country_id]=$RESOLVED_COUNTRY_ID"
 		log "Building recommendations URL for country filter $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
@@ -58,7 +76,7 @@ nordvpn_easy_build_server_recommendations_url() {
 
 nordvpn_easy_get_servers_list() {
 	SERVER_LIST_TMP="${SERVER_LIST_FILE}.tmp.$$"
-	SERVER_RECOMMENDATIONS_URL=$(build_server_recommendations_url) || return 1
+	SERVER_RECOMMENDATIONS_URL=$(nordvpn_easy_build_server_recommendations_url) || return 1
 
 	log "Downloading recommended VPN server list to $SERVER_LIST_TMP"
 
@@ -116,11 +134,11 @@ $FIRST_SERVER
 EOF
 
 	log "Selected first recommended VPN server $HOST_NAME ($SERVER_IP)"
-	set_vpn_server_in_uci "$HOST_NAME" "$SERVER_IP" "$PUBLIC_KEY" "$COUNTRY_CODE" "$CITY_NAME" "$SERVER_LOAD"
+	nordvpn_easy_set_vpn_server_in_uci "$HOST_NAME" "$SERVER_IP" "$PUBLIC_KEY" "$COUNTRY_CODE" "$CITY_NAME" "$SERVER_LOAD"
 }
 
 nordvpn_easy_change_to_preferred_server() {
-	apply_preferred_server_from_catalog || return 1
+	nordvpn_easy_apply_preferred_server_from_catalog || return 1
 
 	uci commit network || {
 		log 'ERROR: COULD NOT COMMIT NETWORK CONFIGURATION'
@@ -128,38 +146,38 @@ nordvpn_easy_change_to_preferred_server() {
 	}
 
 	log "VPN server changed to preferred server $PREFERRED_SERVER_HOSTNAME ($PREFERRED_SERVER_STATION)"
-	apply_server_change_runtime "${1:-reload}"
+	nordvpn_easy_apply_server_change_runtime "${1:-reload}"
 }
 
 nordvpn_easy_sync_server_selection() {
-	vpn_is_configured || return 0
+	nordvpn_easy_vpn_is_configured || return 0
 
-	if server_selection_is_manual; then
-		require_manual_server_preference || return 1
+	if nordvpn_easy_server_selection_is_manual; then
+		nordvpn_easy_require_manual_server_preference || return 1
 
-		if preferred_server_matches_current; then
+		if nordvpn_easy_preferred_server_matches_current; then
 			log 'Current VPN server already matches the preferred manual server'
 			return 0
 		fi
 
 		log 'Current VPN server does not match the preferred manual server, applying preference'
-		change_to_preferred_server reload
+		nordvpn_easy_change_to_preferred_server reload
 		return $?
 	fi
 
-	get_servers_list || return 1
+	nordvpn_easy_get_servers_list || return 1
 
-	if current_server_matches_recommendations; then
+	if nordvpn_easy_current_server_matches_recommendations; then
 		log 'Current VPN server already matches the selected country/filter'
 		return 0
 	fi
 
 	log 'Current VPN server does not match the selected country/filter, changing server'
-	change_vpn_server reload
+	nordvpn_easy_change_vpn_server reload
 }
 
 nordvpn_easy_change_vpn_server() {
-	CURRENT_SERVER=$(current_server_station)
+	CURRENT_SERVER=$(nordvpn_easy_current_server_station)
 	SERVER_CANDIDATES_FILE="/tmp/nordvpn.candidates.$$"
 	commit_failed=0
 	server_changed=0
@@ -178,7 +196,7 @@ nordvpn_easy_change_vpn_server() {
 
 		log "Trying VPN server candidate $HOST_NAME ($SERVER_IP)"
 
-		set_vpn_server_in_uci "$HOST_NAME" "$SERVER_IP" "$PUBLIC_KEY" "$COUNTRY_CODE" "$CITY_NAME" "$SERVER_LOAD" || continue
+		nordvpn_easy_set_vpn_server_in_uci "$HOST_NAME" "$SERVER_IP" "$PUBLIC_KEY" "$COUNTRY_CODE" "$CITY_NAME" "$SERVER_LOAD" || continue
 		uci commit network || {
 			log 'ERROR: COULD NOT COMMIT NETWORK CONFIGURATION'
 			commit_failed=1
@@ -187,7 +205,7 @@ nordvpn_easy_change_vpn_server() {
 
 		log "VPN server changed to $HOST_NAME ( $SERVER_IP )"
 
-		if apply_server_change_runtime "$1"; then
+		if nordvpn_easy_apply_server_change_runtime "$1"; then
 			server_changed=1
 			break
 		fi
@@ -208,12 +226,12 @@ nordvpn_easy_change_vpn_server() {
 }
 
 nordvpn_easy_change_manual_server() {
-	CURRENT_SERVER=$(current_server_station)
+	CURRENT_SERVER=$(nordvpn_easy_current_server_station)
 	SERVER_CANDIDATES_FILE="/tmp/nordvpn-manual.candidates.$$"
 	commit_failed=0
 	server_changed=0
 
-	require_manual_server_preference || return 1
+	nordvpn_easy_require_manual_server_preference || return 1
 	fetch_server_catalog 0 "$VPN_COUNTRY" || return 1
 
 	log "Starting manual VPN server rotation from current endpoint ${CURRENT_SERVER:-none}"
@@ -230,14 +248,14 @@ nordvpn_easy_change_manual_server() {
 
 		log "Trying manual VPN server candidate $HOST_NAME ($SERVER_IP)"
 
-		set_vpn_server_in_uci "$HOST_NAME" "$SERVER_IP" "$PUBLIC_KEY" "$COUNTRY_CODE" "$CITY_NAME" "$SERVER_LOAD" || continue
+		nordvpn_easy_set_vpn_server_in_uci "$HOST_NAME" "$SERVER_IP" "$PUBLIC_KEY" "$COUNTRY_CODE" "$CITY_NAME" "$SERVER_LOAD" || continue
 		uci commit network || {
 			log 'ERROR: COULD NOT COMMIT NETWORK CONFIGURATION'
 			commit_failed=1
 			break
 		}
-		if apply_server_change_runtime "$1"; then
-			set_server_preference_in_uci "$HOST_NAME" "$SERVER_IP"
+		if nordvpn_easy_apply_server_change_runtime "$1"; then
+			nordvpn_easy_set_server_preference_in_uci "$HOST_NAME" "$SERVER_IP"
 			if ! uci commit nordvpn_easy; then
 				log 'WARNING: COULD NOT COMMIT MANUAL SERVER PREFERENCE; KEEPING WORKING RUNTIME SERVER'
 			fi
@@ -265,18 +283,20 @@ nordvpn_easy_change_manual_server() {
 }
 
 nordvpn_easy_configure_vpn_interface() {
+	nordvpn_easy_require_core_action_helpers get_private_key || return 1
 	log "$VPN_IF NOT CONFIGURED - IT WILL BE CREATED"
-	log_vpn_interface_state 'before-create'
+	nordvpn_easy_log_vpn_interface_state 'before-create'
 	log "Creating WireGuard interface $VPN_IF with address $VPN_ADDR and endpoint port $VPN_PORT"
 
 	get_private_key || return 1
-	if server_selection_is_manual; then
-		require_manual_server_preference || return 1
+	if nordvpn_easy_server_selection_is_manual; then
+		nordvpn_easy_require_core_action_helpers fetch_server_catalog || return 1
+		nordvpn_easy_require_manual_server_preference || return 1
 		fetch_server_catalog 0 "$VPN_COUNTRY" || return 1
 	else
-		get_servers_list || return 1
+		nordvpn_easy_get_servers_list || return 1
 	fi
-	ensure_vpn_in_wan_zone || return 1
+	nordvpn_easy_ensure_vpn_in_wan_zone || return 1
 
 	uci -q delete "network.${VPN_IF}"
 	uci set "network.${VPN_IF}"='interface'
@@ -302,10 +322,10 @@ nordvpn_easy_configure_vpn_interface() {
 	uci set "network.${VPN_IF}server.route_allowed_ips"='1'
 	uci add_list "network.${VPN_IF}server.allowed_ips"='0.0.0.0/0'
 
-	if server_selection_is_manual; then
-		apply_preferred_server_from_catalog || return 1
+	if nordvpn_easy_server_selection_is_manual; then
+		nordvpn_easy_apply_preferred_server_from_catalog || return 1
 	else
-		set_first_server_from_list || return 1
+		nordvpn_easy_set_first_server_from_list || return 1
 	fi
 
 	uci set "network.${WAN_IF}.metric"='1024'
@@ -320,42 +340,44 @@ nordvpn_easy_configure_vpn_interface() {
 	}
 
 	log "$VPN_IF CREATED"
-	log_vpn_interface_state 'after-create'
+	nordvpn_easy_log_vpn_interface_state 'after-create'
 }
 
 nordvpn_easy_bootstrap_if_needed() {
+	nordvpn_easy_require_core_action_helpers refresh_countries_cache || return 1
 	log "Bootstrapping VPN state for interface $VPN_IF"
-	log_vpn_interface_state 'bootstrap-start'
+	nordvpn_easy_log_vpn_interface_state 'bootstrap-start'
 	refresh_countries_cache || true
 	if [ -n "$VPN_COUNTRY" ]; then
+		nordvpn_easy_require_core_action_helpers resolve_country_filter || return 1
 		resolve_country_filter || return 1
 	fi
 
-	if ! vpn_is_configured; then
-		configure_vpn_interface || return 1
+	if ! nordvpn_easy_vpn_is_configured; then
+		nordvpn_easy_configure_vpn_interface || return 1
 	else
-		ensure_vpn_interface_enabled || return 1
+		nordvpn_easy_ensure_vpn_interface_enabled || return 1
 	fi
 
-	ensure_vpn_in_wan_zone || return 1
-	ensure_vpn_interface_present || return 1
+	nordvpn_easy_ensure_vpn_in_wan_zone || return 1
+	nordvpn_easy_ensure_vpn_interface_present || return 1
 	log "Bootstrap completed for interface $VPN_IF"
-	log_vpn_interface_state 'bootstrap-complete'
+	nordvpn_easy_log_vpn_interface_state 'bootstrap-complete'
 }
 
 nordvpn_easy_rotate_action() {
 	log 'Rotate action started'
-	bootstrap_if_needed || return 1
+	nordvpn_easy_bootstrap_if_needed || return 1
 
-	if server_selection_is_manual; then
+	if nordvpn_easy_server_selection_is_manual; then
 		log 'Changing preferred manual VPN server'
-		change_manual_server reload
+		nordvpn_easy_change_manual_server reload
 		return $?
 	fi
 
-	get_servers_list || return 1
+	nordvpn_easy_get_servers_list || return 1
 	log 'Changing VPN server'
-	change_vpn_server reload
+	nordvpn_easy_change_vpn_server reload
 }
 
 nordvpn_easy_check_once() {
@@ -367,14 +389,14 @@ nordvpn_easy_check_once() {
 	local backoff_steps
 
 	log "Starting VPN health-check on interface $VPN_IF"
-	if ! server_selection_is_manual; then
-		[ -f "$SERVER_LIST_FILE" ] || get_servers_list || true
+	if ! nordvpn_easy_server_selection_is_manual; then
+		[ -f "$SERVER_LIST_FILE" ] || nordvpn_easy_get_servers_list || true
 	fi
 
-	while ! ping_interface "$VPN_IF"; do
+	while ! nordvpn_easy_ping_interface "$VPN_IF"; do
 		failed_pings=$((failed_pings+1))
 		retry_delay="$FAILURE_RETRY_DELAY"
-		ping_wan || {
+		nordvpn_easy_ping_wan || {
 			log "WAN connectivity is down while VPN health-check is failing on $VPN_IF; skipping VPN recovery"
 			return 0
 		}
@@ -393,19 +415,19 @@ nordvpn_easy_check_once() {
 			log "Requesting ifup for interface $VPN_IF during recovery"
 			ifup "$VPN_IF"
 			sleep "$POST_RESTART_DELAY"
-			log_vpn_interface_state 'after-recovery-restart'
-		elif [ "$failed_pings" -ge "$SERVER_ROTATE_THRESHOLD" ]; then
-			log "PING FAILED $failed_pings TIMES"
+				nordvpn_easy_log_vpn_interface_state 'after-recovery-restart'
+			elif [ "$failed_pings" -ge "$SERVER_ROTATE_THRESHOLD" ]; then
+				log "PING FAILED $failed_pings TIMES"
 
-			if server_selection_is_manual; then
-				log 'Manual server selection is enabled; skipping automatic server rotation'
-			else
-				if get_servers_list; then
-					log 'Changing VPN server'
-					change_vpn_server restart && return 0
+				if nordvpn_easy_server_selection_is_manual; then
+					log 'Manual server selection is enabled; skipping automatic server rotation'
 				else
-					log 'Refreshing VPN server list failed'
-				fi
+					if nordvpn_easy_get_servers_list; then
+						log 'Changing VPN server'
+						nordvpn_easy_change_vpn_server restart && return 0
+					else
+						log 'Refreshing VPN server list failed'
+					fi
 			fi
 
 			log 'Restarting network'
