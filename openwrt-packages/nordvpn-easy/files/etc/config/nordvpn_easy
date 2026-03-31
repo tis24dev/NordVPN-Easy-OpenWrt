@@ -1,6 +1,7 @@
 config nordvpn_easy 'main'
 	option enabled '0'
 	option nordvpn_token ''
+	option config_schema_version '2'
 	option wan_if 'wan'
 	option vpn_if 'wg0'
 	option vpn_country ''

@@ -2,27 +2,26 @@
 
 # Use NORDVPN_TOKEN with the token you get from https://my.nordaccount.com/dashboard/nordvpn/access-tokens/
 
-NORDVPN_TOKEN="${NORDVPN_TOKEN:-}"
-WAN_IF="${WAN_IF:-wan}"
-VPN_IF="${VPN_IF:-wg0}"
-VPN_COUNTRY="${VPN_COUNTRY:-}"                 # optional: country code (IT), country name (Italy) or country id
-SERVER_SELECTION_MODE="${SERVER_SELECTION_MODE:-auto}"
-PREFERRED_SERVER_HOSTNAME="${PREFERRED_SERVER_HOSTNAME:-}"
-PREFERRED_SERVER_STATION="${PREFERRED_SERVER_STATION:-}"
-SERVER_CACHE_ENABLED="${SERVER_CACHE_ENABLED:-1}"
-SERVER_CACHE_TTL="${SERVER_CACHE_TTL:-86400}"
-VPN_PORT="${VPN_PORT:-51820}"                 # NordVPN-recommended default; can be changed via LuCI or env
-VPN_ADDR="${VPN_ADDR:-10.5.0.2/32}"           # NordVPN-recommended default; can be changed via LuCI or env
-VPN_DNS1="${VPN_DNS1:-103.86.99.99}"          # optional: these are the Threat Protection Lite DNS servers
-VPN_DNS2="${VPN_DNS2:-103.86.96.96}"          # optional: these are the Threat Protection Lite DNS servers
-CHECK_CRON_SCHEDULE="${CHECK_CRON_SCHEDULE:-* * * * *}"
-ENABLE_HOTPLUG="${ENABLE_HOTPLUG:-1}"
-FAILURE_RETRY_DELAY="${FAILURE_RETRY_DELAY:-6}"
-SERVER_ROTATE_THRESHOLD="${SERVER_ROTATE_THRESHOLD:-5}"
-INTERFACE_RESTART_THRESHOLD="${INTERFACE_RESTART_THRESHOLD:-10}"
-MAX_INTERFACE_RESTARTS="${MAX_INTERFACE_RESTARTS:-3}"
-INTERFACE_RESTART_DELAY="${INTERFACE_RESTART_DELAY:-10}"
-POST_RESTART_DELAY="${POST_RESTART_DELAY:-60}"
+LIB_DIR='/usr/libexec/nordvpn-easy/lib'
+SCHEMA_LIB="${LIB_DIR}/schema.sh"
+COMMON_LIB="${LIB_DIR}/common.sh"
+CATALOG_LIB="${LIB_DIR}/catalog.sh"
+WIREGUARD_LIB="${LIB_DIR}/wireguard.sh"
+ACTIONS_LIB="${LIB_DIR}/actions.sh"
+
+# shellcheck disable=SC1090
+. "$SCHEMA_LIB" || exit 1
+# shellcheck disable=SC1090
+. "$COMMON_LIB" || exit 1
+# shellcheck disable=SC1090
+. "$CATALOG_LIB" || exit 1
+# shellcheck disable=SC1090
+. "$WIREGUARD_LIB" || exit 1
+# shellcheck disable=SC1090
+. "$ACTIONS_LIB" || exit 1
+
+nordvpn_easy_apply_env_defaults
+
 VPN_INTERFACE_PRESENT_DELAY="${VPN_INTERFACE_PRESENT_DELAY:-10}"
 
 SERVER_LIST_FILE='/tmp/nordvpn.json'
@@ -73,21 +72,11 @@ IP18='209.244.0.3'
 IP19='209.244.0.4'
 
 log () {
-  [ -t 2 ] && printf '*** %s ***\n' "$*" >&2
-  command -v logger >/dev/null 2>&1 && logger -t 'nordvpn-easy' "$*"
+  nordvpn_easy_log "$@"
 }
 
 curl_rc_meaning () {
-  case "$1" in
-    0)  printf 'ok' ;;
-    6)  printf 'could not resolve host (DNS failure)' ;;
-    7)  printf 'failed to connect to host' ;;
-    28) printf 'operation timed out' ;;
-    35) printf 'SSL/TLS handshake failed' ;;
-    52) printf 'empty reply from server' ;;
-    56) printf 'receive failure' ;;
-    *)  printf 'curl error %s' "$1" ;;
-  esac
+  nordvpn_easy_curl_rc_meaning "$@"
 }
 
 usage () {
@@ -112,14 +101,7 @@ EOF
 }
 
 lock_contention_is_nonfatal () {
-  case "$ACTION" in
-    run|check|refresh_countries)
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
+  nordvpn_easy_lock_contention_is_nonfatal "$@"
 }
 
 load_config () {
@@ -136,213 +118,63 @@ load_config () {
 }
 
 require_commands () {
-  log 'Validating required system commands'
-  for cmd in awk curl ifdown ifup ip jq ping uci; do
-    command -v "$cmd" >/dev/null 2>&1 || {
-      log "$cmd IS MISSING, PLEASE INSTALL"
-      return 1
-    }
-  done
-  log 'Required system commands are available'
+  nordvpn_easy_require_commands "$@"
 }
 
 server_selection_is_manual () {
-  [ "$SERVER_SELECTION_MODE" = 'manual' ]
+  nordvpn_easy_server_selection_is_manual "$@"
 }
 
 server_cache_is_enabled () {
-  [ "$SERVER_CACHE_ENABLED" = '1' ]
+  nordvpn_easy_server_cache_is_enabled "$@"
 }
 
 current_server_station () {
-  uci -q get "network.${VPN_IF}server.nordvpn_station" 2>/dev/null || \
-  uci -q get "network.${VPN_IF}server.endpoint_host" 2>/dev/null
+  nordvpn_easy_current_server_station "$@"
 }
 
 set_server_preference_in_uci () {
-  uci set "nordvpn_easy.main.preferred_server_hostname"="$1"
-  uci set "nordvpn_easy.main.preferred_server_station"="$2"
+  nordvpn_easy_set_server_preference_in_uci "$@"
 }
 
 require_manual_server_preference () {
-  server_selection_is_manual || return 0
-
-  [ -n "$VPN_COUNTRY" ] || {
-    log 'ERROR: MANUAL SERVER SELECTION REQUIRES A VPN_COUNTRY'
-    return 1
-  }
-
-  [ -n "$PREFERRED_SERVER_HOSTNAME" ] || {
-    log 'ERROR: MANUAL SERVER SELECTION REQUIRES A PREFERRED_SERVER_HOSTNAME'
-    return 1
-  }
-
-  [ -n "$PREFERRED_SERVER_STATION" ] || {
-    log 'ERROR: MANUAL SERVER SELECTION REQUIRES A PREFERRED_SERVER_STATION'
-    return 1
-  }
+  nordvpn_easy_require_manual_server_preference "$@"
 }
 
 server_cache_ttl_value () {
-  case "$SERVER_CACHE_TTL" in
-    ''|*[!0-9]*)
-      printf '%s\n' '86400'
-      ;;
-    *)
-      printf '%s\n' "$SERVER_CACHE_TTL"
-      ;;
-  esac
+  nordvpn_easy_server_cache_ttl_value "$@"
 }
 
 release_lock () {
-  [ "$LOCK_ACQUIRED" -eq 1 ] || return 0
-  rm -rf "$LOCK_DIR"
-  LOCK_ACQUIRED=0
-  log "Released execution lock at $LOCK_DIR"
+  nordvpn_easy_release_lock "$@"
 }
 
 acquire_lock () {
-  LOCK_PID_FILE="$LOCK_DIR/pid"
-  LOCK_ACTION_FILE="$LOCK_DIR/action"
-
-  if mkdir "$LOCK_DIR" 2>/dev/null; then
-    printf '%s\n' "$$" > "$LOCK_PID_FILE"
-    printf '%s\n' "$ACTION" > "$LOCK_ACTION_FILE"
-    LOCK_ACQUIRED=1
-    trap 'release_lock' EXIT HUP INT TERM
-    log "Acquired execution lock at $LOCK_DIR"
-    return 0
-  fi
-
-  if [ -f "$LOCK_PID_FILE" ]; then
-    LOCK_PID=$(cat "$LOCK_PID_FILE" 2>/dev/null)
-    if [ -n "$LOCK_PID" ] && kill -0 "$LOCK_PID" 2>/dev/null; then
-      log "Execution lock is already held by PID $LOCK_PID"
-      return 2
-    fi
-  fi
-
-  # This stale-lock recovery has a small rm/mkdir race, but that is acceptable here:
-  # release_lock() owns the whole directory via LOCK_PID_FILE, and concurrent cron/hotplug
-  # attempts are designed to fail acquire_lock() and exit successfully instead of surfacing an error.
-  log "Recovering stale execution lock at $LOCK_DIR"
-  rm -rf "$LOCK_DIR" 2>/dev/null || return 1
-
-  mkdir "$LOCK_DIR" 2>/dev/null || return 1
-  printf '%s\n' "$$" > "$LOCK_PID_FILE"
-  printf '%s\n' "$ACTION" > "$LOCK_ACTION_FILE"
-  LOCK_ACQUIRED=1
-  trap 'release_lock' EXIT HUP INT TERM
-  log "Recovered and acquired execution lock at $LOCK_DIR"
+  nordvpn_easy_acquire_lock "$@"
 }
 
 vpn_is_configured () {
-  [ "$(uci -q get "network.${VPN_IF}.proto" 2>/dev/null)" = 'wireguard' ]
+  nordvpn_easy_vpn_is_configured "$@"
 }
 
 vpn_link_is_present () {
-  ip link show dev "$VPN_IF" >/dev/null 2>&1
+  nordvpn_easy_vpn_link_is_present "$@"
 }
 
 log_vpn_interface_state () {
-  STATE_CONTEXT="$1"
-  VPN_PROTO=$(uci -q get "network.${VPN_IF}.proto" 2>/dev/null)
-  VPN_DISABLED=$(uci -q get "network.${VPN_IF}.disabled" 2>/dev/null)
-  VPN_ENDPOINT=$(uci -q get "network.${VPN_IF}server.endpoint_host" 2>/dev/null)
-  VPN_LINK_PRESENT='no'
-
-  ip link show dev "$VPN_IF" >/dev/null 2>&1 && VPN_LINK_PRESENT='yes'
-
-  log "Interface state [$STATE_CONTEXT]: proto=${VPN_PROTO:-absent}, disabled=${VPN_DISABLED:-0}, link_present=$VPN_LINK_PRESENT, endpoint=${VPN_ENDPOINT:-none}"
+  nordvpn_easy_log_vpn_interface_state "$@"
 }
 
 recover_missing_vpn_interface () {
-  log "VPN interface $VPN_IF is still not present after ${VPN_INTERFACE_PRESENT_DELAY}s - starting recovery sequence"
-  log_vpn_interface_state 'missing-interface-start'
-
-  log "Recovery step 1/3: cycling interface $VPN_IF with ifdown/ifup"
-  ifdown "$VPN_IF" >/dev/null 2>&1 || true
-  ifup "$VPN_IF" >/dev/null 2>&1 || true
-  sleep "$VPN_INTERFACE_PRESENT_DELAY"
-
-  if vpn_link_is_present; then
-    log "Recovery step 1/3 succeeded: interface $VPN_IF is present again"
-    log_vpn_interface_state 'missing-interface-after-ifup'
-    return 0
-  fi
-
-  log "Recovery step 2/3: reloading network service because $VPN_IF is still not present"
-  /etc/init.d/network reload || {
-    log 'ERROR: NETWORK RELOAD FAILED DURING MISSING INTERFACE RECOVERY'
-    return 1
-  }
-  sleep "$VPN_INTERFACE_PRESENT_DELAY"
-
-  if vpn_link_is_present; then
-    log "Recovery step 2/3 succeeded: interface $VPN_IF is present again"
-    log_vpn_interface_state 'missing-interface-after-reload'
-    return 0
-  fi
-
-  log "Recovery step 3/3: restarting network service because $VPN_IF is still not present"
-  /etc/init.d/network restart || {
-    log 'ERROR: NETWORK RESTART FAILED DURING MISSING INTERFACE RECOVERY'
-    return 1
-  }
-  sleep "$VPN_INTERFACE_PRESENT_DELAY"
-
-  if vpn_link_is_present; then
-    log "Recovery step 3/3 succeeded: interface $VPN_IF is present again"
-    log_vpn_interface_state 'missing-interface-after-restart'
-    return 0
-  fi
-
-  log "ERROR: VPN interface $VPN_IF is still not present after the full recovery sequence"
-  log_vpn_interface_state 'missing-interface-final'
-  return 1
+  nordvpn_easy_recover_missing_vpn_interface "$@"
 }
 
 ensure_vpn_interface_present () {
-  if vpn_link_is_present; then
-    return 0
-  fi
-
-  log "VPN interface $VPN_IF is not present, waiting ${VPN_INTERFACE_PRESENT_DELAY}s before recovery"
-  log_vpn_interface_state 'missing-interface-before-wait'
-  sleep "$VPN_INTERFACE_PRESENT_DELAY"
-
-  if vpn_link_is_present; then
-    log "VPN interface $VPN_IF became present during the wait window"
-    log_vpn_interface_state 'missing-interface-after-wait'
-    return 0
-  fi
-
-  recover_missing_vpn_interface
+  nordvpn_easy_ensure_vpn_interface_present "$@"
 }
 
 ensure_vpn_interface_enabled () {
-  [ "$(uci -q get "network.${VPN_IF}.disabled" 2>/dev/null)" = '1' ] || return 0
-
-  log "Re-enabling disabled VPN interface $VPN_IF"
-  log_vpn_interface_state 'before-enable'
-  uci -q delete "network.${VPN_IF}.disabled"
-  uci commit network || {
-    log "ERROR: COULD NOT COMMIT NETWORK CONFIGURATION WHILE ENABLING $VPN_IF"
-    return 1
-  }
-
-  /etc/init.d/network reload || {
-    log "ERROR: NETWORK RELOAD FAILED WHILE ENABLING $VPN_IF"
-    return 1
-  }
-
-  ifup "$VPN_IF" || {
-    log "ERROR: IFUP FAILED WHILE ENABLING $VPN_IF"
-    return 1
-  }
-
-  log "VPN interface $VPN_IF has been re-enabled"
-  log_vpn_interface_state 'after-enable'
+  nordvpn_easy_ensure_vpn_interface_enabled "$@"
 }
 
 pick_ping_ip () {
@@ -350,8 +182,7 @@ pick_ping_ip () {
 }
 
 ping_interface () {
-  [ -n "$1" ] || return 1
-  ping -q -c 1 -W 5 "$(pick_ping_ip)" -I "$1" >/dev/null 2>&1
+  nordvpn_easy_ping_interface "$@"
 }
 
 curl_config_escape () {
@@ -474,7 +305,7 @@ valid_country_code () {
 }
 
 get_public_ip () {
-  local curl_out curl_rc valid_ip_check
+  local curl_out curl_rc
 
   log "get_public_ip: starting IPv4-only public IP lookup (system DNS: $(grep '^nameserver' /etc/resolv.conf 2>/dev/null | awk '{print $2}' | tr '\n' ' ' | sed 's/ $//'))"
 
@@ -565,8 +396,12 @@ lookup_public_country_by_ip () {
 
   log "lookup_public_country_by_ip: raw response for $LOOKUP_IP: $curl_raw"
 
-  country_raw=$(printf '%s' "$curl_raw" | jq -er '.country // empty' 2>/dev/null)
-  if [ $? -ne 0 ] || [ -z "$country_raw" ]; then
+  if ! country_raw=$(printf '%s' "$curl_raw" | jq -er '.country // empty' 2>/dev/null); then
+    log "ERROR: COULD NOT PARSE COUNTRY FROM RESPONSE FOR $LOOKUP_IP (raw='$curl_raw')"
+    return 1
+  fi
+
+  if [ -z "$country_raw" ]; then
     log "ERROR: COULD NOT PARSE COUNTRY FROM RESPONSE FOR $LOOKUP_IP (raw='$curl_raw')"
     return 1
   fi
@@ -703,6 +538,7 @@ fetch_server_catalog () {
   COUNTRY_QUERY="${2:-$VPN_COUNTRY}"
   SERVER_CATALOG_TMP="${SERVER_CATALOG_FILE}.tmp.$$"
   SERVER_CATALOG_TS_TMP="${SERVER_CATALOG_TS_FILE}.tmp.$$"
+  SERVER_CATALOG_RAW_TMP="${SERVER_CATALOG_TMP}.raw"
   SERVER_CATALOG_URL=''
 
   [ -n "$COUNTRY_QUERY" ] || {
@@ -720,62 +556,53 @@ fetch_server_catalog () {
   SERVER_CATALOG_URL="${SERVER_CATALOG_URL_BASE}&filters[country_id]=$RESOLVED_COUNTRY_ID"
   log "Refreshing NordVPN server catalog for $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
 
-  curl -g -fsS --connect-timeout 15 --max-time 45 "$SERVER_CATALOG_URL" | jq -ce \
-    --argjson country_id "$RESOLVED_COUNTRY_ID" \
-    --arg country_code "$RESOLVED_COUNTRY_CODE" \
-    --arg country_name "$RESOLVED_COUNTRY_NAME" '
-      {
-        country_id: $country_id,
-        country_code: $country_code,
-        country_name: $country_name,
-        servers: [
-          .[] | {
-            hostname: (.hostname // ""),
-            station: (.station // ""),
-            load: (.load // 0),
-            city: (.locations[0].country.city.name // ""),
-            country_code: (.locations[0].country.code // $country_code),
-            country_name: (.locations[0].country.name // $country_name),
-            public_key: ([.technologies[]? | select(.identifier == "wireguard_udp") | .metadata[]? | select(.name == "public_key") | .value][0] // ""),
-            status: (.status // "")
-          } | select(
-            (.hostname != "") and
-            (.station != "") and
-            (.public_key != "") and
-            (.status != "offline")
-          )
-        ] | sort_by(.load, (.city | ascii_downcase), (.hostname | ascii_downcase))
-      }
-    ' > "$SERVER_CATALOG_TMP" 2>/dev/null || {
-      rm -f "$SERVER_CATALOG_TMP" "$SERVER_CATALOG_TS_TMP"
+  curl -g -fsS --connect-timeout 15 --max-time 45 -o "$SERVER_CATALOG_RAW_TMP" "$SERVER_CATALOG_URL" || {
+      rm -f "$SERVER_CATALOG_RAW_TMP" "$SERVER_CATALOG_TMP" "$SERVER_CATALOG_TS_TMP"
       server_catalog_cache_matches_country "$RESOLVED_COUNTRY_ID" && return 0
-      log "ERROR: COULD NOT REFRESH SERVER CATALOG FOR $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
+      log "ERROR: COULD NOT DOWNLOAD SERVER CATALOG FOR $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
       return 1
     }
 
-  jq -er '.servers[0].station // empty' "$SERVER_CATALOG_TMP" >/dev/null 2>&1 || {
-    rm -f "$SERVER_CATALOG_TMP" "$SERVER_CATALOG_TS_TMP"
+  [ -s "$SERVER_CATALOG_RAW_TMP" ] || {
+    rm -f "$SERVER_CATALOG_RAW_TMP" "$SERVER_CATALOG_TMP" "$SERVER_CATALOG_TS_TMP"
+    server_catalog_cache_matches_country "$RESOLVED_COUNTRY_ID" && return 0
+    log "ERROR: EMPTY SERVER CATALOG RESPONSE FOR $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
+    return 1
+  }
+
+  nordvpn_easy_build_server_catalog_json "$RESOLVED_COUNTRY_ID" "$RESOLVED_COUNTRY_CODE" "$RESOLVED_COUNTRY_NAME" \
+    < "$SERVER_CATALOG_RAW_TMP" > "$SERVER_CATALOG_TMP" 2>/dev/null || {
+      rm -f "$SERVER_CATALOG_RAW_TMP" "$SERVER_CATALOG_TMP" "$SERVER_CATALOG_TS_TMP"
+      server_catalog_cache_matches_country "$RESOLVED_COUNTRY_ID" && return 0
+      log "ERROR: COULD NOT TRANSFORM SERVER CATALOG FOR $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
+      return 1
+    }
+
+  rm -f "$SERVER_CATALOG_RAW_TMP"
+
+  nordvpn_easy_server_catalog_has_servers "$SERVER_CATALOG_TMP" || {
+    rm -f "$SERVER_CATALOG_RAW_TMP" "$SERVER_CATALOG_TMP" "$SERVER_CATALOG_TS_TMP"
     server_catalog_cache_matches_country "$RESOLVED_COUNTRY_ID" && return 0
     log "ERROR: NO WIREGUARD SERVERS FOUND FOR COUNTRY '$COUNTRY_QUERY'"
     return 1
   }
 
   date +%s > "$SERVER_CATALOG_TS_TMP" || {
-    rm -f "$SERVER_CATALOG_TMP" "$SERVER_CATALOG_TS_TMP"
+    rm -f "$SERVER_CATALOG_RAW_TMP" "$SERVER_CATALOG_TMP" "$SERVER_CATALOG_TS_TMP"
     server_catalog_cache_matches_country "$RESOLVED_COUNTRY_ID" && return 0
     log 'ERROR: COULD NOT WRITE SERVER CATALOG TIMESTAMP'
     return 1
   }
 
   mv "$SERVER_CATALOG_TMP" "$SERVER_CATALOG_FILE" || {
-    rm -f "$SERVER_CATALOG_TMP" "$SERVER_CATALOG_TS_TMP"
+    rm -f "$SERVER_CATALOG_RAW_TMP" "$SERVER_CATALOG_TMP" "$SERVER_CATALOG_TS_TMP"
     server_catalog_cache_matches_country "$RESOLVED_COUNTRY_ID" && return 0
     log 'ERROR: COULD NOT UPDATE SERVER CATALOG CACHE'
     return 1
   }
 
   mv "$SERVER_CATALOG_TS_TMP" "$SERVER_CATALOG_TS_FILE" || {
-    rm -f "$SERVER_CATALOG_TS_TMP"
+    rm -f "$SERVER_CATALOG_RAW_TMP" "$SERVER_CATALOG_TS_TMP"
     server_catalog_cache_matches_country "$RESOLVED_COUNTRY_ID" && return 0
     log 'ERROR: COULD NOT UPDATE SERVER CATALOG TIMESTAMP'
     return 1
@@ -785,585 +612,87 @@ fetch_server_catalog () {
 }
 
 find_preferred_server_in_catalog () {
-  require_manual_server_preference || return 1
-  fetch_server_catalog 0 "$VPN_COUNTRY" || return 1
-
-  PREFERRED_SERVER_LINE=$(jq -er \
-    --arg hostname "$PREFERRED_SERVER_HOSTNAME" \
-    --arg station "$PREFERRED_SERVER_STATION" '
-      [
-        .servers[] | select(
-          (.station == $station) and
-          (($hostname == "") or (.hostname == $hostname))
-        )
-      ][0] | [
-        .hostname,
-        .station,
-        .public_key,
-        .country_code,
-        .city,
-        ((.load // 0) | tostring)
-      ] | @tsv
-    ' "$SERVER_CATALOG_FILE" 2>/dev/null) || {
-      log "ERROR: PREFERRED SERVER $PREFERRED_SERVER_HOSTNAME ($PREFERRED_SERVER_STATION) IS NOT AVAILABLE IN $VPN_COUNTRY"
-      return 1
-    }
+  nordvpn_easy_find_preferred_server_in_catalog "$@"
 }
 
 preferred_server_matches_current () {
-  [ -n "$PREFERRED_SERVER_STATION" ] || return 1
-  [ "$(current_server_station)" = "$PREFERRED_SERVER_STATION" ]
+  nordvpn_easy_preferred_server_matches_current "$@"
 }
 
 apply_preferred_server_from_catalog () {
-  find_preferred_server_in_catalog || return 1
-
-  IFS="$(printf '\t')" read -r HOST_NAME SERVER_IP PUBLIC_KEY COUNTRY_CODE CITY_NAME SERVER_LOAD <<EOF
-$PREFERRED_SERVER_LINE
-EOF
-
-  log "Applying preferred VPN server $HOST_NAME ($SERVER_IP) for $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
-  set_vpn_server_in_uci "$HOST_NAME" "$SERVER_IP" "$PUBLIC_KEY" "$COUNTRY_CODE" "$CITY_NAME" "$SERVER_LOAD"
+  nordvpn_easy_apply_preferred_server_from_catalog "$@"
 }
 
 build_server_recommendations_url () {
-  SERVER_RECOMMENDATIONS_URL="$SERVER_RECOMMENDATIONS_URL_BASE"
-
-  if [ -n "$VPN_COUNTRY" ]; then
-    resolve_country_filter || return 1
-    SERVER_RECOMMENDATIONS_URL="${SERVER_RECOMMENDATIONS_URL}&filters[country_id]=$RESOLVED_COUNTRY_ID"
-    log "Building recommendations URL for country filter $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
-  else
-    log 'Building recommendations URL with automatic country selection'
-  fi
-
-  printf '%s\n' "$SERVER_RECOMMENDATIONS_URL"
+  nordvpn_easy_build_server_recommendations_url "$@"
 }
 
 get_servers_list () {
-  SERVER_LIST_TMP="${SERVER_LIST_FILE}.tmp.$$"
-  SERVER_RECOMMENDATIONS_URL=$(build_server_recommendations_url) || return 1
-
-  log "Downloading recommended VPN server list to $SERVER_LIST_TMP"
-
-  curl -g -fsS --connect-timeout 15 --max-time 30 -o "$SERVER_LIST_TMP" "$SERVER_RECOMMENDATIONS_URL" || {
-    rm -f "$SERVER_LIST_TMP"
-    log 'ERROR: COULD NOT RETRIEVE VPN SERVERS'
-    return 1
-  }
-
-  jq -er '.[0].station // empty' "$SERVER_LIST_TMP" >/dev/null 2>&1 || {
-    rm -f "$SERVER_LIST_TMP"
-    if [ -n "$VPN_COUNTRY" ]; then
-      log "ERROR: NO WIREGUARD SERVERS FOUND FOR COUNTRY '$VPN_COUNTRY'"
-    else
-      log 'ERROR: INVALID VPN SERVER LIST'
-    fi
-    return 1
-  }
-
-  mv "$SERVER_LIST_TMP" "$SERVER_LIST_FILE" || {
-    rm -f "$SERVER_LIST_TMP"
-    log 'ERROR: COULD NOT UPDATE VPN SERVER LIST'
-    return 1
-  }
-
-  SERVER_COUNT=$(jq -r 'length' "$SERVER_LIST_FILE" 2>/dev/null)
-  log "VPN server list updated at $SERVER_LIST_FILE with ${SERVER_COUNT:-unknown} entries"
+  nordvpn_easy_get_servers_list "$@"
 }
 
 resolve_wan_device () {
-  WAN_DEVICE=''
-
-  if command -v ubus >/dev/null 2>&1; then
-    WAN_DEVICE=$(ubus call "network.interface.${WAN_IF}" status 2>/dev/null | jq -er '.l3_device // .device // empty' 2>/dev/null)
-    [ -n "$WAN_DEVICE" ] && return 0
-  fi
-
-  WAN_DEVICE=$(uci -q get "network.${WAN_IF}.device" 2>/dev/null)
-  [ -n "$WAN_DEVICE" ] && return 0
-
-  WAN_DEVICE=$(uci -q get "network.${WAN_IF}.ifname" 2>/dev/null)
-  [ -n "$WAN_DEVICE" ] && return 0
-
-  if ip link show dev "$WAN_IF" >/dev/null 2>&1; then
-    WAN_DEVICE="$WAN_IF"
-    return 0
-  fi
-
-  log "ERROR: COULD NOT RESOLVE DEVICE FOR $WAN_IF"
-  return 1
+  nordvpn_easy_resolve_wan_device "$@"
 }
 
 ping_wan () {
-  resolve_wan_device || return 1
-  ping_interface "$WAN_DEVICE"
+  nordvpn_easy_ping_wan "$@"
 }
 
 find_firewall_zone_section () {
-  TARGET_NETWORK="$1"
-
-  for FIREWALL_SECTION in $(uci show firewall | awk -F= '$2=="zone"{ print $1 }'); do
-    ZONE_NETWORKS=$(uci -q get "${FIREWALL_SECTION}.network" 2>/dev/null)
-
-    for ZONE_NETWORK in $ZONE_NETWORKS; do
-      [ "$ZONE_NETWORK" = "$TARGET_NETWORK" ] && {
-        printf '%s\n' "$FIREWALL_SECTION"
-        return 0
-      }
-    done
-  done
-
-  return 1
+  nordvpn_easy_find_firewall_zone_section "$@"
 }
 
 ensure_vpn_in_wan_zone () {
-  WAN_ZONE=$(find_firewall_zone_section "$WAN_IF") || {
-    log "ERROR: FIREWALL ZONE FOR $WAN_IF NOT FOUND"
-    return 1
-  }
-
-  FIREWALL_CHANGED=0
-
-  for FIREWALL_SECTION in $(uci show firewall | awk -F= '$2=="zone"{ print $1 }'); do
-    [ "$FIREWALL_SECTION" = "$WAN_ZONE" ] && continue
-
-    ZONE_NETWORKS=$(uci -q get "${FIREWALL_SECTION}.network" 2>/dev/null)
-    for ZONE_NETWORK in $ZONE_NETWORKS; do
-      [ "$ZONE_NETWORK" = "$VPN_IF" ] || continue
-      uci -q del_list "${FIREWALL_SECTION}.network"="$VPN_IF"
-      FIREWALL_CHANGED=1
-      break
-    done
-  done
-
-  ZONE_HAS_VPN=0
-  ZONE_NETWORKS=$(uci -q get "${WAN_ZONE}.network" 2>/dev/null)
-
-  for ZONE_NETWORK in $ZONE_NETWORKS; do
-    [ "$ZONE_NETWORK" = "$VPN_IF" ] && {
-      ZONE_HAS_VPN=1
-      break
-    }
-  done
-
-  if [ "$ZONE_HAS_VPN" -ne 1 ]; then
-    uci add_list "${WAN_ZONE}.network"="$VPN_IF"
-    FIREWALL_CHANGED=1
-  fi
-
-  if [ "$FIREWALL_CHANGED" -ne 1 ]; then
-    log "Firewall zone for $WAN_IF already contains $VPN_IF"
-    return 0
-  fi
-
-  uci commit firewall || {
-    log 'ERROR: COULD NOT COMMIT FIREWALL CONFIGURATION'
-    return 1
-  }
-
-  /etc/init.d/firewall restart || {
-    log 'ERROR: FIREWALL RESTART FAILED'
-    return 1
-  }
-
-  log "Firewall updated so zone for $WAN_IF includes $VPN_IF"
+  nordvpn_easy_ensure_vpn_in_wan_zone "$@"
 }
 
 set_vpn_server_in_uci () {
-  [ -n "$2" ] || {
-    log 'ERROR: VPN SERVER IP IS EMPTY'
-    return 1
-  }
-  [ -n "$3" ] || {
-    log "ERROR: VPN PUBLIC KEY IS EMPTY FOR $1"
-    return 1
-  }
-
-  uci set "network.${VPN_IF}server.description"="$1"
-  uci set "network.${VPN_IF}server.endpoint_host"="$2"
-  uci set "network.${VPN_IF}server.public_key"="$3"
-  uci set "network.${VPN_IF}server.nordvpn_hostname"="$1"
-  uci set "network.${VPN_IF}server.nordvpn_station"="$2"
-  uci set "network.${VPN_IF}server.nordvpn_country_code"="${4:-}"
-  uci set "network.${VPN_IF}server.nordvpn_city"="${5:-}"
-  uci set "network.${VPN_IF}server.nordvpn_load"="${6:-}"
-  log "Prepared VPN peer update for server $1 ($2)"
+  nordvpn_easy_set_vpn_server_in_uci "$@"
 }
 
 set_first_server_from_list () {
-  FIRST_SERVER=$(jq -r '.[0] | [
-    .hostname,
-    .station,
-    ([.technologies[]?.metadata[]? | select(.name=="public_key").value][0]),
-    (.locations[0].country.code // ""),
-    (.locations[0].country.city.name // ""),
-    ((.load // 0) | tostring)
-  ] | @tsv' "$SERVER_LIST_FILE" 2>/dev/null) || {
-    log 'ERROR: INVALID VPN SERVER LIST'
-    return 1
-  }
-
-  [ -n "$FIRST_SERVER" ] || {
-    log 'ERROR: VPN SERVER LIST IS EMPTY'
-    return 1
-  }
-
-  IFS="$(printf '\t')" read -r HOST_NAME SERVER_IP PUBLIC_KEY COUNTRY_CODE CITY_NAME SERVER_LOAD <<EOF
-$FIRST_SERVER
-EOF
-
-  log "Selected first recommended VPN server $HOST_NAME ($SERVER_IP)"
-  set_vpn_server_in_uci "$HOST_NAME" "$SERVER_IP" "$PUBLIC_KEY" "$COUNTRY_CODE" "$CITY_NAME" "$SERVER_LOAD"
+  nordvpn_easy_set_first_server_from_list "$@"
 }
 
 current_server_matches_recommendations () {
-  CURRENT_SERVER=$(current_server_station)
-
-  [ -n "$CURRENT_SERVER" ] || return 1
-
-  jq -e --arg current "$CURRENT_SERVER" '
-    [ .[] | select(.station == $current) ] | length > 0
-  ' "$SERVER_LIST_FILE" >/dev/null 2>&1
+  nordvpn_easy_current_server_matches_recommendations "$@"
 }
 
 apply_server_change_runtime () {
-  if [ "$1" = 'reload' ]; then
-    log "Cycling VPN interface $VPN_IF to apply the new peer configuration"
-    ifdown "$VPN_IF" >/dev/null 2>&1 || true
-    sleep "$INTERFACE_RESTART_DELAY"
-    ifup "$VPN_IF" || {
-      log "ERROR: IFUP FAILED AFTER CHANGING VPN SERVER ON $VPN_IF"
-      return 1
-    }
-    log "Waiting ${POST_RESTART_DELAY}s after cycling $VPN_IF before validating VPN connectivity"
-  else
-    /etc/init.d/network restart || {
-      log 'ERROR: NETWORK RESTART FAILED'
-      return 1
-    }
-    log "Waiting ${POST_RESTART_DELAY}s after network restart before validating VPN connectivity"
-  fi
-
-  sleep "$POST_RESTART_DELAY"
-
-  if ping_interface "$VPN_IF"; then
-    log 'VPN connection restored'
-    verify_public_country_selection
-    return 0
-  fi
-
-  log 'VPN connection is not OK, trying another server...'
-  return 1
+  nordvpn_easy_apply_server_change_runtime "$@"
 }
 
 change_to_preferred_server () {
-  apply_preferred_server_from_catalog || return 1
-
-  uci commit network || {
-    log 'ERROR: COULD NOT COMMIT NETWORK CONFIGURATION'
-    return 1
-  }
-
-  log "VPN server changed to preferred server $PREFERRED_SERVER_HOSTNAME ($PREFERRED_SERVER_STATION)"
-  apply_server_change_runtime "${1:-reload}"
+  nordvpn_easy_change_to_preferred_server "$@"
 }
 
 sync_server_selection () {
-  vpn_is_configured || return 0
-
-  if server_selection_is_manual; then
-    require_manual_server_preference || return 1
-
-    if preferred_server_matches_current; then
-      log 'Current VPN server already matches the preferred manual server'
-      return 0
-    fi
-
-    log 'Current VPN server does not match the preferred manual server, applying preference'
-    change_to_preferred_server reload
-    return $?
-  fi
-
-  get_servers_list || return 1
-
-  if current_server_matches_recommendations; then
-    log 'Current VPN server already matches the selected country/filter'
-    return 0
-  fi
-
-  log 'Current VPN server does not match the selected country/filter, changing server'
-  change_vpn_server reload
+  nordvpn_easy_sync_server_selection "$@"
 }
 
 change_vpn_server () {
-  CURRENT_SERVER=$(current_server_station)
-  SERVER_CANDIDATES_FILE="/tmp/nordvpn.candidates.$$"
-
-  log "Starting VPN server rotation from current endpoint ${CURRENT_SERVER:-none}"
-
-  jq -r '.[] | [
-    .hostname,
-    .station,
-    ([.technologies[]?.metadata[]? | select(.name=="public_key").value][0]),
-    (.locations[0].country.code // ""),
-    (.locations[0].country.city.name // ""),
-    ((.load // 0) | tostring)
-  ] | @tsv' "$SERVER_LIST_FILE" > "$SERVER_CANDIDATES_FILE" 2>/dev/null || {
-    rm -f "$SERVER_CANDIDATES_FILE"
-    log 'ERROR: INVALID VPN SERVER LIST'
-    return 1
-  }
-
-  while IFS="$(printf '\t')" read -r HOST_NAME SERVER_IP PUBLIC_KEY COUNTRY_CODE CITY_NAME SERVER_LOAD; do
-    [ -n "$SERVER_IP" ] || continue
-    [ "$CURRENT_SERVER" = "$SERVER_IP" ] && continue
-
-    log "Trying VPN server candidate $HOST_NAME ($SERVER_IP)"
-
-    set_vpn_server_in_uci "$HOST_NAME" "$SERVER_IP" "$PUBLIC_KEY" "$COUNTRY_CODE" "$CITY_NAME" "$SERVER_LOAD" || continue
-    uci commit network || {
-      rm -f "$SERVER_CANDIDATES_FILE"
-      log 'ERROR: COULD NOT COMMIT NETWORK CONFIGURATION'
-      return 1
-    }
-
-    log "VPN server changed to $HOST_NAME ( $SERVER_IP )"
-
-    if apply_server_change_runtime "$1"; then
-      rm -f "$SERVER_CANDIDATES_FILE"
-      return 0
-    fi
-  done < "$SERVER_CANDIDATES_FILE"
-
-  rm -f "$SERVER_CANDIDATES_FILE"
-  log 'NO RECOMMENDED VPN SERVER RESTORED CONNECTIVITY'
-  return 1
+  nordvpn_easy_change_vpn_server "$@"
 }
 
 change_manual_server () {
-  CURRENT_SERVER=$(current_server_station)
-  SERVER_CANDIDATES_FILE="/tmp/nordvpn-manual.candidates.$$"
-
-  require_manual_server_preference || return 1
-  fetch_server_catalog 0 "$VPN_COUNTRY" || return 1
-
-  log "Starting manual VPN server rotation from current endpoint ${CURRENT_SERVER:-none}"
-
-  jq -r '.servers[] | [
-    .hostname,
-    .station,
-    .public_key,
-    .country_code,
-    .city,
-    ((.load // 0) | tostring)
-  ] | @tsv' "$SERVER_CATALOG_FILE" > "$SERVER_CANDIDATES_FILE" 2>/dev/null || {
-    rm -f "$SERVER_CANDIDATES_FILE"
-    log 'ERROR: INVALID SERVER CATALOG'
-    return 1
-  }
-
-  while IFS="$(printf '\t')" read -r HOST_NAME SERVER_IP PUBLIC_KEY COUNTRY_CODE CITY_NAME SERVER_LOAD; do
-    [ -n "$SERVER_IP" ] || continue
-    [ "$CURRENT_SERVER" = "$SERVER_IP" ] && continue
-
-    log "Trying manual VPN server candidate $HOST_NAME ($SERVER_IP)"
-
-    set_vpn_server_in_uci "$HOST_NAME" "$SERVER_IP" "$PUBLIC_KEY" "$COUNTRY_CODE" "$CITY_NAME" "$SERVER_LOAD" || continue
-    uci commit network || {
-      rm -f "$SERVER_CANDIDATES_FILE"
-      log 'ERROR: COULD NOT COMMIT NETWORK CONFIGURATION'
-      return 1
-    }
-    if apply_server_change_runtime "$1"; then
-      set_server_preference_in_uci "$HOST_NAME" "$SERVER_IP"
-      uci commit nordvpn_easy || {
-        log 'ERROR: COULD NOT COMMIT MANUAL SERVER PREFERENCE'
-        rm -f "$SERVER_CANDIDATES_FILE"
-        continue
-      }
-
-      PREFERRED_SERVER_HOSTNAME="$HOST_NAME"
-      PREFERRED_SERVER_STATION="$SERVER_IP"
-      log "Manual preferred VPN server updated to $HOST_NAME ($SERVER_IP)"
-      rm -f "$SERVER_CANDIDATES_FILE"
-      return 0
-    fi
-
-    rm -f "$SERVER_CANDIDATES_FILE"
-    continue
-  done < "$SERVER_CANDIDATES_FILE"
-
-  rm -f "$SERVER_CANDIDATES_FILE"
-  log 'NO MANUAL VPN SERVER RESTORED CONNECTIVITY'
-  return 1
+  nordvpn_easy_change_manual_server "$@"
 }
 
 configure_vpn_interface () {
-  log "$VPN_IF NOT CONFIGURED - IT WILL BE CREATED"
-  log "Creating WireGuard interface $VPN_IF with address $VPN_ADDR and endpoint port $VPN_PORT"
-  log_vpn_interface_state 'before-create'
-
-  get_private_key || return 1
-  if server_selection_is_manual; then
-    require_manual_server_preference || return 1
-    fetch_server_catalog 0 "$VPN_COUNTRY" || return 1
-  else
-    get_servers_list || return 1
-  fi
-  ensure_vpn_in_wan_zone || return 1
-
-  uci -q delete "network.${VPN_IF}"
-  uci set "network.${VPN_IF}"='interface'
-  uci set "network.${VPN_IF}.proto"='wireguard'
-  uci add_list "network.${VPN_IF}.addresses"="$VPN_ADDR"
-  uci set "network.${VPN_IF}.private_key"="$PRIVATE_KEY"
-
-  if [ -n "$VPN_DNS1" ] || [ -n "$VPN_DNS2" ]; then
-    uci set "network.${VPN_IF}.peerdns"='0'
-    [ -n "$VPN_DNS1" ] && uci add_list "network.${VPN_IF}.dns"="$VPN_DNS1"
-    [ -n "$VPN_DNS2" ] && uci add_list "network.${VPN_IF}.dns"="$VPN_DNS2"
-  else
-    uci set "network.${VPN_IF}.peerdns"='1'
-  fi
-
-  uci set "network.${VPN_IF}.delegate"='0'
-  uci set "network.${VPN_IF}.force_link"='1'
-
-  uci -q delete "network.${VPN_IF}server"
-  uci set "network.${VPN_IF}server"="wireguard_${VPN_IF}"
-  uci set "network.${VPN_IF}server.endpoint_port"="$VPN_PORT"
-  uci set "network.${VPN_IF}server.persistent_keepalive"='25'
-  uci set "network.${VPN_IF}server.route_allowed_ips"='1'
-  uci add_list "network.${VPN_IF}server.allowed_ips"='0.0.0.0/0'
-
-  if server_selection_is_manual; then
-    apply_preferred_server_from_catalog || return 1
-  else
-    set_first_server_from_list || return 1
-  fi
-
-  uci set "network.${WAN_IF}.metric"='1024'
-  uci commit network || {
-    log 'ERROR: COULD NOT COMMIT NETWORK CONFIGURATION'
-    return 1
-  }
-
-  /etc/init.d/network restart || {
-    log 'ERROR: NETWORK RESTART FAILED'
-    return 1
-  }
-
-  log "$VPN_IF CREATED"
-  log_vpn_interface_state 'after-create'
+  nordvpn_easy_configure_vpn_interface "$@"
 }
 
 bootstrap_if_needed () {
-  log "Bootstrapping VPN state for interface $VPN_IF"
-  log_vpn_interface_state 'bootstrap-start'
-  refresh_countries_cache || true
-  if [ -n "$VPN_COUNTRY" ]; then
-    resolve_country_filter || return 1
-  fi
-
-  if ! vpn_is_configured; then
-    configure_vpn_interface || return 1
-  else
-    ensure_vpn_interface_enabled || return 1
-  fi
-
-  ensure_vpn_in_wan_zone || return 1
-  ensure_vpn_interface_present || return 1
-  log "Bootstrap completed for interface $VPN_IF"
-  log_vpn_interface_state 'bootstrap-complete'
+  nordvpn_easy_bootstrap_if_needed "$@"
 }
 
 rotate_action () {
-  log 'Rotate action started'
-  bootstrap_if_needed || return 1
-
-  if server_selection_is_manual; then
-    log 'Changing preferred manual VPN server'
-    change_manual_server reload
-    return $?
-  fi
-
-  get_servers_list || return 1
-  log 'Changing VPN server'
-  change_vpn_server reload
+  nordvpn_easy_rotate_action "$@"
 }
 
 check_once () {
-  # shellcheck disable=SC3043 # OpenWrt /bin/sh is BusyBox ash, which supports local.
-  local failed_pings=0
-  local restart_count=0
-  local max_interface_restarts="${MAX_INTERFACE_RESTARTS:-3}"
-  local retry_delay
-  local backoff_steps
-
-  log "Starting VPN health-check on interface $VPN_IF"
-  if ! server_selection_is_manual; then
-    [ -f "$SERVER_LIST_FILE" ] || get_servers_list || true
-  fi
-
-  while ! ping_interface "$VPN_IF"; do
-    failed_pings=$((failed_pings+1))
-    retry_delay="$FAILURE_RETRY_DELAY"
-    ping_wan || {
-      log "WAN connectivity is down while VPN health-check is failing on $VPN_IF; skipping VPN recovery"
-      return 0
-    }
-
-    if [ "$failed_pings" -gt "$INTERFACE_RESTART_THRESHOLD" ]; then
-      if [ "$restart_count" -ge "$max_interface_restarts" ]; then
-        log "PING FAILED $failed_pings TIMES - RESTART LIMIT REACHED FOR $VPN_IF ($restart_count/$max_interface_restarts)"
-        return 1
-      fi
-
-      restart_count=$((restart_count+1))
-      log "PING FAILED $failed_pings TIMES - RESTARTING $VPN_IF ($restart_count/$max_interface_restarts)"
-      log "Requesting ifdown for interface $VPN_IF during recovery"
-      ifdown "$VPN_IF"
-      sleep "$INTERFACE_RESTART_DELAY"
-      log "Requesting ifup for interface $VPN_IF during recovery"
-      ifup "$VPN_IF"
-      sleep "$POST_RESTART_DELAY"
-      log_vpn_interface_state 'after-recovery-restart'
-    elif [ "$failed_pings" -ge "$SERVER_ROTATE_THRESHOLD" ]; then
-      log "PING FAILED $failed_pings TIMES"
-
-      if server_selection_is_manual; then
-        log 'Manual server selection is enabled; skipping automatic server rotation'
-      else
-        if get_servers_list; then
-          log 'Changing VPN server'
-          change_vpn_server restart && return 0
-        else
-          log 'Refreshing VPN server list failed'
-        fi
-      fi
-
-      log 'Restarting network'
-      /etc/init.d/network restart || {
-        log 'ERROR: NETWORK RESTART FAILED'
-        return 1
-      }
-      sleep "$POST_RESTART_DELAY"
-    fi
-
-    if [ "$failed_pings" -ge "$SERVER_ROTATE_THRESHOLD" ]; then
-      backoff_steps=$((failed_pings - SERVER_ROTATE_THRESHOLD + 1))
-      while [ "$backoff_steps" -gt 0 ]; do
-        retry_delay=$((retry_delay * 2))
-        [ "$retry_delay" -gt "$POST_RESTART_DELAY" ] && retry_delay="$POST_RESTART_DELAY"
-        backoff_steps=$((backoff_steps - 1))
-      done
-    fi
-
-    sleep "$retry_delay"
-  done
-
-  log "VPN health-check passed on interface $VPN_IF"
+  nordvpn_easy_check_once "$@"
 }
 
 ACTION='check'
@@ -1452,7 +781,8 @@ case "$ACTION" in
     refresh_countries_cache 1
     ;;
   server_catalog)
-    fetch_server_catalog "$SERVER_CATALOG_FORCE" "$SERVER_CATALOG_QUERY" && cat "$SERVER_CATALOG_FILE"
+    fetch_server_catalog "$SERVER_CATALOG_FORCE" "$SERVER_CATALOG_QUERY" &&
+      nordvpn_easy_emit_server_catalog_json "$SERVER_CATALOG_FILE" "$SERVER_CATALOG_TS_FILE" "$(server_cache_ttl_value)"
     ;;
   *)
     usage

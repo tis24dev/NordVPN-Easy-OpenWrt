@@ -1,32 +1,17 @@
 'use strict';
 'require form';
 'require fs';
-'require ui';
+'require nordvpn-easy/service as service';
 'require view';
 
 function runAction(action) {
-	return fs.exec('/etc/init.d/nordvpn-easy', [ action ]).then(function(res) {
-		const lines = [];
-
-		if (res.stdout)
-			lines.push(res.stdout.trim());
-
-		if (res.stderr)
-			lines.push(res.stderr.trim());
-
-		if (!lines.length)
-			lines.push(_('Command completed.'));
-
-		if (res.code !== 0) {
-			ui.addNotification(null, E('p', _(
-				'Command failed with exit code %d: %s'
-			).format(res.code, res.stderr ? res.stderr.trim() : lines.join('\n'))), 'error');
+	return service.runAction(action).then(function(result) {
+		if (!result.success) {
+			service.notifyError(service.resultToError(result));
 			return;
 		}
 
-		ui.addNotification(null, E('p', lines.join('\n')), 'info');
-	}).catch(function(err) {
-		ui.addNotification(null, E('p', _('Command failed: ') + err.message), 'error');
+		service.notifyInfo(result.message);
 	});
 }
 
@@ -46,7 +31,7 @@ return view.extend({
 		m = new form.Map('nordvpn_easy', _('NordVPN Easy Advanced'),
 			_('Adjust advanced network, health-check and recovery settings.'));
 
-		s = m.section(form.NamedSection, 'main', 'nordvpn_easy', _('Advanced Settings'));
+		s = m.section(form.NamedSection, 'main', 'nordvpn_easy', _('Network & Runtime'));
 		s.anonymous = true;
 		s.addremove = false;
 
@@ -75,6 +60,10 @@ return view.extend({
 		o = s.option(form.Value, 'vpn_dns2', _('DNS 2'));
 		o.placeholder = '103.86.96.96';
 		o.rmempty = true;
+
+		s = m.section(form.NamedSection, 'main', 'nordvpn_easy', _('Health Checks & Recovery'));
+		s.anonymous = true;
+		s.addremove = false;
 
 		o = s.option(form.Value, 'check_cron_schedule', _('Cron Schedule'));
 		o.placeholder = '* * * * *';
@@ -116,7 +105,24 @@ return view.extend({
 		o.datatype = 'uinteger';
 		o.rmempty = false;
 
-		s = m.section(form.NamedSection, 'main', 'nordvpn_easy', _('Runtime'));
+		s = m.section(form.NamedSection, 'main', 'nordvpn_easy', _('Cache & Catalog'));
+		s.anonymous = true;
+		s.addremove = false;
+
+		o = s.option(form.Flag, 'server_cache_enabled', _('Enable Server Catalog Cache'));
+		o.default = '1';
+		o.rmempty = false;
+		o.description = _('Cache the NordVPN manual server catalog for the selected country.');
+
+		o = s.option(form.Value, 'server_cache_ttl', _('Server Catalog Cache TTL'));
+		o.datatype = 'uinteger';
+		o.default = '86400';
+		o.placeholder = '86400';
+		o.rmempty = false;
+		o.depends('server_cache_enabled', '1');
+		o.description = _('How long to keep the manual server catalog before refreshing it again.');
+
+		s = m.section(form.NamedSection, 'main', 'nordvpn_easy', _('Runtime Actions'));
 		s.anonymous = true;
 		s.addremove = false;
 
