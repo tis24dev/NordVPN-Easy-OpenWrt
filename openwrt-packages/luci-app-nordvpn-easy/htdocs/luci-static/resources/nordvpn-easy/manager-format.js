@@ -44,9 +44,14 @@ function pluralize(value, singular, plural) {
 }
 
 function formatRelativeAge(seconds) {
-	let remaining = Math.max(0, Number(seconds || 0));
+	let remaining = Number(seconds || 0);
 	const parts = [];
 	let value;
+
+	if (!Number.isFinite(remaining))
+		remaining = 0;
+	else
+		remaining = Math.max(0, remaining);
 
 	if (remaining < 5)
 		return _('just now');

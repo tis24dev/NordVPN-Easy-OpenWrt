@@ -92,7 +92,12 @@ nordvpn_easy_set_first_server_from_list() {
 	FIRST_SERVER=$(jq -r '.[0] | [
 		.hostname,
 		.station,
-		([.technologies[]?.metadata[]? | select(.name=="public_key").value][0]),
+		([.technologies[]?
+			| select(.identifier == "wireguard_udp")
+			| .metadata[]?
+			| select(.name == "public_key")
+			| (.value // "")
+		][0] // ""),
 		(.locations[0].country.code // ""),
 		(.locations[0].country.city.name // ""),
 		((.load // 0) | tostring)
@@ -233,10 +238,9 @@ nordvpn_easy_change_manual_server() {
 		}
 		if apply_server_change_runtime "$1"; then
 			set_server_preference_in_uci "$HOST_NAME" "$SERVER_IP"
-			uci commit nordvpn_easy || {
-				log 'ERROR: COULD NOT COMMIT MANUAL SERVER PREFERENCE'
-				continue
-			}
+			if ! uci commit nordvpn_easy; then
+				log 'WARNING: COULD NOT COMMIT MANUAL SERVER PREFERENCE; KEEPING WORKING RUNTIME SERVER'
+			fi
 
 			PREFERRED_SERVER_HOSTNAME="$HOST_NAME"
 			PREFERRED_SERVER_STATION="$SERVER_IP"

@@ -91,7 +91,7 @@ return view.extend({
 				? L.resolveDefault(service.execService('server_catalog', [ configuredCountry ]), null)
 				: Promise.resolve(null);
 
-			return Promise.all([ Promise.resolve(results[1]), statusPromise, catalogPromise ]);
+			return Promise.all([ Promise.resolve(results[0]), statusPromise, catalogPromise ]);
 		});
 	},
 
