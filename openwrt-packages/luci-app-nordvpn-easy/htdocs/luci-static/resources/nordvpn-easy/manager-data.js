@@ -1,4 +1,5 @@
 'use strict';
+'require baseclass';
 
 function normalizeCountryCode(value) {
 	return String(value || '').trim().toUpperCase();
@@ -99,7 +100,7 @@ function buildServerCatalogIndex(catalog) {
 	return index;
 }
 
-return {
+return baseclass.extend({
 	normalizeCountryCode: normalizeCountryCode,
 	emptyServerCatalog: emptyServerCatalog,
 	parseJson: parseJson,
@@ -107,4 +108,4 @@ return {
 	parseLocalStatus: parseLocalStatus,
 	parseServerCatalog: parseServerCatalog,
 	buildServerCatalogIndex: buildServerCatalogIndex
-};
+});

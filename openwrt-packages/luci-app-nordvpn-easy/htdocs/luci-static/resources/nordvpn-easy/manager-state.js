@@ -1,4 +1,5 @@
 'use strict';
+'require baseclass';
 'require fs';
 'require nordvpn-easy/manager-data as managerData';
 'require nordvpn-easy/manager-format as managerFormat';
@@ -417,7 +418,7 @@ function handleSaveApply(viewState, state, ev, mode) {
 	});
 }
 
-return {
+return baseclass.extend({
 	createState: createState,
 	loadServerCatalog: loadServerCatalog,
 	updatePublicIp: updatePublicIp,
@@ -427,4 +428,4 @@ return {
 	onModeChanged: onModeChanged,
 	handleRefreshServerCatalog: handleRefreshServerCatalog,
 	handleSaveApply: handleSaveApply
-};
+});
