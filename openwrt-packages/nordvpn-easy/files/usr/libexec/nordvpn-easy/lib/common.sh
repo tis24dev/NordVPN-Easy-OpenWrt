@@ -82,17 +82,21 @@ nordvpn_easy_mktemp_dir() {
 	local prefix="${1:-runtime}"
 	local result_var="${2:-}"
 	local workspace_dir=''
+	local original_umask=''
 
 	command -v mktemp >/dev/null 2>&1 || {
 		nordvpn_easy_log_blocker 'runtime' "required command 'mktemp' is missing"
 		return 1
 	}
 
+	original_umask="$(umask)"
 	umask 077
 	workspace_dir="$(mktemp -d "/tmp/nordvpn-easy.${prefix}.XXXXXX" 2>/dev/null)" || {
+		umask "$original_umask"
 		nordvpn_easy_log_blocker 'runtime' "could not create secure temporary workspace for ${prefix}"
 		return 1
 	}
+	umask "$original_umask"
 
 	nordvpn_easy_register_temp_path "$workspace_dir" || {
 		rm -rf -- "$workspace_dir"

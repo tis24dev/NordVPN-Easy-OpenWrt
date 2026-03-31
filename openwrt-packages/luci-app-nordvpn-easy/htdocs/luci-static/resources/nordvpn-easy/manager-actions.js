@@ -361,7 +361,6 @@ function handleSaveApply(viewState, state, ev, mode) {
 	const preservingExistingManualPreference = (
 		currentMode === 'manual' &&
 		previousMode === 'manual' &&
-		!preferredStationChanged &&
 		preferredStation === previousPreferredStation &&
 		!!preferredStation
 	);
@@ -429,37 +428,50 @@ function handleSaveApply(viewState, state, ev, mode) {
 		managerStore.suspendPolling(state);
 		managerStore.setPhase(state, managerStore.PHASES.SAVING);
 
-		return viewState.handleSave(ev).then(function() {
-			return new Promise(function(resolve, reject) {
-				let settled = false;
+		return new Promise(function(resolve, reject) {
+			let settled = false;
+			let timeoutId = null;
 
-				const cleanup = function() {
-					if (viewState._uciAppliedHandler) {
-						document.removeEventListener('uci-applied', viewState._uciAppliedHandler);
-						viewState._uciAppliedHandler = null;
-					}
-				};
+			const cleanup = function() {
+				if (timeoutId !== null) {
+					clearTimeout(timeoutId);
+					timeoutId = null;
+				}
+				if (viewState._uciAppliedHandler) {
+					document.removeEventListener('uci-applied', viewState._uciAppliedHandler);
+					viewState._uciAppliedHandler = null;
+				}
+			};
 
-				const finishResolve = function(value) {
-					if (settled)
-						return;
+			const finishResolve = function(value) {
+				if (settled)
+					return;
 
-					settled = true;
-					cleanup();
-					resolve(value);
-				};
-
-				const finishReject = function(err) {
-					if (settled)
-						return;
-
-					settled = true;
-					cleanup();
-					reject(err);
-				};
-
+				settled = true;
 				cleanup();
+				resolve(value);
+			};
 
+			const finishReject = function(err) {
+				if (settled)
+					return;
+
+				settled = true;
+				cleanup();
+				reject(err);
+			};
+
+			const handleRejectedSaveFlow = function(err) {
+				managerStore.setError(state, err);
+				state.pendingOperationLabel = '';
+				managerStore.resumePolling(state);
+				updateLocalStatus(state, { force: true });
+				finishReject(err);
+			};
+
+			cleanup();
+
+			Promise.resolve(viewState.handleSave(ev)).then(function() {
 				viewState._uciAppliedHandler = function() {
 					Promise.resolve().then(function() {
 						uci.unload('nordvpn_easy');
@@ -543,6 +555,16 @@ function handleSaveApply(viewState, state, ev, mode) {
 					});
 				};
 
+				timeoutId = setTimeout(function() {
+					const timeoutError = new Error(_('Configuration apply timed out.'));
+
+					managerStore.setError(state, timeoutError);
+					state.pendingOperationLabel = '';
+					managerStore.resumePolling(state);
+					updateLocalStatus(state, { force: true });
+					finishReject(timeoutError);
+				}, 60000);
+
 				document.addEventListener('uci-applied', viewState._uciAppliedHandler);
 				state.pendingOperationLabel = _('configuration');
 				state.currentOperationStatus = 'busy:configuration';
@@ -550,9 +572,13 @@ function handleSaveApply(viewState, state, ev, mode) {
 				updateLocalStatus(state, { force: true });
 				Promise.resolve(ui.changes.apply(mode === '0')).catch(function(err) {
 					managerStore.setError(state, err);
+					state.pendingOperationLabel = '';
 					managerStore.resumePolling(state);
+					updateLocalStatus(state, { force: true });
 					finishReject(err);
 				});
+			}).catch(function(err) {
+				handleRejectedSaveFlow(err);
 			});
 		});
 	});

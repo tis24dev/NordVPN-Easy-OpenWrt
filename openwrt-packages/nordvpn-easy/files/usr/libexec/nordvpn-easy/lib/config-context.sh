@@ -23,12 +23,15 @@ nordvpn_easy_read_uci_option() {
 	local uci_config="$1"
 	local uci_section="$2"
 	local option="$3"
+	local key="${uci_config}.${uci_section}.${option}"
+	local value=''
 
-	if uci -q get "${uci_config}.${uci_section}.${option}" >/dev/null 2>&1; then
-		uci -q get "${uci_config}.${uci_section}.${option}" 2>/dev/null || printf '%s' ''
-	else
+	value="$(uci -q get "$key" 2>/dev/null)" || {
 		printf '%s' ''
-	fi
+		return 0
+	}
+
+	printf '%s' "$value"
 }
 
 nordvpn_easy_load_service_context() {
@@ -185,7 +188,14 @@ nordvpn_easy_runtime_file_key_state() {
 		return 0
 	}
 
-	raw_value="$(sed -n "s/^${key}=//p" "$runtime_file" | head -n 1)"
+	raw_value="$(
+		awk -v key="$key" '
+			index($0, key "=") == 1 {
+				print substr($0, length(key) + 2)
+				exit
+			}
+		' "$runtime_file"
+	)"
 
 	if [ -z "$raw_value" ]; then
 		printf '%s\n' 'missing'
@@ -213,12 +223,19 @@ nordvpn_easy_render_runtime_config() {
 	local target_tmp=''
 	local option env_name value desired_enabled
 	local written_options=0
+	local original_umask=''
 
+	original_umask="$(umask)"
+	umask 077
 	mkdir -p "$(dirname "$target_config")" || return 1
-	nordvpn_easy_mktemp_dir 'runtime-config' temp_dir || return 1
+	nordvpn_easy_mktemp_dir 'runtime-config' temp_dir || {
+		umask "$original_umask"
+		return 1
+	}
 	target_tmp="$(nordvpn_easy_temp_file_path "$temp_dir" "$(basename "$target_config").tmp")"
 	: > "$target_tmp" || {
 		rm -rf -- "$temp_dir"
+		umask "$original_umask"
 		return 1
 	}
 
@@ -226,10 +243,12 @@ nordvpn_easy_render_runtime_config() {
 	desired_enabled="$(nordvpn_easy_normalize_value 'enabled' "$desired_enabled")"
 	nordvpn_easy_write_runtime_option "$target_tmp" 'DESIRED_ENABLED' "$desired_enabled" || {
 		rm -rf -- "$temp_dir"
+		umask "$original_umask"
 		return 1
 	}
 	nordvpn_easy_write_runtime_option "$target_tmp" 'ENABLED' "$desired_enabled" || {
 		rm -rf -- "$temp_dir"
+		umask "$original_umask"
 		return 1
 	}
 	written_options=$((written_options + 2))
@@ -239,6 +258,7 @@ nordvpn_easy_render_runtime_config() {
 		eval "value=\${${prefix}${option}-}"
 		nordvpn_easy_write_runtime_option "$target_tmp" "$env_name" "$value" || {
 			rm -rf -- "$temp_dir"
+			umask "$original_umask"
 			return 1
 		}
 		written_options=$((written_options + 1))
@@ -246,9 +266,11 @@ nordvpn_easy_render_runtime_config() {
 
 	mv "$target_tmp" "$target_config" || {
 		rm -rf -- "$temp_dir"
+		umask "$original_umask"
 		return 1
 	}
 	rm -rf -- "$temp_dir"
+	umask "$original_umask"
 
 	printf '%s\n' "$written_options"
 }

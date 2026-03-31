@@ -31,11 +31,14 @@ assert_eq() {
 nordvpn_easy_log() { :; }
 LOCK_ACQUIRED=0
 
+umask 0022
+INITIAL_UMASK="$(umask)"
 nordvpn_easy_mktemp_dir 'unit-test' TEMP_WORKSPACE
 [ -d "$TEMP_WORKSPACE" ] || {
 	printf '%s\n' 'FAIL: secure temp workspace was not created' >&2
 	exit 1
 }
+assert_eq "$INITIAL_UMASK" "$(umask)" 'mktemp helper restores umask'
 
 TEMP_FILE="$(nordvpn_easy_temp_file_path "$TEMP_WORKSPACE" 'payload.txt')"
 printf '%s\n' 'payload' > "$TEMP_FILE"

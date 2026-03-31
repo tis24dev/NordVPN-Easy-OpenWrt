@@ -76,7 +76,7 @@ const CountrySelectValue = form.ListValue.extend({
 
 const TokenValue = form.Value.extend({
 	cfgvalue: function(section_id) {
-		return uci.get(this.uciconfig || this.map.config, section_id, this.option) || '';
+		return '';
 	},
 
 	validate: function(section_id, value) {

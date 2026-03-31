@@ -92,6 +92,7 @@ assert_eq 'wg0' "$VPN_IF" 'runtime context exports vpn_if'
 assert_eq '10.5.0.2/32' "$VPN_ADDR" 'runtime context exports vpn_addr'
 
 RUNTIME_FILE="$TMP_DIR/runtime.conf"
+umask 0022
 WRITTEN_OPTIONS="$(nordvpn_easy_render_runtime_config "$RUNTIME_FILE" 'cfg_')"
 
 [ -f "$RUNTIME_FILE" ] || {
@@ -111,6 +112,7 @@ esac
 	exit 1
 }
 
+assert_eq '0022' "$(umask)" 'runtime config renderer restores umask'
 assert_eq 'present' "$(nordvpn_easy_runtime_file_key_state "$RUNTIME_FILE" 'NORDVPN_TOKEN')" 'runtime file writes token'
 assert_eq 'present' "$(nordvpn_easy_runtime_file_key_state "$RUNTIME_FILE" 'VPN_IF')" 'runtime file writes vpn_if'
 
