@@ -142,36 +142,60 @@ nordvpn_easy_parse_wg_dump_peer() {
 
 nordvpn_easy_operation_status_value() {
 	local lock_dir="${1:-$LOCK_DIR}"
+	nordvpn_easy_load_lock_metadata "$lock_dir"
+
+	if [ "$OPERATION_LOCK_STATE" = 'none' ]; then
+		printf '%s\n' 'idle'
+	elif [ -n "$OPERATION_LOCK_ACTION" ]; then
+		printf 'busy:%s\n' "$OPERATION_LOCK_ACTION"
+	else
+		printf '%s\n' 'busy'
+	fi
+}
+
+nordvpn_easy_load_lock_metadata() {
+	local lock_dir="${1:-$LOCK_DIR}"
 	local lock_pid_file="${lock_dir}/pid"
 	local lock_action_file="${lock_dir}/action"
+	local lock_state_file="${lock_dir}/state"
+	local lock_started_at_file="${lock_dir}/started_at"
 	local lock_pid=''
-	local lock_action=''
+	local lock_state=''
+	local lock_started_at=''
 
-	if [ ! -f "$lock_pid_file" ]; then
-		printf '%s\n' 'idle'
-		return 0
-	fi
+	OPERATION_LOCK_STATE='none'
+	OPERATION_LOCK_PID=''
+	OPERATION_LOCK_ACTION=''
+	OPERATION_LOCK_AGE_SECONDS='0'
+
+	[ -f "$lock_pid_file" ] || return 0
 
 	lock_pid="$(cat "$lock_pid_file" 2>/dev/null)"
 	case "$lock_pid" in
 		''|*[!0-9]*)
-			printf '%s\n' 'idle'
 			return 0
 			;;
 	esac
 
 	if ! kill -0 "$lock_pid" 2>/dev/null; then
-		printf '%s\n' 'idle'
 		return 0
 	fi
 
-	lock_action="$(cat "$lock_action_file" 2>/dev/null)"
+	lock_state="$(cat "$lock_state_file" 2>/dev/null)"
+	lock_started_at="$(cat "$lock_started_at_file" 2>/dev/null)"
 
-	if [ -n "$lock_action" ]; then
-		printf 'busy:%s\n' "$lock_action"
-	else
-		printf '%s\n' 'busy'
-	fi
+	case "$lock_state" in
+		stale_recovered)
+			OPERATION_LOCK_STATE='stale_recovered'
+			;;
+		*)
+			OPERATION_LOCK_STATE='held'
+			;;
+	esac
+
+	OPERATION_LOCK_PID="$lock_pid"
+	OPERATION_LOCK_ACTION="$(cat "$lock_action_file" 2>/dev/null)"
+	OPERATION_LOCK_AGE_SECONDS="$(nordvpn_easy_lock_age_seconds "$lock_dir" "$lock_started_at")"
 }
 
 nordvpn_easy_peer_section_name() {
@@ -259,6 +283,10 @@ nordvpn_easy_emit_status_json() {
 	local vpn_state=''
 	local interface_disabled='false'
 	local runtime_configured='false'
+	local operation_lock_state='none'
+	local operation_lock_pid=''
+	local operation_lock_action=''
+	local operation_lock_age_seconds='0'
 	local peer_section=''
 	local wg_dump=''
 	local endpoint='N/A'
@@ -278,6 +306,11 @@ nordvpn_easy_emit_status_json() {
 	local preferred_station="${PREFERRED_SERVER_STATION:-}"
 
 	operation="$(nordvpn_easy_operation_status_value "${LOCK_DIR:-/tmp/nordvpn-easy.lock}")"
+	nordvpn_easy_load_lock_metadata "${LOCK_DIR:-/tmp/nordvpn-easy.lock}"
+	operation_lock_state="$OPERATION_LOCK_STATE"
+	operation_lock_pid="$OPERATION_LOCK_PID"
+	operation_lock_action="$OPERATION_LOCK_ACTION"
+	operation_lock_age_seconds="$OPERATION_LOCK_AGE_SECONDS"
 	vpn_state="$(nordvpn_easy_vpn_status_value "$desired_enabled" "$VPN_IF" "$operation")"
 
 	if [ "$(uci -q get "network.${VPN_IF}.disabled" 2>/dev/null)" = '1' ]; then
@@ -328,6 +361,10 @@ EOF
   "interface": "$(nordvpn_easy_json_escape "${VPN_IF:-}")",
   "vpn_status": "$(nordvpn_easy_json_escape "$vpn_state")",
   "operation_status": "$(nordvpn_easy_json_escape "$operation")",
+  "operation_lock_state": "$(nordvpn_easy_json_escape "$operation_lock_state")",
+  "operation_lock_pid": "$(nordvpn_easy_json_escape "$operation_lock_pid")",
+  "operation_lock_action": "$(nordvpn_easy_json_escape "$operation_lock_action")",
+  "operation_lock_age_seconds": $operation_lock_age_seconds,
   "connected": $connected,
   "endpoint": "$(nordvpn_easy_json_escape "$endpoint")",
   "latest_handshake": "$(nordvpn_easy_json_escape "$latest_handshake")",

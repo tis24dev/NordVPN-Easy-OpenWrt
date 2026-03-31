@@ -231,7 +231,7 @@ ping_interface () {
 }
 
 curl_config_escape () {
-  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/#/\\#/g'
 }
 
 fetch_credentials_json () {
@@ -259,7 +259,9 @@ get_private_key () {
     return 1
   fi
 
-  PRIVATE_KEY=$(printf '%s' "$CREDENTIALS_JSON" | jq -er '.nordlynx_private_key // empty' 2>/dev/null) || {
+  PRIVATE_KEY=$(printf '%s' "$CREDENTIALS_JSON" | jq -er '.nordlynx_private_key // empty' 2>/dev/null)
+  CREDENTIALS_JSON=''
+  [ -n "$PRIVATE_KEY" ] || {
     nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" 'invalid NordLynx private key response received from NordVPN API'
     return 1
   }
@@ -285,8 +287,9 @@ countries_cache_is_fresh () {
 
 refresh_countries_cache () {
   FORCE_REFRESH="${1:-0}"
-  COUNTRIES_CACHE_TMP="${COUNTRIES_CACHE_FILE}.tmp.$$"
-  COUNTRIES_TS_TMP="${COUNTRIES_CACHE_TS_FILE}.tmp.$$"
+  COUNTRIES_TEMP_DIR=''
+  COUNTRIES_CACHE_TMP=''
+  COUNTRIES_TS_TMP=''
 
   if [ "$FORCE_REFRESH" -ne 1 ] && countries_cache_is_fresh; then
     log "Using cached NordVPN country list from $COUNTRIES_CACHE_FILE"
@@ -299,6 +302,9 @@ refresh_countries_cache () {
     log 'Refreshing NordVPN country list cache'
   fi
 
+  nordvpn_easy_mktemp_dir 'countries-cache' COUNTRIES_TEMP_DIR || return 1
+  COUNTRIES_CACHE_TMP="$(nordvpn_easy_temp_file_path "$COUNTRIES_TEMP_DIR" 'countries.json')"
+  COUNTRIES_TS_TMP="$(nordvpn_easy_temp_file_path "$COUNTRIES_TEMP_DIR" 'countries.timestamp')"
   curl -fsS --connect-timeout 15 --max-time 30 "$COUNTRIES_URL" | jq -ce '
     [ .[] | select(
         (.id != null) and
@@ -311,33 +317,46 @@ refresh_countries_cache () {
       }
     ] | sort_by(.name | ascii_downcase)
   ' > "$COUNTRIES_CACHE_TMP" 2>/dev/null || {
-    rm -f "$COUNTRIES_CACHE_TMP" "$COUNTRIES_TS_TMP"
-    [ -f "$COUNTRIES_CACHE_FILE" ] && return 0
+    rm -rf -- "$COUNTRIES_TEMP_DIR"
+    if [ -f "$COUNTRIES_CACHE_FILE" ]; then
+      log 'WARNING: country list refresh failed; using existing cache'
+      return 0
+    fi
     log 'ERROR: COULD NOT REFRESH COUNTRY LIST CACHE'
     return 1
   }
 
   date +%s > "$COUNTRIES_TS_TMP" || {
-    rm -f "$COUNTRIES_CACHE_TMP" "$COUNTRIES_TS_TMP"
-    [ -f "$COUNTRIES_CACHE_FILE" ] && return 0
+    rm -rf -- "$COUNTRIES_TEMP_DIR"
+    if [ -f "$COUNTRIES_CACHE_FILE" ]; then
+      log 'WARNING: country cache timestamp write failed; using existing cache'
+      return 0
+    fi
     log 'ERROR: COULD NOT WRITE COUNTRY CACHE TIMESTAMP'
     return 1
   }
 
   mv "$COUNTRIES_CACHE_TMP" "$COUNTRIES_CACHE_FILE" || {
-    rm -f "$COUNTRIES_CACHE_TMP" "$COUNTRIES_TS_TMP"
-    [ -f "$COUNTRIES_CACHE_FILE" ] && return 0
+    rm -rf -- "$COUNTRIES_TEMP_DIR"
+    if [ -f "$COUNTRIES_CACHE_FILE" ]; then
+      log 'WARNING: country cache update failed; using existing cache'
+      return 0
+    fi
     log 'ERROR: COULD NOT UPDATE COUNTRY LIST CACHE'
     return 1
   }
 
   mv "$COUNTRIES_TS_TMP" "$COUNTRIES_CACHE_TS_FILE" || {
-    rm -f "$COUNTRIES_TS_TMP"
-    [ -f "$COUNTRIES_CACHE_FILE" ] && return 0
+    rm -rf -- "$COUNTRIES_TEMP_DIR"
+    if [ -f "$COUNTRIES_CACHE_FILE" ]; then
+      log 'WARNING: country cache timestamp update failed; using existing cache'
+      return 0
+    fi
     log 'ERROR: COULD NOT UPDATE COUNTRY CACHE TIMESTAMP'
     return 1
   }
 
+  rm -rf -- "$COUNTRIES_TEMP_DIR"
   log "NordVPN country list cache updated at $COUNTRIES_CACHE_FILE"
 }
 
@@ -585,9 +604,10 @@ server_catalog_cache_matches_country () {
 fetch_server_catalog () {
   FORCE_REFRESH="${1:-0}"
   COUNTRY_QUERY="${2:-$VPN_COUNTRY}"
-  SERVER_CATALOG_TMP="${SERVER_CATALOG_FILE}.tmp.$$"
-  SERVER_CATALOG_TS_TMP="${SERVER_CATALOG_TS_FILE}.tmp.$$"
-  SERVER_CATALOG_RAW_TMP="${SERVER_CATALOG_TMP}.raw"
+  SERVER_CATALOG_TEMP_DIR=''
+  SERVER_CATALOG_TMP=''
+  SERVER_CATALOG_TS_TMP=''
+  SERVER_CATALOG_RAW_TMP=''
   SERVER_CATALOG_URL=''
 
   [ -n "$COUNTRY_QUERY" ] || {
@@ -605,58 +625,82 @@ fetch_server_catalog () {
   SERVER_CATALOG_URL="${SERVER_CATALOG_URL_BASE}&filters[country_id]=$RESOLVED_COUNTRY_ID"
   log "Refreshing NordVPN server catalog for $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
 
+  nordvpn_easy_mktemp_dir 'server-catalog' SERVER_CATALOG_TEMP_DIR || return 1
+  SERVER_CATALOG_TMP="$(nordvpn_easy_temp_file_path "$SERVER_CATALOG_TEMP_DIR" 'catalog.json')"
+  SERVER_CATALOG_TS_TMP="$(nordvpn_easy_temp_file_path "$SERVER_CATALOG_TEMP_DIR" 'catalog.timestamp')"
+  SERVER_CATALOG_RAW_TMP="$(nordvpn_easy_temp_file_path "$SERVER_CATALOG_TEMP_DIR" 'catalog.raw')"
   curl -g -fsS --connect-timeout 15 --max-time 45 -o "$SERVER_CATALOG_RAW_TMP" "$SERVER_CATALOG_URL" || {
-      rm -f "$SERVER_CATALOG_RAW_TMP" "$SERVER_CATALOG_TMP" "$SERVER_CATALOG_TS_TMP"
-      server_catalog_cache_matches_country "$RESOLVED_COUNTRY_ID" && return 0
+      rm -rf -- "$SERVER_CATALOG_TEMP_DIR"
+      if server_catalog_cache_matches_country "$RESOLVED_COUNTRY_ID"; then
+        log "WARNING: server catalog download failed for $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE); using existing cache"
+        return 0
+      fi
     nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "could not download server catalog for $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
     return 1
   }
 
   [ -s "$SERVER_CATALOG_RAW_TMP" ] || {
-    rm -f "$SERVER_CATALOG_RAW_TMP" "$SERVER_CATALOG_TMP" "$SERVER_CATALOG_TS_TMP"
-    server_catalog_cache_matches_country "$RESOLVED_COUNTRY_ID" && return 0
+    rm -rf -- "$SERVER_CATALOG_TEMP_DIR"
+    if server_catalog_cache_matches_country "$RESOLVED_COUNTRY_ID"; then
+      log "WARNING: empty server catalog response for $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE); using existing cache"
+      return 0
+    fi
     nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "empty server catalog response for $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
     return 1
   }
 
   nordvpn_easy_build_server_catalog_json "$RESOLVED_COUNTRY_ID" "$RESOLVED_COUNTRY_CODE" "$RESOLVED_COUNTRY_NAME" \
     < "$SERVER_CATALOG_RAW_TMP" > "$SERVER_CATALOG_TMP" 2>/dev/null || {
-      rm -f "$SERVER_CATALOG_RAW_TMP" "$SERVER_CATALOG_TMP" "$SERVER_CATALOG_TS_TMP"
-      server_catalog_cache_matches_country "$RESOLVED_COUNTRY_ID" && return 0
+      rm -rf -- "$SERVER_CATALOG_TEMP_DIR"
+      if server_catalog_cache_matches_country "$RESOLVED_COUNTRY_ID"; then
+        log "WARNING: server catalog transform failed for $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE); using existing cache"
+        return 0
+      fi
       nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "could not transform server catalog for $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
       return 1
     }
 
-  rm -f "$SERVER_CATALOG_RAW_TMP"
-
   nordvpn_easy_server_catalog_has_servers "$SERVER_CATALOG_TMP" || {
-    rm -f "$SERVER_CATALOG_RAW_TMP" "$SERVER_CATALOG_TMP" "$SERVER_CATALOG_TS_TMP"
-    server_catalog_cache_matches_country "$RESOLVED_COUNTRY_ID" && return 0
+    rm -rf -- "$SERVER_CATALOG_TEMP_DIR"
+    if server_catalog_cache_matches_country "$RESOLVED_COUNTRY_ID"; then
+      log "WARNING: no WireGuard servers found for '$COUNTRY_QUERY'; using existing cache"
+      return 0
+    fi
     nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "no WireGuard servers found for country '$COUNTRY_QUERY'"
     return 1
   }
 
   date +%s > "$SERVER_CATALOG_TS_TMP" || {
-    rm -f "$SERVER_CATALOG_RAW_TMP" "$SERVER_CATALOG_TMP" "$SERVER_CATALOG_TS_TMP"
-    server_catalog_cache_matches_country "$RESOLVED_COUNTRY_ID" && return 0
+    rm -rf -- "$SERVER_CATALOG_TEMP_DIR"
+    if server_catalog_cache_matches_country "$RESOLVED_COUNTRY_ID"; then
+      log "WARNING: server catalog timestamp write failed for $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE); using existing cache"
+      return 0
+    fi
     log 'ERROR: COULD NOT WRITE SERVER CATALOG TIMESTAMP'
     return 1
   }
 
   mv "$SERVER_CATALOG_TMP" "$SERVER_CATALOG_FILE" || {
-    rm -f "$SERVER_CATALOG_RAW_TMP" "$SERVER_CATALOG_TMP" "$SERVER_CATALOG_TS_TMP"
-    server_catalog_cache_matches_country "$RESOLVED_COUNTRY_ID" && return 0
+    rm -rf -- "$SERVER_CATALOG_TEMP_DIR"
+    if server_catalog_cache_matches_country "$RESOLVED_COUNTRY_ID"; then
+      log "WARNING: server catalog cache update failed for $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE); using existing cache"
+      return 0
+    fi
     log 'ERROR: COULD NOT UPDATE SERVER CATALOG CACHE'
     return 1
   }
 
   mv "$SERVER_CATALOG_TS_TMP" "$SERVER_CATALOG_TS_FILE" || {
-    rm -f "$SERVER_CATALOG_RAW_TMP" "$SERVER_CATALOG_TS_TMP"
-    server_catalog_cache_matches_country "$RESOLVED_COUNTRY_ID" && return 0
+    rm -rf -- "$SERVER_CATALOG_TEMP_DIR"
+    if server_catalog_cache_matches_country "$RESOLVED_COUNTRY_ID"; then
+      log "WARNING: server catalog timestamp update failed for $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE); using existing cache"
+      return 0
+    fi
     log 'ERROR: COULD NOT UPDATE SERVER CATALOG TIMESTAMP'
     return 1
   }
 
+  rm -rf -- "$SERVER_CATALOG_TEMP_DIR"
   log "NordVPN server catalog updated at $SERVER_CATALOG_FILE for $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
 }
 

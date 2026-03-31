@@ -76,19 +76,23 @@ nordvpn_easy_build_server_recommendations_url() {
 }
 
 nordvpn_easy_get_servers_list() {
-	SERVER_LIST_TMP="${SERVER_LIST_FILE}.tmp.$$"
+	local temp_dir=''
+	local server_list_tmp=''
 	SERVER_RECOMMENDATIONS_URL=$(nordvpn_easy_build_server_recommendations_url) || return 1
 
-	log "apply: downloading recommended VPN server list to $SERVER_LIST_TMP"
+	nordvpn_easy_mktemp_dir 'server-list' temp_dir || return 1
+	server_list_tmp="$(nordvpn_easy_temp_file_path "$temp_dir" 'recommendations.json')"
 
-	curl -g -fsS --connect-timeout 15 --max-time 30 -o "$SERVER_LIST_TMP" "$SERVER_RECOMMENDATIONS_URL" || {
-		rm -f "$SERVER_LIST_TMP"
+	log "apply: downloading recommended VPN server list to $server_list_tmp"
+
+	curl -g -fsS --connect-timeout 15 --max-time 30 -o "$server_list_tmp" "$SERVER_RECOMMENDATIONS_URL" || {
+		rm -rf -- "$temp_dir"
 		log 'ERROR: COULD NOT RETRIEVE VPN SERVERS'
 		return 1
 	}
 
-	jq -er '.[0].station // empty' "$SERVER_LIST_TMP" >/dev/null 2>&1 || {
-		rm -f "$SERVER_LIST_TMP"
+	jq -er '.[0].station // empty' "$server_list_tmp" >/dev/null 2>&1 || {
+		rm -rf -- "$temp_dir"
 		if [ -n "$VPN_COUNTRY" ]; then
 			log "ERROR: NO WIREGUARD SERVERS FOUND FOR COUNTRY '$VPN_COUNTRY'"
 		else
@@ -97,11 +101,12 @@ nordvpn_easy_get_servers_list() {
 		return 1
 	}
 
-	mv "$SERVER_LIST_TMP" "$SERVER_LIST_FILE" || {
-		rm -f "$SERVER_LIST_TMP"
+	mv "$server_list_tmp" "$SERVER_LIST_FILE" || {
+		rm -rf -- "$temp_dir"
 		log 'ERROR: COULD NOT UPDATE VPN SERVER LIST'
 		return 1
 	}
+	rm -rf -- "$temp_dir"
 
 	SERVER_COUNT=$(jq -r 'length' "$SERVER_LIST_FILE" 2>/dev/null)
 	log "apply: VPN server list updated at $SERVER_LIST_FILE with ${SERVER_COUNT:-unknown} entries"
@@ -179,7 +184,8 @@ nordvpn_easy_sync_server_selection() {
 
 nordvpn_easy_change_vpn_server() {
 	CURRENT_SERVER=$(nordvpn_easy_current_server_station)
-	SERVER_CANDIDATES_FILE="/tmp/nordvpn.candidates.$$"
+	local temp_dir=''
+	SERVER_CANDIDATES_FILE=''
 	commit_failed=0
 	server_changed=0
 	candidate_count=0
@@ -187,8 +193,10 @@ nordvpn_easy_change_vpn_server() {
 
 	log "apply: starting VPN server rotation from current endpoint ${CURRENT_SERVER:-none}"
 
+	nordvpn_easy_mktemp_dir 'recommended-candidates' temp_dir || return 1
+	SERVER_CANDIDATES_FILE="$(nordvpn_easy_temp_file_path "$temp_dir" 'recommended.tsv')"
 	nordvpn_easy_recommendation_candidates_tsv "$SERVER_LIST_FILE" > "$SERVER_CANDIDATES_FILE" || {
-		rm -f "$SERVER_CANDIDATES_FILE"
+		rm -rf -- "$temp_dir"
 		log 'ERROR: INVALID VPN SERVER LIST'
 		return 1
 	}
@@ -220,7 +228,7 @@ nordvpn_easy_change_vpn_server() {
 		log "apply: candidate $HOST_NAME ($SERVER_IP) did not restore VPN connectivity, moving to the next candidate"
 	done < "$SERVER_CANDIDATES_FILE"
 
-	rm -f "$SERVER_CANDIDATES_FILE"
+	rm -rf -- "$temp_dir"
 
 	if [ "$commit_failed" -eq 1 ]; then
 		return 1
@@ -236,7 +244,8 @@ nordvpn_easy_change_vpn_server() {
 
 nordvpn_easy_change_manual_server() {
 	CURRENT_SERVER=$(nordvpn_easy_current_server_station)
-	SERVER_CANDIDATES_FILE="/tmp/nordvpn-manual.candidates.$$"
+	local temp_dir=''
+	SERVER_CANDIDATES_FILE=''
 	commit_failed=0
 	server_changed=0
 	candidate_count=0
@@ -247,8 +256,10 @@ nordvpn_easy_change_manual_server() {
 
 	log "apply: starting manual VPN server rotation from current endpoint ${CURRENT_SERVER:-none}"
 
+	nordvpn_easy_mktemp_dir 'manual-candidates' temp_dir || return 1
+	SERVER_CANDIDATES_FILE="$(nordvpn_easy_temp_file_path "$temp_dir" 'manual.tsv')"
 	nordvpn_easy_server_catalog_candidates_tsv "$SERVER_CATALOG_FILE" > "$SERVER_CANDIDATES_FILE" || {
-		rm -f "$SERVER_CANDIDATES_FILE"
+		rm -rf -- "$temp_dir"
 		log 'ERROR: INVALID SERVER CATALOG'
 		return 1
 	}
@@ -285,7 +296,7 @@ nordvpn_easy_change_manual_server() {
 		log "apply: manual candidate $HOST_NAME ($SERVER_IP) did not restore VPN connectivity, moving to the next candidate"
 	done < "$SERVER_CANDIDATES_FILE"
 
-	rm -f "$SERVER_CANDIDATES_FILE"
+	rm -rf -- "$temp_dir"
 
 	if [ "$commit_failed" -eq 1 ]; then
 		return 1
@@ -467,7 +478,10 @@ nordvpn_easy_check_once() {
 			backoff_steps=$((failed_pings - SERVER_ROTATE_THRESHOLD + 1))
 			while [ "$backoff_steps" -gt 0 ]; do
 				retry_delay=$((retry_delay * 2))
-				[ "$retry_delay" -gt "$POST_RESTART_DELAY" ] && retry_delay="$POST_RESTART_DELAY"
+				if [ "$retry_delay" -ge "$POST_RESTART_DELAY" ]; then
+					retry_delay="$POST_RESTART_DELAY"
+					break
+				fi
 				backoff_steps=$((backoff_steps - 1))
 			done
 		fi

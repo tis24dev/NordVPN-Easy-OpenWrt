@@ -3,11 +3,14 @@
 CONFIG_CONTEXT_LIB_DIR="${NORDVPN_EASY_LIB_DIR:-/usr/libexec/nordvpn-easy/lib}"
 CONFIG_CONTEXT_SCHEMA_LIB="${CONFIG_CONTEXT_LIB_DIR}/schema.sh"
 CONFIG_CONTEXT_SERVICE_CONFIG_LIB="${CONFIG_CONTEXT_LIB_DIR}/service-config.sh"
+CONFIG_CONTEXT_COMMON_LIB="${CONFIG_CONTEXT_LIB_DIR}/common.sh"
 
 # shellcheck disable=SC1090
 . "$CONFIG_CONTEXT_SCHEMA_LIB" || exit 1
 # shellcheck disable=SC1090
 . "$CONFIG_CONTEXT_SERVICE_CONFIG_LIB" || exit 1
+# shellcheck disable=SC1090
+. "$CONFIG_CONTEXT_COMMON_LIB" || exit 1
 
 nordvpn_easy_assign_shell_var() {
 	local var_name="$1"
@@ -206,22 +209,27 @@ nordvpn_easy_runtime_file_debug_summary() {
 nordvpn_easy_render_runtime_config() {
 	local target_config="$1"
 	local prefix="${2:-cfg_}"
-	local target_tmp="${target_config}.tmp.$$"
+	local temp_dir=''
+	local target_tmp=''
 	local option env_name value desired_enabled
 	local written_options=0
 
-	umask 077
 	mkdir -p "$(dirname "$target_config")" || return 1
-	: > "$target_tmp" || return 1
+	nordvpn_easy_mktemp_dir 'runtime-config' temp_dir || return 1
+	target_tmp="$(nordvpn_easy_temp_file_path "$temp_dir" "$(basename "$target_config").tmp")"
+	: > "$target_tmp" || {
+		rm -rf -- "$temp_dir"
+		return 1
+	}
 
 	eval "desired_enabled=\${${prefix}enabled-0}"
 	desired_enabled="$(nordvpn_easy_normalize_value 'enabled' "$desired_enabled")"
 	nordvpn_easy_write_runtime_option "$target_tmp" 'DESIRED_ENABLED' "$desired_enabled" || {
-		rm -f "$target_tmp"
+		rm -rf -- "$temp_dir"
 		return 1
 	}
 	nordvpn_easy_write_runtime_option "$target_tmp" 'ENABLED' "$desired_enabled" || {
-		rm -f "$target_tmp"
+		rm -rf -- "$temp_dir"
 		return 1
 	}
 	written_options=$((written_options + 2))
@@ -230,16 +238,17 @@ nordvpn_easy_render_runtime_config() {
 		env_name="$(nordvpn_easy_env_name "$option")"
 		eval "value=\${${prefix}${option}-}"
 		nordvpn_easy_write_runtime_option "$target_tmp" "$env_name" "$value" || {
-			rm -f "$target_tmp"
+			rm -rf -- "$temp_dir"
 			return 1
 		}
 		written_options=$((written_options + 1))
 	done
 
 	mv "$target_tmp" "$target_config" || {
-		rm -f "$target_tmp"
+		rm -rf -- "$temp_dir"
 		return 1
 	}
+	rm -rf -- "$temp_dir"
 
 	printf '%s\n' "$written_options"
 }

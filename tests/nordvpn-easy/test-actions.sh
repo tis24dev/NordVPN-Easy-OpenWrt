@@ -3,6 +3,7 @@
 set -eu
 
 ROOT_DIR="$(CDPATH='' cd -- "$(dirname "$0")/../.." && pwd)"
+COMMON_LIB="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/common.sh"
 CATALOG_LIB="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/catalog.sh"
 ACTIONS_LIB="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/actions.sh"
 FIXTURE="$ROOT_DIR/tests/nordvpn-easy/fixtures/nordvpn-api-servers.json"
@@ -17,6 +18,8 @@ cleanup() {
 
 trap cleanup EXIT HUP INT TERM
 
+# shellcheck disable=SC1090
+. "$COMMON_LIB"
 # shellcheck disable=SC1090
 . "$CATALOG_LIB"
 # shellcheck disable=SC1090
@@ -138,10 +141,6 @@ nordvpn_easy_change_vpn_server reload
 assert_eq '2' "$APPLY_COUNT" 'recommended rotation retries next candidate after apply failure'
 assert_eq '2' "$COMMIT_NETWORK_COUNT" 'recommended rotation commits each tried candidate'
 assert_eq 'it45.nordvpn.com|it456' "$LAST_SET_SERVER" 'recommended rotation lands on second candidate'
-[ ! -f "/tmp/nordvpn.candidates.$$" ] || {
-	printf '%s\n' 'FAIL: recommended candidate file was not removed' >&2
-	exit 1
-}
 
 APPLY_FAIL_UNTIL=0
 APPLY_COUNT=0
@@ -159,9 +158,5 @@ assert_eq '1' "$APPLY_COUNT" 'manual rotation keeps the first successful runtime
 assert_eq 'it12.nordvpn.com|it123' "$SAVED_PREFERENCE" 'manual rotation keeps the applied server preference even when commit warns'
 assert_eq 'it12.nordvpn.com' "$PREFERRED_SERVER_HOSTNAME" 'manual hostname updated in environment'
 assert_eq 'it123' "$PREFERRED_SERVER_STATION" 'manual station updated in environment'
-[ ! -f "/tmp/nordvpn-manual.candidates.$$" ] || {
-	printf '%s\n' 'FAIL: manual candidate file was not removed' >&2
-	exit 1
-}
 
 printf '%s\n' 'test-actions.sh: ok'

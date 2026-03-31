@@ -1,5 +1,8 @@
 #!/bin/sh
 
+NORDVPN_EASY_TEMP_PATHS="${NORDVPN_EASY_TEMP_PATHS:-}"
+NORDVPN_EASY_EXIT_TRAP_INSTALLED="${NORDVPN_EASY_EXIT_TRAP_INSTALLED:-0}"
+
 nordvpn_easy_log() {
 	[ -t 2 ] && printf '*** %s ***\n' "$*" >&2
 	if command -v logger >/dev/null 2>&1; then
@@ -29,6 +32,79 @@ nordvpn_easy_log_blocker() {
 	shift
 
 	nordvpn_easy_log_phase "$phase" "BLOCKER: $*"
+}
+
+nordvpn_easy_install_exit_trap() {
+	[ "${NORDVPN_EASY_EXIT_TRAP_INSTALLED:-0}" -eq 1 ] && return 0
+
+	trap 'nordvpn_easy_on_exit' EXIT HUP INT TERM
+	NORDVPN_EASY_EXIT_TRAP_INSTALLED=1
+}
+
+nordvpn_easy_register_temp_path() {
+	local temp_path="$1"
+
+	[ -n "$temp_path" ] || return 1
+
+	case "
+$NORDVPN_EASY_TEMP_PATHS
+" in
+	*"
+$temp_path
+"*)
+		return 0
+		;;
+	esac
+
+	NORDVPN_EASY_TEMP_PATHS="${NORDVPN_EASY_TEMP_PATHS}${temp_path}
+"
+}
+
+nordvpn_easy_cleanup_temp_paths() {
+	local old_ifs="$IFS"
+	local temp_path
+
+	IFS='
+'
+	for temp_path in $NORDVPN_EASY_TEMP_PATHS; do
+		[ -n "$temp_path" ] || continue
+		rm -rf -- "$temp_path"
+	done
+	IFS="$old_ifs"
+
+	NORDVPN_EASY_TEMP_PATHS=''
+}
+
+nordvpn_easy_mktemp_dir() {
+	local prefix="${1:-runtime}"
+	local result_var="${2:-}"
+	local temp_dir=''
+
+	command -v mktemp >/dev/null 2>&1 || {
+		nordvpn_easy_log_blocker 'runtime' "required command 'mktemp' is missing"
+		return 1
+	}
+
+	umask 077
+	temp_dir="$(mktemp -d "/tmp/nordvpn-easy.${prefix}.XXXXXX" 2>/dev/null)" || {
+		nordvpn_easy_log_blocker 'runtime' "could not create secure temporary workspace for ${prefix}"
+		return 1
+	}
+
+	nordvpn_easy_register_temp_path "$temp_dir" || {
+		rm -rf -- "$temp_dir"
+		return 1
+	}
+
+	if [ -n "$result_var" ]; then
+		eval "$result_var='$(printf "%s" "$temp_dir" | sed "s/'/'\\\\''/g")'"
+	else
+		printf '%s\n' "$temp_dir"
+	fi
+}
+
+nordvpn_easy_temp_file_path() {
+	printf '%s/%s\n' "$1" "$2"
 }
 
 nordvpn_easy_debug_cli_args() {
@@ -80,13 +156,42 @@ nordvpn_easy_require_commands() {
 	local cmd
 
 	nordvpn_easy_log 'Validating required system commands'
-	for cmd in awk curl ifdown ifup ip jq ping uci; do
+	for cmd in awk curl ifdown ifup ip jq mktemp ping uci; do
 		command -v "$cmd" >/dev/null 2>&1 || {
 			nordvpn_easy_log_blocker 'runtime' "required command '$cmd' is missing"
 			return 1
 		}
 	done
 	nordvpn_easy_log 'Required system commands are available'
+}
+
+nordvpn_easy_lock_age_seconds() {
+	local lock_path="$1"
+	local started_at="${2:-}"
+	local now_ts=0
+	local lock_ts=0
+	local age=0
+
+	now_ts="$(date +%s 2>/dev/null || printf '0')"
+	case "$started_at" in
+		''|*[!0-9]*)
+			lock_ts="$(stat -c %Y "$lock_path" 2>/dev/null || printf '0')"
+			;;
+		*)
+			lock_ts="$started_at"
+			;;
+	esac
+
+	case "$now_ts:$lock_ts" in
+		*[!0-9:]*|0:*|*:0)
+			printf '%s\n' '0'
+			return 0
+			;;
+	esac
+
+	age=$((now_ts - lock_ts))
+	[ "$age" -lt 0 ] && age=0
+	printf '%s\n' "$age"
 }
 
 nordvpn_easy_server_selection_is_manual() {
@@ -138,65 +243,120 @@ nordvpn_easy_server_cache_ttl_value() {
 }
 
 nordvpn_easy_release_lock() {
-	[ "$LOCK_ACQUIRED" -eq 1 ] || return 0
-	rm -rf "$LOCK_DIR"
+	[ "${LOCK_ACQUIRED:-0}" -eq 1 ] || return 0
+	[ -n "${LOCK_DIR:-}" ] || return 0
+	rm -rf "${LOCK_DIR:-}"
 	LOCK_ACQUIRED=0
 	nordvpn_easy_log_phase 'runtime' "execution lock released at $LOCK_DIR"
+}
+
+nordvpn_easy_write_lock_metadata() {
+	local lock_dir="$1"
+	local lock_pid="$2"
+	local lock_action="$3"
+	local lock_started_at="$4"
+	local lock_state="$5"
+
+	printf '%s\n' "$lock_pid" > "${lock_dir}/pid" || return 1
+	printf '%s\n' "$lock_action" > "${lock_dir}/action" || return 1
+	printf '%s\n' "$lock_started_at" > "${lock_dir}/started_at" || return 1
+	printf '%s\n' "$lock_state" > "${lock_dir}/state" || return 1
 }
 
 nordvpn_easy_acquire_lock() {
 	local lock_pid_file="${LOCK_DIR}/pid"
 	local lock_action_file="${LOCK_DIR}/action"
+	local lock_started_at_file="${LOCK_DIR}/started_at"
 	local lock_pid=''
+	local lock_action=''
+	local lock_started_at=''
+	local lock_age='0'
+	local now_ts=0
+	local stale_reason='unknown'
 
+	now_ts="$(date +%s 2>/dev/null || printf '0')"
 	if mkdir "$LOCK_DIR" 2>/dev/null; then
-		if ! printf '%s\n' "$$" > "$lock_pid_file" || ! printf '%s\n' "$ACTION" > "$lock_action_file"; then
+		if ! nordvpn_easy_write_lock_metadata "$LOCK_DIR" "$$" "${ACTION:-unknown}" "$now_ts" 'held'; then
 			rm -rf "$LOCK_DIR" 2>/dev/null
 			nordvpn_easy_log_blocker 'runtime' "could not write execution lock metadata into $LOCK_DIR"
 			return 1
 		fi
 		LOCK_ACQUIRED=1
-		trap 'nordvpn_easy_release_lock' EXIT HUP INT TERM
+		nordvpn_easy_install_exit_trap
 		nordvpn_easy_log_phase 'runtime' "execution lock acquired at $LOCK_DIR"
 		return 0
 	fi
 
-	if [ -f "$lock_pid_file" ]; then
+	if [ ! -f "$lock_pid_file" ]; then
+		stale_reason='missing pid metadata'
+	else
 		lock_pid="$(cat "$lock_pid_file" 2>/dev/null)"
-		if [ -n "$lock_pid" ] && kill -0 "$lock_pid" 2>/dev/null; then
-			nordvpn_easy_log_blocker 'runtime' "execution lock is already held by PID $lock_pid"
-			return 2
-		fi
+		case "$lock_pid" in
+			''|*[!0-9]*)
+				stale_reason="invalid pid metadata (${lock_pid:-empty})"
+				;;
+			*)
+				if kill -0 "$lock_pid" 2>/dev/null; then
+					lock_action="$(cat "$lock_action_file" 2>/dev/null)"
+					lock_started_at="$(cat "$lock_started_at_file" 2>/dev/null)"
+					lock_age="$(nordvpn_easy_lock_age_seconds "$LOCK_DIR" "$lock_started_at")"
+					nordvpn_easy_log_blocker 'runtime' "execution lock is already held by PID $lock_pid (action=${lock_action:-unknown}, age=${lock_age}s)"
+					return 2
+				fi
+				stale_reason="owner PID $lock_pid is no longer alive"
+				;;
+		esac
 	fi
 
-	nordvpn_easy_log_phase 'runtime' "recovering stale execution lock at $LOCK_DIR"
+	nordvpn_easy_log_phase 'runtime' "recovering stale execution lock at $LOCK_DIR (reason: ${stale_reason})"
 	rm -rf "$LOCK_DIR" 2>/dev/null || return 1
 
-	mkdir "$LOCK_DIR" 2>/dev/null || return 1
-	if ! printf '%s\n' "$$" > "$lock_pid_file" || ! printf '%s\n' "$ACTION" > "$lock_action_file"; then
+	if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+		nordvpn_easy_log_blocker 'runtime' "lost race recovering stale lock at $LOCK_DIR"
+		return 2
+	fi
+	if ! nordvpn_easy_write_lock_metadata "$LOCK_DIR" "$$" "${ACTION:-unknown}" "$now_ts" 'stale_recovered'; then
 		rm -rf "$LOCK_DIR" 2>/dev/null
 		nordvpn_easy_log_blocker 'runtime' "could not write execution lock metadata into $LOCK_DIR"
 		return 1
 	fi
+
+	local verify_pid
+	verify_pid="$(cat "$lock_pid_file" 2>/dev/null)"
+	if [ "$verify_pid" != "$$" ]; then
+		nordvpn_easy_log_blocker 'runtime' "lock ownership verification failed (expected $$, got ${verify_pid:-empty})"
+		rm -rf "$LOCK_DIR" 2>/dev/null
+		return 2
+	fi
+
 	LOCK_ACQUIRED=1
-	trap 'nordvpn_easy_release_lock' EXIT HUP INT TERM
-	nordvpn_easy_log_phase 'runtime' "recovered and acquired execution lock at $LOCK_DIR"
+	nordvpn_easy_install_exit_trap
+	nordvpn_easy_log_phase 'runtime' "recovered and acquired execution lock at $LOCK_DIR (reason: ${stale_reason})"
+}
+
+nordvpn_easy_on_exit() {
+	nordvpn_easy_release_lock
+	nordvpn_easy_cleanup_temp_paths
 }
 
 nordvpn_easy_export_diagnostics_log() {
 	local service_name="${1:-nordvpn-easy}"
-	local tmp_log="/tmp/${service_name}.diagnostics.$$"
+	local temp_dir=''
+	local tmp_log=''
 
 	command -v logread >/dev/null 2>&1 || {
 		nordvpn_easy_log 'logread command not found'
 		return 1
 	}
 
+	nordvpn_easy_mktemp_dir 'diagnostics' temp_dir || return 1
+	tmp_log="$(nordvpn_easy_temp_file_path "$temp_dir" "${service_name}.diagnostics.log")"
+
 	logread -e "$service_name" > "$tmp_log" || {
-		rm -f "$tmp_log"
+		rm -rf -- "$temp_dir"
 		return 1
 	}
 
 	tail -n 500 "$tmp_log"
-	rm -f "$tmp_log"
+	rm -rf -- "$temp_dir"
 }

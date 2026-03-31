@@ -49,9 +49,9 @@ fi
 		SERVICE_STATUS=$$?
 		if [ "$$SERVICE_STATUS" -ne 0 ]; then
 			printf "%s\n" "nordvpn-easy: service start failed with exit code $$SERVICE_STATUS" >&2
-		[ -n "$$SERVICE_OUTPUT" ] && printf "%s\n" "$$SERVICE_OUTPUT" >&2
+			[ -n "$$SERVICE_OUTPUT" ] && printf "%s\n" "$$SERVICE_OUTPUT" >&2
+		fi
 	fi
-fi
 
 exit 0
 endef
