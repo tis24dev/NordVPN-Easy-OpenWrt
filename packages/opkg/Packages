@@ -8,9 +8,9 @@ Section: luci
 SourceDateEpoch: 1696887935
 Maintainer: tis24dev
 Architecture: all
-Installed-Size: 24359
+Installed-Size: 26507
 Filename: luci-app-nordvpn-easy_0.1.3_all.ipk
-Size: 25567
-SHA256sum: c4a1707c3186f73da4574ab2ab0170d32672f149dd73f7cf7d430771d21b30e4
+Size: 27697
+SHA256sum: 5992b6d5a45ef45e5935a4375111281d9f53de64dbe9ea8dca84f567a0bdb525
 Description:  User-facing LuCI integration for NordVPN Easy on OpenWrt, bundled with the backend for manual upload installs
 
