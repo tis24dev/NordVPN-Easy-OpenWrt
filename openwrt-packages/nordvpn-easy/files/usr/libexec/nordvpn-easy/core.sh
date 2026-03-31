@@ -4,17 +4,23 @@
 
 LIB_DIR='/usr/libexec/nordvpn-easy/lib'
 SCHEMA_LIB="${LIB_DIR}/schema.sh"
+CONFIG_CONTEXT_LIB="${LIB_DIR}/config-context.sh"
 COMMON_LIB="${LIB_DIR}/common.sh"
 CATALOG_LIB="${LIB_DIR}/catalog.sh"
+RUNTIME_LIB="${LIB_DIR}/runtime.sh"
 WIREGUARD_LIB="${LIB_DIR}/wireguard.sh"
 ACTIONS_LIB="${LIB_DIR}/actions.sh"
 
 # shellcheck disable=SC1090
 . "$SCHEMA_LIB" || exit 1
 # shellcheck disable=SC1090
+. "$CONFIG_CONTEXT_LIB" || exit 1
+# shellcheck disable=SC1090
 . "$COMMON_LIB" || exit 1
 # shellcheck disable=SC1090
 . "$CATALOG_LIB" || exit 1
+# shellcheck disable=SC1090
+. "$RUNTIME_LIB" || exit 1
 # shellcheck disable=SC1090
 . "$WIREGUARD_LIB" || exit 1
 # shellcheck disable=SC1090
@@ -36,7 +42,6 @@ PUBLIC_COUNTRY_API='https://api.country.is'   # Third-party API, no auth require
 SERVER_RECOMMENDATIONS_URL_BASE="${NORDVPN_API}/servers/recommendations?filters[servers_technologies][identifier]=wireguard_udp&limit=10"
 SERVER_CATALOG_URL_BASE="${NORDVPN_API}/servers?filters[servers_technologies][identifier]=wireguard_udp&limit=5000"
 CREDENTIALS_URL="${NORDVPN_API}/users/services/credentials"
-DEFAULT_CONFIG_FILE='/var/etc/nordvpn-easy.conf'
 LOCK_DIR='/tmp/nordvpn-easy.lock'
 RESOLVED_COUNTRY_ID=''
 RESOLVED_COUNTRY_NAME=''
@@ -48,6 +53,7 @@ LOCK_ACQUIRED=0
 PUBLIC_COUNTRY_VERIFIED=0
 SERVER_CATALOG_QUERY=''
 SERVER_CATALOG_FORCE='0'
+PUBLIC_LOOKUP_LOG_MODE='verbose'
 
 # List of IPs to randomly ping
 IP0='8.8.8.8'
@@ -72,7 +78,7 @@ IP18='209.244.0.3'
 IP19='209.244.0.4'
 
 log () {
-  nordvpn_easy_log "$@"
+  nordvpn_easy_log_phase "${LOG_PHASE:-runtime}" "$@"
 }
 
 curl_rc_meaning () {
@@ -81,7 +87,7 @@ curl_rc_meaning () {
 
 usage () {
   cat <<EOF
-Usage: $0 [check|setup|rotate|refresh_countries|refresh_countries_force|server_catalog|public_ip|public_country|run|help] [config_file] [extra_args]
+Usage: $0 [check|setup|rotate|refresh_countries|refresh_countries_force|server_catalog|public_ip|public_country|operation_status|vpn_status|status_json|diagnostics_log|run|help] [--config config_file] [extra_args]
 
 Commands:
   check   Run one VPN health-check cycle (default)
@@ -93,53 +99,19 @@ Commands:
           Print the cached or refreshed NordVPN WireGuard server catalog JSON
   public_ip  Print the current public IP as seen from the router
   public_country  Print the detected country code for the current public IP
+  operation_status  Print whether a NordVPN Easy operation is running
+  vpn_status  Print VPN runtime status (active|inactive|starting|stopping|error)
+  status_json  Print runtime status as JSON
+  diagnostics_log  Print filtered NordVPN Easy log output
   run     Backward-compatible alias for check
   help    Show this message
 
-If config_file is omitted, $DEFAULT_CONFIG_FILE is used when present.
+If --config is omitted, runtime context is loaded directly from UCI.
 EOF
 }
 
 lock_contention_is_nonfatal () {
   nordvpn_easy_lock_contention_is_nonfatal "$@"
-}
-
-config_line_state () {
-  CONFIG_KEY="$1"
-  CONFIG_RAW_VALUE=''
-
-  [ -f "$CONFIG_PATH" ] || {
-    printf '%s\n' 'missing-file'
-    return 0
-  }
-
-  CONFIG_RAW_VALUE=$(sed -n "s/^${CONFIG_KEY}=//p" "$CONFIG_PATH" | head -n 1)
-
-  if [ -z "$CONFIG_RAW_VALUE" ]; then
-    printf '%s\n' 'missing'
-  elif [ "$CONFIG_RAW_VALUE" = "''" ]; then
-    printf '%s\n' 'empty'
-  else
-    printf '%s\n' 'present'
-  fi
-}
-
-runtime_env_debug_summary () {
-  printf '%s' "token=$([ -n "$NORDVPN_TOKEN" ] && printf '%s' 'present' || printf '%s' 'missing'), "
-  printf '%s' "wan_if=${WAN_IF:-unset}, "
-  printf '%s' "vpn_if=${VPN_IF:-unset}, "
-  printf '%s' "vpn_addr=${VPN_ADDR:-unset}, "
-  printf '%s' "vpn_port=${VPN_PORT:-unset}, "
-  printf '%s' "vpn_country=${VPN_COUNTRY:-automatic}, "
-  printf '%s' "mode=${SERVER_SELECTION_MODE:-auto}"
-}
-
-runtime_config_file_debug_summary () {
-  printf '%s' "file_token=$(config_line_state 'NORDVPN_TOKEN'), "
-  printf '%s' "file_wan_if=$(config_line_state 'WAN_IF'), "
-  printf '%s' "file_vpn_if=$(config_line_state 'VPN_IF'), "
-  printf '%s' "file_vpn_addr=$(config_line_state 'VPN_ADDR'), "
-  printf '%s' "file_vpn_port=$(config_line_state 'VPN_PORT')"
 }
 
 validate_setup_runtime () {
@@ -152,27 +124,37 @@ validate_setup_runtime () {
   [ -n "$VPN_PORT" ] || MISSING_FIELDS="${MISSING_FIELDS} VPN_PORT"
 
   if [ -n "$MISSING_FIELDS" ]; then
-    log "ERROR: SETUP PREREQUISITES MISSING:${MISSING_FIELDS} ($(runtime_env_debug_summary); $(runtime_config_file_debug_summary))"
+    if [ -n "$CONFIG_PATH" ] && [ -f "$CONFIG_PATH" ]; then
+      nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "setup prerequisites missing:${MISSING_FIELDS} ($(nordvpn_easy_runtime_env_debug_summary); $(nordvpn_easy_runtime_file_debug_summary "$CONFIG_PATH"))"
+    else
+      nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "setup prerequisites missing:${MISSING_FIELDS} ($(nordvpn_easy_runtime_env_debug_summary))"
+    fi
     return 1
   fi
 
-  log "Setup/runtime prerequisites verified ($(runtime_env_debug_summary); $(runtime_config_file_debug_summary))"
+  if [ -n "$CONFIG_PATH" ] && [ -f "$CONFIG_PATH" ]; then
+    log "Setup/runtime prerequisites verified ($(nordvpn_easy_runtime_env_debug_summary); $(nordvpn_easy_runtime_file_debug_summary "$CONFIG_PATH"))"
+  else
+    log "Setup/runtime prerequisites verified ($(nordvpn_easy_runtime_env_debug_summary))"
+  fi
 }
 
 load_config () {
-  if [ -f "$CONFIG_PATH" ]; then
-    # shellcheck disable=SC1090
-    . "$CONFIG_PATH" || {
-      log "ERROR: FAILED TO SOURCE RUNTIME CONFIGURATION FROM $CONFIG_PATH"
+  if [ -n "$CONFIG_PATH" ] && [ -f "$CONFIG_PATH" ]; then
+    nordvpn_easy_load_runtime_context_from_file "$CONFIG_PATH" || {
+      nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "failed to source runtime configuration from $CONFIG_PATH"
       return 1
     }
-    nordvpn_easy_apply_env_defaults
-    log "Loaded runtime configuration from $CONFIG_PATH ($(runtime_env_debug_summary); $(runtime_config_file_debug_summary))"
+    log "Loaded runtime configuration from $CONFIG_PATH ($(nordvpn_easy_runtime_env_debug_summary); $(nordvpn_easy_runtime_file_debug_summary "$CONFIG_PATH"))"
   elif [ "$CONFIG_PATH_REQUIRED" -eq 1 ]; then
-    log "ERROR: CONFIG FILE $CONFIG_PATH NOT FOUND"
+    nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "required config file $CONFIG_PATH was not found"
     return 1
   else
-    log "No runtime configuration file found at $CONFIG_PATH, using environment/default values"
+    nordvpn_easy_load_runtime_context_from_uci || {
+      nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" 'failed to load runtime configuration from UCI'
+      return 1
+    }
+    log "Loaded runtime configuration from ${CONFIG_CONTEXT_SOURCE:-uci} ($(nordvpn_easy_runtime_env_debug_summary))"
   fi
 }
 
@@ -263,22 +245,22 @@ fetch_credentials_json () {
 
 get_private_key () {
   if [ -n "$NORDVPN_TOKEN" ]; then
-    log 'Requesting NordLynx private key from NordVPN API'
+    log 'apply: requesting NordLynx private key from NordVPN API'
     CREDENTIALS_JSON=$(fetch_credentials_json) || {
-      log 'ERROR: COULD NOT RETRIEVE PRIVATE_KEY'
+      nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" 'could not retrieve NordLynx private key from NordVPN API'
       return 1
     }
   else
-    log 'ERROR: NORDVPN_TOKEN IS NOT DEFINED'
+    nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" 'NORDVPN_TOKEN is not defined'
     return 1
   fi
 
   PRIVATE_KEY=$(printf '%s' "$CREDENTIALS_JSON" | jq -er '.nordlynx_private_key // empty' 2>/dev/null) || {
-    log 'ERROR: INVALID PRIVATE_KEY RESPONSE'
+    nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" 'invalid NordLynx private key response received from NordVPN API'
     return 1
   }
 
-  log 'NordLynx private key retrieved successfully'
+  log 'apply: NordLynx private key retrieved successfully'
 }
 
 countries_cache_is_fresh () {
@@ -363,10 +345,14 @@ valid_country_code () {
   printf '%s' "$1" | grep -Eq '^[A-Z]{2}$'
 }
 
+public_lookup_log () {
+  [ "${PUBLIC_LOOKUP_LOG_MODE:-verbose}" = 'quiet' ] || log "$@"
+}
+
 get_public_ip () {
   local curl_out curl_rc
 
-  log "get_public_ip: starting IPv4-only public IP lookup (system DNS: $(grep '^nameserver' /etc/resolv.conf 2>/dev/null | awk '{print $2}' | tr '\n' ' ' | sed 's/ $//'))"
+  public_lookup_log "get_public_ip: starting IPv4-only public IP lookup (system DNS: $(grep '^nameserver' /etc/resolv.conf 2>/dev/null | awk '{print $2}' | tr '\n' ' ' | sed 's/ $//'))"
 
   for PUBLIC_IP_URL in \
     'https://api.ipify.org' \
@@ -374,7 +360,7 @@ get_public_ip () {
     'https://ipv4.icanhazip.com' \
     'https://ifconfig.me/ip'
   do
-    log "get_public_ip: trying $PUBLIC_IP_URL"
+    public_lookup_log "get_public_ip: trying $PUBLIC_IP_URL"
     curl_out=$(curl -4 -fsS --connect-timeout 3 --max-time 5 "$PUBLIC_IP_URL" 2>/dev/null | tr -d '\r\n')
     curl_rc=$?
 
@@ -393,10 +379,10 @@ get_public_ip () {
       continue
     fi
 
-    log "get_public_ip: got '$curl_out' from $PUBLIC_IP_URL"
-    PUBLIC_IP="$curl_out"
-    printf '%s\n' "$PUBLIC_IP"
-    return 0
+      public_lookup_log "get_public_ip: got '$curl_out' from $PUBLIC_IP_URL"
+      PUBLIC_IP="$curl_out"
+      printf '%s\n' "$PUBLIC_IP"
+      return 0
   done
 
   log 'ERROR: COULD NOT RETRIEVE PUBLIC IP — all endpoints failed'
@@ -418,23 +404,23 @@ lookup_public_country_by_ip () {
   local api_host
   api_host=$(printf '%s' "$PUBLIC_COUNTRY_API" | sed 's|https://||')
 
-  log "lookup_public_country_by_ip: system DNS servers: $(grep '^nameserver' /etc/resolv.conf 2>/dev/null | awk '{print $2}' | tr '\n' ' ' | sed 's/ $//')"
-  log "lookup_public_country_by_ip: resolving $api_host via Quad9 DNS (9.9.9.9) to bypass VPN DNS filtering"
+  public_lookup_log "lookup_public_country_by_ip: system DNS servers: $(grep '^nameserver' /etc/resolv.conf 2>/dev/null | awk '{print $2}' | tr '\n' ' ' | sed 's/ $//')"
+  public_lookup_log "lookup_public_country_by_ip: resolving $api_host via Quad9 DNS (9.9.9.9) to bypass VPN DNS filtering"
 
   local nslookup_out resolved_ip
   nslookup_out=$(nslookup "$api_host" 9.9.9.9 2>&1)
   resolved_ip=$(printf '%s\n' "$nslookup_out" \
     | awk '/^Address/ && !/9\.9\.9\.9/ && /[0-9]\.[0-9]/ {print $NF; exit}')
 
-  log "lookup_public_country_by_ip: Quad9 nslookup output: $(printf '%s' "$nslookup_out" | tr '\n' '|')"
+  public_lookup_log "lookup_public_country_by_ip: Quad9 nslookup output: $(printf '%s' "$nslookup_out" | tr '\n' '|')"
 
   if [ -n "$resolved_ip" ]; then
-    log "lookup_public_country_by_ip: resolved $api_host → $resolved_ip via Quad9 DNS — will use --resolve to bypass system DNS"
+    public_lookup_log "lookup_public_country_by_ip: resolved $api_host → $resolved_ip via Quad9 DNS — will use --resolve to bypass system DNS"
   else
-    log "lookup_public_country_by_ip: Quad9 DNS resolution failed for $api_host — falling back to system DNS (may fail if VPN DNS blocks it)"
+    public_lookup_log "lookup_public_country_by_ip: Quad9 DNS resolution failed for $api_host — falling back to system DNS (may fail if VPN DNS blocks it)"
   fi
 
-  log "lookup_public_country_by_ip: querying ${PUBLIC_COUNTRY_API}/${LOOKUP_IP} (IPv4-only$([ -n "$resolved_ip" ] && printf ', resolve hint: %s' "$resolved_ip"))"
+  public_lookup_log "lookup_public_country_by_ip: querying ${PUBLIC_COUNTRY_API}/${LOOKUP_IP} (IPv4-only$([ -n "$resolved_ip" ] && printf ', resolve hint: %s' "$resolved_ip"))"
 
   if [ -n "$resolved_ip" ]; then
     curl_raw=$(curl -4 --resolve "${api_host}:443:${resolved_ip}" -fsS --connect-timeout 5 --max-time 10 "${PUBLIC_COUNTRY_API}/${LOOKUP_IP}" 2>/dev/null)
@@ -453,7 +439,7 @@ lookup_public_country_by_ip () {
     return 1
   fi
 
-  log "lookup_public_country_by_ip: raw response for $LOOKUP_IP: $curl_raw"
+  public_lookup_log "lookup_public_country_by_ip: raw response for $LOOKUP_IP: $curl_raw"
 
   if ! country_raw=$(printf '%s' "$curl_raw" | jq -er '.country // empty' 2>/dev/null); then
     log "ERROR: COULD NOT PARSE COUNTRY FROM RESPONSE FOR $LOOKUP_IP (raw='$curl_raw')"
@@ -471,17 +457,17 @@ lookup_public_country_by_ip () {
     return 1
   }
 
-  log "lookup_public_country_by_ip: resolved $LOOKUP_IP → $PUBLIC_COUNTRY"
+  public_lookup_log "lookup_public_country_by_ip: resolved $LOOKUP_IP → $PUBLIC_COUNTRY"
   printf '%s\n' "$PUBLIC_COUNTRY"
 }
 
 get_public_country () {
-  log 'get_public_country: starting public IP and country lookup'
+  public_lookup_log 'get_public_country: starting public IP and country lookup'
   PUBLIC_IP=$(get_public_ip) || {
     log 'get_public_country: public IP lookup failed — cannot determine country'
     return 1
   }
-  log "get_public_country: public IP is $PUBLIC_IP — proceeding to country lookup"
+  public_lookup_log "get_public_country: public IP is $PUBLIC_IP — proceeding to country lookup"
   lookup_public_country_by_ip "$PUBLIC_IP"
 }
 
@@ -618,14 +604,14 @@ fetch_server_catalog () {
   curl -g -fsS --connect-timeout 15 --max-time 45 -o "$SERVER_CATALOG_RAW_TMP" "$SERVER_CATALOG_URL" || {
       rm -f "$SERVER_CATALOG_RAW_TMP" "$SERVER_CATALOG_TMP" "$SERVER_CATALOG_TS_TMP"
       server_catalog_cache_matches_country "$RESOLVED_COUNTRY_ID" && return 0
-      log "ERROR: COULD NOT DOWNLOAD SERVER CATALOG FOR $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
-      return 1
-    }
+    nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "could not download server catalog for $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
+    return 1
+  }
 
   [ -s "$SERVER_CATALOG_RAW_TMP" ] || {
     rm -f "$SERVER_CATALOG_RAW_TMP" "$SERVER_CATALOG_TMP" "$SERVER_CATALOG_TS_TMP"
     server_catalog_cache_matches_country "$RESOLVED_COUNTRY_ID" && return 0
-    log "ERROR: EMPTY SERVER CATALOG RESPONSE FOR $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
+    nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "empty server catalog response for $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
     return 1
   }
 
@@ -633,7 +619,7 @@ fetch_server_catalog () {
     < "$SERVER_CATALOG_RAW_TMP" > "$SERVER_CATALOG_TMP" 2>/dev/null || {
       rm -f "$SERVER_CATALOG_RAW_TMP" "$SERVER_CATALOG_TMP" "$SERVER_CATALOG_TS_TMP"
       server_catalog_cache_matches_country "$RESOLVED_COUNTRY_ID" && return 0
-      log "ERROR: COULD NOT TRANSFORM SERVER CATALOG FOR $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
+      nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "could not transform server catalog for $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
       return 1
     }
 
@@ -642,7 +628,7 @@ fetch_server_catalog () {
   nordvpn_easy_server_catalog_has_servers "$SERVER_CATALOG_TMP" || {
     rm -f "$SERVER_CATALOG_RAW_TMP" "$SERVER_CATALOG_TMP" "$SERVER_CATALOG_TS_TMP"
     server_catalog_cache_matches_country "$RESOLVED_COUNTRY_ID" && return 0
-    log "ERROR: NO WIREGUARD SERVERS FOUND FOR COUNTRY '$COUNTRY_QUERY'"
+    nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "no WireGuard servers found for country '$COUNTRY_QUERY'"
     return 1
   }
 
@@ -755,22 +741,40 @@ check_once () {
 }
 
 ACTION='check'
+ACTION_TRACE_ID=''
+ACTION_STARTED_AT=''
 
 if [ $# -gt 0 ]; then
   case "$1" in
-    check|setup|rotate|refresh_countries|refresh_countries_force|server_catalog|public_ip|public_country|run|help)
+    check|setup|rotate|refresh_countries|refresh_countries_force|server_catalog|public_ip|public_country|operation_status|vpn_status|status_json|diagnostics_log|run|help)
       ACTION="$1"
       shift
       ;;
   esac
 fi
 
+ACTION_TRACE_ID="$(date +%s 2>/dev/null || printf '%s' '0').$$"
+ACTION_STARTED_AT="$(date +%s 2>/dev/null || printf '%s' '0')"
+
 if [ $# -gt 0 ]; then
-  CONFIG_PATH="$1"
+  case "$1" in
+    --config)
+      CONFIG_PATH="${2:-}"
+      CONFIG_PATH_REQUIRED=1
+      shift
+      [ $# -gt 0 ] && shift
+      ;;
+    /*|./*|../*|*.conf)
+      CONFIG_PATH="$1"
+      CONFIG_PATH_REQUIRED=1
+      shift
+      ;;
+  esac
+fi
+
+if [ -z "$CONFIG_PATH" ] && [ -n "${NORDVPN_CONFIG_FILE:-}" ]; then
+  CONFIG_PATH="$NORDVPN_CONFIG_FILE"
   CONFIG_PATH_REQUIRED=1
-  shift
-else
-  CONFIG_PATH="${NORDVPN_CONFIG_FILE:-$DEFAULT_CONFIG_FILE}"
 fi
 
 load_config || exit 1
@@ -783,18 +787,61 @@ case "$ACTION" in
 esac
 
 if [ "$ACTION" = 'public_ip' ]; then
+  PUBLIC_LOOKUP_LOG_MODE="${1:-verbose}"
+  LOG_PHASE='poll'
+  log "public_ip request starting (mode=${PUBLIC_LOOKUP_LOG_MODE})"
   command -v curl >/dev/null 2>&1 || {
     log 'curl IS MISSING, PLEASE INSTALL'
     exit 1
   }
 
   get_public_ip
-  exit $?
+  ACTION_RC=$?
+  if [ "$ACTION_RC" -eq 0 ]; then
+    log 'public_ip request completed successfully'
+  else
+    nordvpn_easy_log_blocker "$LOG_PHASE" "public_ip request failed (rc=$ACTION_RC)"
+  fi
+  exit "$ACTION_RC"
 fi
 
 if [ "$ACTION" = 'public_country' ]; then
+  PUBLIC_LOOKUP_LOG_MODE="${1:-verbose}"
+  LOG_PHASE='poll'
+  log "public_country request starting (mode=${PUBLIC_LOOKUP_LOG_MODE})"
   require_commands || exit 1
   get_public_country
+  ACTION_RC=$?
+  if [ "$ACTION_RC" -eq 0 ]; then
+    log 'public_country request completed successfully'
+  else
+    nordvpn_easy_log_blocker "$LOG_PHASE" "public_country request failed (rc=$ACTION_RC)"
+  fi
+  exit "$ACTION_RC"
+fi
+
+if [ "$ACTION" = 'operation_status' ]; then
+  LOG_PHASE='runtime'
+  nordvpn_easy_operation_status_value "$LOCK_DIR"
+  exit $?
+fi
+
+if [ "$ACTION" = 'vpn_status' ]; then
+  LOG_PHASE='runtime'
+  nordvpn_easy_vpn_status_value "${DESIRED_ENABLED:-0}" "$VPN_IF"
+  exit $?
+fi
+
+if [ "$ACTION" = 'status_json' ]; then
+  LOG_PHASE='runtime'
+  nordvpn_easy_emit_status_json
+  exit $?
+fi
+
+if [ "$ACTION" = 'diagnostics_log' ]; then
+  LOG_PHASE='service'
+  log 'diagnostics log export requested'
+  nordvpn_easy_export_diagnostics_log 'nordvpn-easy'
   exit $?
 fi
 
@@ -805,7 +852,7 @@ fi
 
 require_commands || exit 1
 
-log "Executing action '$ACTION' for VPN interface $VPN_IF"
+log "action dispatch starting (args=$(nordvpn_easy_debug_cli_args "$@"), config_source=${CONFIG_CONTEXT_SOURCE:-unknown}, vpn_if=${VPN_IF:-unset}, desired_enabled=${DESIRED_ENABLED:-0})"
 
 # Intentionally exit 0 on lock contention so cron/hotplug do not log an error when another instance already holds the lock.
 acquire_lock
@@ -823,29 +870,63 @@ if [ "$LOCK_STATUS" -ne 0 ]; then
   exit 1
 fi
 
+ACTION_RC=0
+
 case "$ACTION" in
   run|check)
     bootstrap_if_needed && check_once
+    ACTION_RC=$?
     ;;
   setup)
     validate_setup_runtime &&
     bootstrap_if_needed && sync_server_selection && { [ "$PUBLIC_COUNTRY_VERIFIED" -eq 1 ] || verify_public_country_selection; } && log 'NordVPN configuration is ready'
+    ACTION_RC=$?
     ;;
   rotate)
     rotate_action
+    ACTION_RC=$?
     ;;
   refresh_countries)
     refresh_countries_cache
+    ACTION_RC=$?
     ;;
   refresh_countries_force)
     refresh_countries_cache 1
+    ACTION_RC=$?
     ;;
   server_catalog)
     fetch_server_catalog "$SERVER_CATALOG_FORCE" "$SERVER_CATALOG_QUERY" &&
       nordvpn_easy_emit_server_catalog_json "$SERVER_CATALOG_FILE" "$SERVER_CATALOG_TS_FILE" "$(server_cache_ttl_value)"
+    ACTION_RC=$?
     ;;
   *)
     usage
     exit 1
     ;;
 esac
+
+ACTION_FINISHED_AT="$(date +%s 2>/dev/null || printf '%s' '0')"
+ACTION_DURATION="$ACTION_FINISHED_AT"
+case "$ACTION_STARTED_AT" in
+  ''|*[!0-9]*)
+    ACTION_DURATION='unknown'
+    ;;
+  *)
+    case "$ACTION_FINISHED_AT" in
+      ''|*[!0-9]*)
+        ACTION_DURATION='unknown'
+        ;;
+      *)
+        ACTION_DURATION=$((ACTION_FINISHED_AT - ACTION_STARTED_AT))
+        ;;
+    esac
+    ;;
+esac
+
+if [ "$ACTION_RC" -eq 0 ]; then
+  log "action '$ACTION' completed successfully (duration=${ACTION_DURATION}s, public_country_verified=${PUBLIC_COUNTRY_VERIFIED:-0})"
+else
+  nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "action '$ACTION' failed (duration=${ACTION_DURATION}s, rc=$ACTION_RC)"
+fi
+
+exit "$ACTION_RC"

@@ -3,10 +3,13 @@
 set -euo pipefail
 
 ROOT_DIR="$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)"
-SHELLCHECK_EXCLUDES='SC1091,SC2034,SC2119,SC2120,SC2154,SC3043'
+SHELLCHECK_EXCLUDES='SC1091,SC2034,SC2119,SC2120,SC2154,SC2329,SC3043'
 
 JS_FILES=(
 	"$ROOT_DIR/openwrt-packages/luci-app-nordvpn-easy/htdocs/luci-static/resources/nordvpn-easy/service.js"
+	"$ROOT_DIR/openwrt-packages/luci-app-nordvpn-easy/htdocs/luci-static/resources/nordvpn-easy/manager-store.js"
+	"$ROOT_DIR/openwrt-packages/luci-app-nordvpn-easy/htdocs/luci-static/resources/nordvpn-easy/manager-actions.js"
+	"$ROOT_DIR/openwrt-packages/luci-app-nordvpn-easy/htdocs/luci-static/resources/nordvpn-easy/manager-polling.js"
 	"$ROOT_DIR/openwrt-packages/luci-app-nordvpn-easy/htdocs/luci-static/resources/nordvpn-easy/manager-data.js"
 	"$ROOT_DIR/openwrt-packages/luci-app-nordvpn-easy/htdocs/luci-static/resources/nordvpn-easy/manager-format.js"
 	"$ROOT_DIR/openwrt-packages/luci-app-nordvpn-easy/htdocs/luci-static/resources/nordvpn-easy/manager-ui.js"
@@ -20,12 +23,14 @@ SH_FILES=(
 	"$ROOT_DIR/openwrt-packages/nordvpn-easy/files/etc/init.d/nordvpn-easy"
 	"$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/core.sh"
 	"$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/schema.sh"
+	"$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/config-context.sh"
 	"$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/common.sh"
 	"$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/catalog.sh"
 	"$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/runtime.sh"
 	"$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/wireguard.sh"
 	"$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/actions.sh"
 	"$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/service-config.sh"
+	"$ROOT_DIR/tests/nordvpn-easy/test-config-context.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-schema.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-catalog-fixtures.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-common-lock.sh"
@@ -45,6 +50,7 @@ for file in "${SH_FILES[@]}"; do
 done
 
 printf '%s\n' 'Running fixture tests'
+sh "$ROOT_DIR/tests/nordvpn-easy/test-config-context.sh"
 sh "$ROOT_DIR/tests/nordvpn-easy/test-schema.sh"
 sh "$ROOT_DIR/tests/nordvpn-easy/test-catalog-fixtures.sh"
 sh "$ROOT_DIR/tests/nordvpn-easy/test-common-lock.sh"

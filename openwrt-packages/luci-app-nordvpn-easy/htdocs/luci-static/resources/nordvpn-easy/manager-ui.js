@@ -158,8 +158,10 @@ function setVpnStatusIndicator(state, label) {
 
 	if (state === 'active')
 		color = '#2ea043';
-	else if (state === 'activating')
+	else if (state === 'activating' || state === 'starting' || state === 'stopping')
 		color = '#d29922';
+	else if (state === 'inactive')
+		color = '#8c959f';
 
 	setStatusIndicator(ids.VPN_STATUS_ID, color, label);
 }
@@ -201,10 +203,10 @@ function currentServerSummaryFromStatus(status, state) {
 	if (!status)
 		return _('Not configured');
 
-	if (!status.enabled || status.interface_disabled || isDisableRequested(state))
+	if (!status.desired_enabled || status.runtime_disabled || status.interface_disabled || isDisableRequested(state))
 		return _('Disabled');
 
-	if (!status.current_server_station)
+	if (!status.runtime_configured || !status.current_server_station)
 		return _('Not configured');
 
 	return managerFormat.formatServerSummary({
@@ -238,7 +240,7 @@ function updateCountryMatchStatus(state) {
 	const expectedCountry = managerData.normalizeCountryCode(state.appliedCountryCode);
 	const actualCountry = managerData.normalizeCountryCode(state.currentPublicCountry);
 
-	if (!state.appliedEnabled || state.currentLocalStatus.interface_disabled || isDisableRequested(state))
+	if (!state.appliedEnabled || state.currentLocalStatus.runtime_disabled || state.currentLocalStatus.interface_disabled || isDisableRequested(state))
 		return setCountryMatchIndicator('inactive', _('Inactive'));
 
 	if (state.currentOperationStatus.indexOf('busy:') === 0) {
@@ -303,6 +305,9 @@ function updateServerCatalogStatus(state) {
 	if (!country) {
 		text = _('Select a country to load the manual server catalog.');
 	}
+	else if (mode !== 'manual' && !state.currentServerCatalog.servers.length) {
+		text = _('Catalog loads on demand for manual mode or explicit refresh.');
+	}
 	else if (!state.currentServerCatalog.servers.length) {
 		text = _('No server catalog loaded for %s yet.').format(country);
 	}
@@ -337,7 +342,7 @@ function updateServerCatalogStatus(state) {
 function updateServerSelectionState(state) {
 	const mode = getSelectedMode();
 	const country = getSelectedCountry();
-	const busy = state.currentOperationStatus.indexOf('busy') === 0;
+	const busy = state.currentOperationStatus.indexOf('busy') === 0 || state.pendingOperationLabel !== '';
 	const selectEl = getSelectElement(ids.SERVER_FIELD_ID);
 	const refreshButton = getInputElement(ids.SERVER_REFRESH_BUTTON_ID, 'button');
 

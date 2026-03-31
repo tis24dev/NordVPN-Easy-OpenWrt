@@ -38,8 +38,11 @@ function parseLocalStatus(raw) {
 	const status = parseJson(raw, {});
 
 	return {
+		desired_enabled: ('desired_enabled' in status) ? !!status.desired_enabled : !!status.enabled,
 		enabled: !!status.enabled,
+		runtime_disabled: ('runtime_disabled' in status) ? !!status.runtime_disabled : !!status.interface_disabled,
 		interface_disabled: !!status.interface_disabled,
+		runtime_configured: ('runtime_configured' in status) ? !!status.runtime_configured : !!status.current_server_station,
 		server_selection_mode: String(status.server_selection_mode || 'auto'),
 		selected_country: normalizeCountryCode(status.selected_country || ''),
 		interface: String(status.interface || ''),

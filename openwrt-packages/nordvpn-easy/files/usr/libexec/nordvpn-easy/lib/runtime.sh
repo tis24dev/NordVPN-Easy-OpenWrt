@@ -139,3 +139,210 @@ nordvpn_easy_parse_wg_dump_peer() {
 		}
 	'
 }
+
+nordvpn_easy_operation_status_value() {
+	local lock_dir="${1:-$LOCK_DIR}"
+	local lock_pid_file="${lock_dir}/pid"
+	local lock_action_file="${lock_dir}/action"
+	local lock_pid=''
+	local lock_action=''
+
+	if [ ! -f "$lock_pid_file" ]; then
+		printf '%s\n' 'idle'
+		return 0
+	fi
+
+	lock_pid="$(cat "$lock_pid_file" 2>/dev/null)"
+	case "$lock_pid" in
+		''|*[!0-9]*)
+			printf '%s\n' 'idle'
+			return 0
+			;;
+	esac
+
+	if ! kill -0 "$lock_pid" 2>/dev/null; then
+		printf '%s\n' 'idle'
+		return 0
+	fi
+
+	lock_action="$(cat "$lock_action_file" 2>/dev/null)"
+
+	if [ -n "$lock_action" ]; then
+		printf 'busy:%s\n' "$lock_action"
+	else
+		printf '%s\n' 'busy'
+	fi
+}
+
+nordvpn_easy_peer_section_name() {
+	local vpn_if="${1:-$VPN_IF}"
+
+	if uci -q get "network.${vpn_if}server.endpoint_host" >/dev/null 2>&1; then
+		printf '%s\n' "${vpn_if}server"
+		return 0
+	fi
+
+	uci show network 2>/dev/null | grep "^network\..*=wireguard_${vpn_if}$" | head -1 | cut -d. -f2 | cut -d= -f1
+}
+
+nordvpn_easy_runtime_configured() {
+	local vpn_if="${1:-$VPN_IF}"
+
+	[ "$(uci -q get "network.${vpn_if}.proto" 2>/dev/null)" = 'wireguard' ] || return 1
+	nordvpn_easy_peer_section_name "$vpn_if" >/dev/null 2>&1
+}
+
+nordvpn_easy_vpn_status_value() {
+	local desired_enabled="${1:-${DESIRED_ENABLED:-0}}"
+	local vpn_if="${2:-$VPN_IF}"
+	local operation="${3:-}"
+
+	[ -n "$operation" ] || operation="$(nordvpn_easy_operation_status_value "${LOCK_DIR:-/tmp/nordvpn-easy.lock}")"
+
+	case "$desired_enabled" in
+		1|true|yes|on) ;;
+		*)
+			printf '%s\n' 'inactive'
+			return 0
+			;;
+	esac
+
+	if [ "$(uci -q get "network.${vpn_if}.disabled" 2>/dev/null)" = '1' ]; then
+		if [ "$operation" = 'busy:disable_runtime' ]; then
+			printf '%s\n' 'stopping'
+		else
+			printf '%s\n' 'inactive'
+		fi
+		return 0
+	fi
+
+	if ! nordvpn_easy_runtime_configured "$vpn_if"; then
+		case "$operation" in
+			busy:setup|busy:check|busy:rotate)
+				printf '%s\n' 'starting'
+				;;
+			*)
+				printf '%s\n' 'inactive'
+				;;
+		esac
+		return 0
+	fi
+
+	if command -v ifstatus >/dev/null 2>&1; then
+		if ifstatus "$vpn_if" 2>/dev/null | jq -er '.up == true' >/dev/null 2>&1; then
+			printf '%s\n' 'active'
+			return 0
+		fi
+	else
+		if ip link show dev "$vpn_if" >/dev/null 2>&1; then
+			printf '%s\n' 'active'
+			return 0
+		fi
+	fi
+
+	case "$operation" in
+		busy:setup|busy:check|busy:rotate)
+			printf '%s\n' 'starting'
+			;;
+		busy:disable_runtime)
+			printf '%s\n' 'stopping'
+			;;
+		*)
+			printf '%s\n' 'inactive'
+			;;
+	esac
+}
+
+nordvpn_easy_emit_status_json() {
+	local desired_enabled="${DESIRED_ENABLED:-0}"
+	local operation=''
+	local vpn_state=''
+	local interface_disabled='false'
+	local runtime_configured='false'
+	local peer_section=''
+	local wg_dump=''
+	local endpoint='N/A'
+	local latest_handshake='Never'
+	local latest_handshake_epoch='0'
+	local transfer_rx='0 B'
+	local transfer_rx_bytes='0'
+	local transfer_tx='0 B'
+	local transfer_tx_bytes='0'
+	local connected='false'
+	local current_hostname=''
+	local current_station=''
+	local current_city=''
+	local current_country=''
+	local current_load=''
+	local preferred_hostname="${PREFERRED_SERVER_HOSTNAME:-}"
+	local preferred_station="${PREFERRED_SERVER_STATION:-}"
+
+	operation="$(nordvpn_easy_operation_status_value "${LOCK_DIR:-/tmp/nordvpn-easy.lock}")"
+	vpn_state="$(nordvpn_easy_vpn_status_value "$desired_enabled" "$VPN_IF" "$operation")"
+
+	if [ "$(uci -q get "network.${VPN_IF}.disabled" 2>/dev/null)" = '1' ]; then
+		interface_disabled='true'
+	fi
+
+	if nordvpn_easy_runtime_configured "$VPN_IF"; then
+		runtime_configured='true'
+		peer_section="$(nordvpn_easy_peer_section_name "$VPN_IF")"
+	fi
+
+	if [ -n "$peer_section" ]; then
+		current_hostname="$(uci -q get "network.${peer_section}.nordvpn_hostname" 2>/dev/null)"
+		current_station="$(uci -q get "network.${peer_section}.nordvpn_station" 2>/dev/null)"
+		current_city="$(uci -q get "network.${peer_section}.nordvpn_city" 2>/dev/null)"
+		current_country="$(uci -q get "network.${peer_section}.nordvpn_country_code" 2>/dev/null)"
+		current_load="$(uci -q get "network.${peer_section}.nordvpn_load" 2>/dev/null)"
+
+		[ -n "$current_hostname" ] || current_hostname="$(uci -q get "network.${peer_section}.description" 2>/dev/null)"
+		[ -n "$current_station" ] || current_station="$(uci -q get "network.${peer_section}.endpoint_host" 2>/dev/null)"
+	fi
+
+	wg_dump="$(wg show "$VPN_IF" dump 2>/dev/null)"
+
+	if [ -n "$wg_dump" ]; then
+		IFS="$(printf '\t')" read -r endpoint latest_handshake_epoch transfer_rx_bytes transfer_tx_bytes <<EOF
+$(nordvpn_easy_parse_wg_dump_peer "$wg_dump")
+EOF
+
+		latest_handshake="$(nordvpn_easy_humanize_handshake_age "$latest_handshake_epoch")"
+		transfer_rx="$(nordvpn_easy_format_human_bytes "$transfer_rx_bytes")"
+		transfer_tx="$(nordvpn_easy_format_human_bytes "$transfer_tx_bytes")"
+
+		if nordvpn_easy_handshake_epoch_indicates_connection "$latest_handshake_epoch"; then
+			connected='true'
+		fi
+	fi
+
+	cat <<EOF
+{
+  "desired_enabled": $([ "$desired_enabled" = '1' ] && printf '%s' 'true' || printf '%s' 'false'),
+  "enabled": $([ "$desired_enabled" = '1' ] && printf '%s' 'true' || printf '%s' 'false'),
+  "runtime_disabled": $interface_disabled,
+  "interface_disabled": $interface_disabled,
+  "runtime_configured": $runtime_configured,
+  "server_selection_mode": "$(nordvpn_easy_json_escape "${SERVER_SELECTION_MODE:-auto}")",
+  "selected_country": "$(nordvpn_easy_json_escape "${VPN_COUNTRY:-}")",
+  "interface": "$(nordvpn_easy_json_escape "${VPN_IF:-}")",
+  "vpn_status": "$(nordvpn_easy_json_escape "$vpn_state")",
+  "operation_status": "$(nordvpn_easy_json_escape "$operation")",
+  "connected": $connected,
+  "endpoint": "$(nordvpn_easy_json_escape "$endpoint")",
+  "latest_handshake": "$(nordvpn_easy_json_escape "$latest_handshake")",
+  "latest_handshake_epoch": $latest_handshake_epoch,
+  "transfer_rx": "$(nordvpn_easy_json_escape "$transfer_rx")",
+  "transfer_rx_bytes": $transfer_rx_bytes,
+  "transfer_tx": "$(nordvpn_easy_json_escape "$transfer_tx")",
+  "transfer_tx_bytes": $transfer_tx_bytes,
+  "current_server_hostname": "$(nordvpn_easy_json_escape "$current_hostname")",
+  "current_server_station": "$(nordvpn_easy_json_escape "$current_station")",
+  "current_server_city": "$(nordvpn_easy_json_escape "$current_city")",
+  "current_server_country": "$(nordvpn_easy_json_escape "$current_country")",
+  "current_server_load": "$(nordvpn_easy_json_escape "$current_load")",
+  "preferred_server_hostname": "$(nordvpn_easy_json_escape "$preferred_hostname")",
+  "preferred_server_station": "$(nordvpn_easy_json_escape "$preferred_station")"
+}
+EOF
+}

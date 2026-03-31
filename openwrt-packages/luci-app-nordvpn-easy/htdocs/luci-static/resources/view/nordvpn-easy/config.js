@@ -1,18 +1,19 @@
 'use strict';
 'require form';
 'require fs';
+'require nordvpn-easy/manager-actions as managerActions';
 'require nordvpn-easy/manager-data as managerData';
 'require nordvpn-easy/manager-format as managerFormat';
-'require nordvpn-easy/manager-state as managerState';
+'require nordvpn-easy/manager-polling as managerPolling';
+'require nordvpn-easy/manager-store as managerStore';
 'require nordvpn-easy/manager-ui as managerUI';
 'require nordvpn-easy/service as service';
-'require poll';
 'require ui';
 'require uci';
 'require view';
 
 const COUNTRIES_CACHE_PATH = '/tmp/nordvpn-easy-countries.json';
-const state = managerState.createState();
+const state = managerStore.createState();
 
 const CountrySelectValue = form.ListValue.extend({
 	refreshCountries: function(buttonEl, section_id) {
@@ -109,8 +110,9 @@ return view.extend({
 			]);
 		}).then(function(results) {
 			const configuredCountry = managerData.normalizeCountryCode(uci.get('nordvpn_easy', 'main', 'vpn_country') || '');
+			const currentMode = String(uci.get('nordvpn_easy', 'main', 'server_selection_mode') || 'auto');
 			const statusPromise = L.resolveDefault(service.execService('status_json'), null);
-			const catalogPromise = configuredCountry
+			const catalogPromise = managerStore.shouldLoadCatalog(currentMode, configuredCountry)
 				? L.resolveDefault(service.execService('server_catalog', [ configuredCountry ]), null)
 				: Promise.resolve(null);
 
@@ -119,7 +121,7 @@ return view.extend({
 	},
 
 	handleRefreshServerCatalog: function(ev) {
-		return managerState.handleRefreshServerCatalog(state, ev);
+		return managerActions.handleRefreshServerCatalog(state, ev);
 	},
 
 	render: function(data) {
@@ -222,40 +224,30 @@ return view.extend({
 			const modeSelect = managerUI.getSelectElement(managerUI.ids.MODE_FIELD_ID);
 
 			managerUI.renderServerChoices(managerUI.getSelectElement(managerUI.ids.SERVER_FIELD_ID), state.currentServerCatalog, currentPreferredStation);
-			managerState.updateLocalStatus(state);
-			managerState.updatePublicIp();
-			managerState.updatePublicCountry(state);
+			managerActions.updateLocalStatus(state, { force: true });
+			managerActions.updatePublicIp(state, { force: true });
+			managerActions.updatePublicCountry(state, { force: true });
 			managerUI.updateServerSelectionState(state);
 
 			if (countrySelect) {
 				countrySelect.addEventListener('change', function() {
-					managerState.onCountryChanged(state);
+					managerActions.onCountryChanged(state);
 				});
 			}
 
 			if (modeSelect) {
 				modeSelect.addEventListener('change', function() {
-					managerState.onModeChanged(state);
+					managerActions.onModeChanged(state);
 				});
 			}
 
-			poll.add(function() {
-				return managerState.updateLocalStatus(state);
-			}, 2);
-
-			poll.add(function() {
-				return managerState.updatePublicIp();
-			}, 10);
-
-			poll.add(function() {
-				return managerState.updatePublicCountry(state);
-			}, 30);
+			managerPolling.start(state);
 
 			return node;
 		}.bind(this));
 	},
 
 	handleSaveApply: function(ev, mode) {
-		return managerState.handleSaveApply(this, state, ev, mode);
+		return managerActions.handleSaveApply(this, state, ev, mode);
 	}
 });
