@@ -70,6 +70,9 @@ run_core_action() {
 	local action_started_at=''
 	local action_finished_at=''
 	local action_duration='unknown'
+	local action_temp_dir=''
+	local action_config=''
+	local written_options=0
 	local rc=0
 	shift
 
@@ -79,11 +82,23 @@ run_core_action() {
 	}
 
 	load_service_config || return 1
+	nordvpn_easy_mktemp_dir "core-${action}" action_temp_dir || {
+		log_service_error "apply: failed to create temporary config workspace for core action '$action'"
+		return 1
+	}
+	action_config="$(nordvpn_easy_temp_file_path "$action_temp_dir" "nordvpn-easy.${action}.conf")"
+	written_options="$(nordvpn_easy_render_runtime_config "$action_config" 'cfg_')" || {
+		rm -rf -- "$action_temp_dir"
+		log_service_error "apply: failed to render temporary config for core action '$action'"
+		return 1
+	}
 	action_started_at="$(date +%s 2>/dev/null || printf '%s' '0')"
 	log_service_info "apply: running core action '$action' (args=$(nordvpn_easy_debug_cli_args "$@"))"
 	log_service_info "apply: core action context for $action: $(nordvpn_easy_service_debug_summary 'cfg_')"
-	"$CORE_SCRIPT" "$action" "$@"
+	log_service_info "apply: rendered temporary config for '$action' at $action_config (written_options=$written_options, $(nordvpn_easy_runtime_file_debug_summary "$action_config"))"
+	"$CORE_SCRIPT" "$action" --config "$action_config" "$@"
 	rc=$?
+	rm -rf -- "$action_temp_dir"
 	action_finished_at="$(date +%s 2>/dev/null || printf '%s' '0')"
 	case "$action_started_at" in
 		''|*[!0-9]*)

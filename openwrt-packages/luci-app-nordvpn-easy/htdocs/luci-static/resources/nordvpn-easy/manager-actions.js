@@ -30,7 +30,7 @@ function buildSaveApplyDebugLines(previousEnabled, currentEnabled, previousCount
 	else if (preferredStation)
 		preferredLabel = preferredStation;
 
-	if (tokenFieldValue && !tokenFieldMasked)
+	if (tokenFieldValue && !tokenFieldMasked && tokenFieldValue !== existingToken)
 		tokenSourceLabel = _('provided in form');
 	else if (existingToken)
 		tokenSourceLabel = _('preserving saved token');

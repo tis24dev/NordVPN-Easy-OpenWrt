@@ -109,6 +109,7 @@ const TokenValue = form.Value.extend({
 		const storedValue = this.storedValue(section_id);
 		const widget = this.super('renderWidget', [ section_id, option_index, storedValue ? TOKEN_MASK_DISPLAY : cfgvalue ]);
 		const inputEl = widget && widget.querySelector ? widget.querySelector('input') : null;
+		const revealButtonEl = widget && widget.querySelector ? widget.querySelector('button') : null;
 
 		if (!storedValue || !inputEl)
 			return widget;
@@ -134,6 +135,14 @@ const TokenValue = form.Value.extend({
 			if (!String(inputEl.value || '').trim())
 				setMaskedState(true);
 		});
+		if (revealButtonEl) {
+			revealButtonEl.addEventListener('click', function() {
+				if (inputEl.getAttribute('data-token-masked') === '1') {
+					inputEl.value = storedValue;
+					setMaskedState(false);
+				}
+			});
+		}
 
 		return widget;
 	},
