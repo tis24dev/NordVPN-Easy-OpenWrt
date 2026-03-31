@@ -191,8 +191,20 @@ function replaceStatusText(elementId, value) {
 		element.textContent = value;
 }
 
-function currentServerSummaryFromStatus(status) {
-	if (!status || !status.current_server_station)
+function isDisableRequested(state) {
+	const enabledCheckbox = getEnabledCheckboxElement();
+
+	return !!(state && state.pendingOperationLabel && enabledCheckbox && !enabledCheckbox.checked);
+}
+
+function currentServerSummaryFromStatus(status, state) {
+	if (!status)
+		return _('Not configured');
+
+	if (!status.enabled || isDisableRequested(state))
+		return _('Disabled');
+
+	if (!status.current_server_station)
 		return _('Not configured');
 
 	return managerFormat.formatServerSummary({
@@ -226,6 +238,9 @@ function updateCountryMatchStatus(state) {
 	const expectedCountry = managerData.normalizeCountryCode(state.appliedCountryCode);
 	const actualCountry = managerData.normalizeCountryCode(state.currentPublicCountry);
 
+	if (!state.appliedEnabled || isDisableRequested(state))
+		return setCountryMatchIndicator('inactive', _('Inactive'));
+
 	if (state.currentOperationStatus.indexOf('busy:') === 0) {
 		busyAction = state.currentOperationStatus.substring(5);
 
@@ -235,9 +250,6 @@ function updateCountryMatchStatus(state) {
 	else if (state.currentOperationStatus === 'busy') {
 		return setCountryMatchIndicator('checking', _('Checking'));
 	}
-
-	if (!state.appliedEnabled)
-		return setCountryMatchIndicator('inactive', _('Inactive'));
 
 	if (!expectedCountry)
 		return setCountryMatchIndicator('automatic', _('Automatic'));
@@ -429,6 +441,7 @@ return baseclass.extend({
 	setVpnStatusIndicator: setVpnStatusIndicator,
 	setCountryMatchIndicator: setCountryMatchIndicator,
 	replaceStatusText: replaceStatusText,
+	isDisableRequested: isDisableRequested,
 	currentServerSummaryFromStatus: currentServerSummaryFromStatus,
 	preferredServerSummaryFromStatus: preferredServerSummaryFromStatus,
 	updateCountryMatchStatus: updateCountryMatchStatus,

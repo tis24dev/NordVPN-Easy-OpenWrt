@@ -99,7 +99,7 @@ function updateLocalStatus(state) {
 		state.appliedEnabled = !!state.currentLocalStatus.enabled;
 		state.appliedCountryCode = managerData.normalizeCountryCode(state.currentLocalStatus.selected_country || state.appliedCountryCode);
 
-		managerUI.replaceStatusText(managerUI.ids.CURRENT_SERVER_STATUS_ID, managerUI.currentServerSummaryFromStatus(state.currentLocalStatus));
+		managerUI.replaceStatusText(managerUI.ids.CURRENT_SERVER_STATUS_ID, managerUI.currentServerSummaryFromStatus(state.currentLocalStatus, state));
 		managerUI.replaceStatusText(managerUI.ids.PREFERRED_SERVER_STATUS_ID, managerUI.preferredServerSummaryFromStatus(state.currentLocalStatus));
 		managerUI.replaceStatusText(managerUI.ids.ENDPOINT_STATUS_ID, state.currentLocalStatus.endpoint || _('Unavailable'));
 		managerUI.replaceStatusText(managerUI.ids.HANDSHAKE_STATUS_ID, state.currentLocalStatus.latest_handshake || _('Never'));
@@ -114,7 +114,10 @@ function updateLocalStatus(state) {
 			managerUI.setManagerControlsDisabled(true);
 
 			if (busyAction !== 'refresh_countries' && busyAction !== 'server_catalog') {
-				managerUI.setVpnStatusIndicator('activating', _('Activating'));
+				managerUI.setVpnStatusIndicator(
+					managerUI.isDisableRequested(state) ? 'inactive' : 'activating',
+					managerUI.isDisableRequested(state) ? _('Disabled') : _('Activating')
+				);
 				managerUI.updateCountryMatchStatus(state);
 				managerUI.updateServerSelectionState(state);
 				return;
@@ -122,7 +125,10 @@ function updateLocalStatus(state) {
 		}
 		else if (state.currentOperationStatus === 'busy') {
 			managerUI.replaceStatusText(managerUI.ids.OPERATION_STATUS_ID, _('Applying...'));
-			managerUI.setVpnStatusIndicator('activating', _('Activating'));
+			managerUI.setVpnStatusIndicator(
+				managerUI.isDisableRequested(state) ? 'inactive' : 'activating',
+				managerUI.isDisableRequested(state) ? _('Disabled') : _('Activating')
+			);
 			managerUI.setManagerControlsDisabled(true);
 			managerUI.updateCountryMatchStatus(state);
 			managerUI.updateServerSelectionState(state);
@@ -134,7 +140,10 @@ function updateLocalStatus(state) {
 				managerUI.ids.OPERATION_STATUS_ID,
 				_('Applying (%s)...').format(managerFormat.humanizeAction(state.pendingOperationLabel))
 			);
-			managerUI.setVpnStatusIndicator('activating', _('Activating'));
+			managerUI.setVpnStatusIndicator(
+				managerUI.isDisableRequested(state) ? 'inactive' : 'activating',
+				managerUI.isDisableRequested(state) ? _('Disabled') : _('Activating')
+			);
 			managerUI.setManagerControlsDisabled(true);
 		}
 		else if (state.currentOperationStatus !== 'busy' && state.currentOperationStatus.indexOf('busy:') !== 0) {
@@ -142,7 +151,9 @@ function updateLocalStatus(state) {
 			managerUI.setManagerControlsDisabled(false);
 		}
 
-		if (state.currentLocalStatus.connected || state.currentLocalStatus.vpn_status === 'active')
+		if (!state.currentLocalStatus.enabled || managerUI.isDisableRequested(state))
+			managerUI.setVpnStatusIndicator('inactive', _('Disabled'));
+		else if (state.currentLocalStatus.connected || state.currentLocalStatus.vpn_status === 'active')
 			managerUI.setVpnStatusIndicator('active', _('Connected'));
 		else
 			managerUI.setVpnStatusIndicator('inactive', _('Disconnected'));
@@ -232,17 +243,74 @@ function handleRefreshServerCatalog(state, ev) {
 	});
 }
 
+function formatDebugValue(value, fallback) {
+	const normalized = String(value != null ? value : '').trim();
+
+	return normalized || fallback || _('Automatic');
+}
+
+function buildSaveApplyDebugLines(previousEnabled, currentEnabled, previousCountry, currentCountry, previousMode, currentMode, previousPreferredStation, preferredStation, selectedServer) {
+	const lines = [];
+	const previousEnabledLabel = previousEnabled ? _('checked') : _('unchecked');
+	const currentEnabledLabel = currentEnabled ? _('checked') : _('unchecked');
+	let preferredLabel = _('Automatic / Best recommended');
+
+	if (selectedServer)
+		preferredLabel = managerFormat.formatServerLabel(selectedServer);
+	else if (preferredStation)
+		preferredLabel = preferredStation;
+
+	if (previousEnabled !== currentEnabled)
+		lines.push(_('Enabled: %s -> %s').format(previousEnabledLabel, currentEnabledLabel));
+	else
+		lines.push(_('Enabled unchanged: %s').format(currentEnabledLabel));
+
+	if (previousCountry !== currentCountry)
+		lines.push(_('Country: %s -> %s').format(formatDebugValue(previousCountry), formatDebugValue(currentCountry)));
+
+	if (previousMode !== currentMode)
+		lines.push(_('Server selection mode: %s -> %s').format(previousMode, currentMode));
+
+	if (currentMode === 'manual' && previousPreferredStation !== preferredStation)
+		lines.push(_('Preferred server: %s').format(preferredLabel));
+
+	return lines;
+}
+
+function notifyDebugBlock(title, lines) {
+	if (!lines || !lines.length)
+		return;
+
+	ui.addNotification(null, E('div', [
+		E('p', { style: 'font-weight:bold' }, [ title ])
+	].concat(lines.map(function(line) {
+		return E('p', line);
+	}))), 'info');
+}
+
 function handleSaveApply(viewState, state, ev, mode) {
 	const previousEnabled = !!viewState.initialEnabled;
 	const previousCountry = viewState.initialCountry || '';
 	const previousMode = viewState.initialMode || 'auto';
 	const previousPreferredStation = viewState.initialPreferredStation || '';
+	const currentEnabled = !!(managerUI.getEnabledCheckboxElement() && managerUI.getEnabledCheckboxElement().checked);
 	const currentMode = managerUI.getSelectedMode();
 	const currentCountry = managerUI.getSelectedCountry();
 	const preferredStation = managerUI.getSelectedPreferredStation();
 	const preferredStationChanged = (currentMode === 'manual' && preferredStation !== previousPreferredStation);
 	const enteringManualMode = (currentMode === 'manual' && previousMode !== 'manual');
 	const selectedServer = preferredStation ? state.serverCatalogIndex[preferredStation] : null;
+	const debugLines = buildSaveApplyDebugLines(
+		previousEnabled,
+		currentEnabled,
+		previousCountry,
+		currentCountry,
+		previousMode,
+		currentMode,
+		previousPreferredStation,
+		preferredStation,
+		selectedServer
+	);
 	const preservingExistingManualPreference = (
 		currentMode === 'manual' &&
 		previousMode === 'manual' &&
@@ -305,6 +373,10 @@ function handleSaveApply(viewState, state, ev, mode) {
 	return confirmationPromise.then(function(confirmed) {
 		if (!confirmed)
 			return;
+
+		notifyDebugBlock(_('Save & Apply requested'), debugLines.concat([
+			_('UCI changes are being committed before runtime actions start.')
+		]));
 
 		return viewState.handleSave(ev).then(function() {
 			return new Promise(function(resolve, reject) {
@@ -376,6 +448,10 @@ function handleSaveApply(viewState, state, ev, mode) {
 						}
 
 						if (!actions.length) {
+							notifyDebugBlock(_('Configuration applied'), [
+								_('UCI changes were saved successfully.'),
+								_('No runtime action was required.')
+							]);
 							state.pendingOperationLabel = '';
 							updateLocalStatus(state);
 							finishResolve();
@@ -384,6 +460,10 @@ function handleSaveApply(viewState, state, ev, mode) {
 
 						state.pendingOperationLabel = managerFormat.formatActionsLabel(actions);
 						state.currentOperationStatus = 'busy:' + state.pendingOperationLabel;
+						notifyDebugBlock(_('Runtime actions queued'), [
+							_('Executing: %s').format(state.pendingOperationLabel),
+							_('Enabled state after save: %s').format(enabled ? _('checked') : _('unchecked'))
+						]);
 						updateLocalStatus(state);
 
 						service.runActions(actions).then(function() {

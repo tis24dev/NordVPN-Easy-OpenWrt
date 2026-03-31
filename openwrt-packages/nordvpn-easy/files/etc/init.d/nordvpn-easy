@@ -113,7 +113,7 @@ render_runtime_config() {
 	umask 077
 	mkdir -p /var/etc
 	: > "$RUNTIME_CONFIG" || return 1
-	log_service_info "rendering runtime config to $RUNTIME_CONFIG (enabled=$cfg_enabled, wan_if=$cfg_wan_if, vpn_if=$cfg_vpn_if, vpn_country=${cfg_vpn_country:-automatic})"
+	log_service_info "rendering runtime config to $RUNTIME_CONFIG ($(runtime_debug_summary))"
 
 	for option in $(nordvpn_easy_runtime_options); do
 		env_name="$(nordvpn_easy_env_name "$option")"
@@ -133,6 +133,7 @@ run_core_action() {
 
 	log_service_info "running core action: $action"
 	render_runtime_config || return 1
+	log_service_info "core action context for $action: $(runtime_debug_summary)"
 	"$CORE_SCRIPT" "$action" "$RUNTIME_CONFIG" "$@"
 }
 
@@ -153,6 +154,33 @@ log_service_info() {
 	local message="$1"
 
 	logger -t "$SERVICE_NAME" "$message"
+}
+
+enabled_flag_label() {
+	if [ "${cfg_enabled:-0}" -eq 1 ]; then
+		printf '%s\n' 'checked/on'
+	else
+		printf '%s\n' 'unchecked/off'
+	fi
+}
+
+debug_value_or_default() {
+	if [ -n "$1" ]; then
+		printf '%s\n' "$1"
+	else
+		printf '%s\n' "$2"
+	fi
+}
+
+runtime_debug_summary() {
+	printf '%s' "enabled=${cfg_enabled:-0} ($(enabled_flag_label)), "
+	printf '%s' "mode=$(debug_value_or_default "${cfg_server_selection_mode:-}" 'auto'), "
+	printf '%s' "country=$(debug_value_or_default "${cfg_vpn_country:-}" 'automatic'), "
+	printf '%s' "preferred_station=$(debug_value_or_default "${cfg_preferred_server_station:-}" 'automatic'), "
+	printf '%s' "preferred_hostname=$(debug_value_or_default "${cfg_preferred_server_hostname:-}" 'automatic'), "
+	printf '%s' "wan_if=$(debug_value_or_default "${cfg_wan_if:-}" 'unset'), "
+	printf '%s' "vpn_if=$(debug_value_or_default "${cfg_vpn_if:-}" 'unset'), "
+	printf '%s' "token=$([ -n "${cfg_nordvpn_token:-}" ] && printf '%s' 'present' || printf '%s' 'missing')"
 }
 
 json_escape() {
@@ -310,6 +338,8 @@ EOF
 }
 
 install_hooks() {
+	load_service_config || return 1
+	log_service_info "install_hooks requested with $(runtime_debug_summary)"
 	log_service_info 'installing runtime hooks'
 	install_cron_hook || return 1
 	install_hotplug_hook || return 1
@@ -325,7 +355,7 @@ remove_hooks() {
 
 disable_vpn_runtime() {
 	load_service_config
-	log_service_info "disabling VPN runtime for interface $cfg_vpn_if"
+	log_service_info "enabled flag is $(enabled_flag_label); disabling VPN runtime with $(runtime_debug_summary)"
 	remove_hooks
 
 	if [ "$(uci -q get "network.${cfg_vpn_if}.proto" 2>/dev/null)" != 'wireguard' ]; then
@@ -386,7 +416,8 @@ reload() {
 }
 
 setup() {
-	log_service_info 'manual setup requested'
+	load_service_config || return 1
+	log_service_info "setup requested; enabled flag is $(enabled_flag_label); $(runtime_debug_summary)"
 	run_core_action setup
 }
 
@@ -539,6 +570,7 @@ diagnostics_log() {
 }
 
 disable_runtime() {
-	log_service_info 'manual disable_runtime requested'
+	load_service_config || return 1
+	log_service_info "disable_runtime requested; enabled flag is $(enabled_flag_label); $(runtime_debug_summary)"
 	disable_vpn_runtime
 }
