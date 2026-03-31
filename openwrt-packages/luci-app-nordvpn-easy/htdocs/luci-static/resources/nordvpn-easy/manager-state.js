@@ -253,12 +253,21 @@ function buildSaveApplyDebugLines(previousEnabled, currentEnabled, previousCount
 	const lines = [];
 	const previousEnabledLabel = previousEnabled ? _('checked') : _('unchecked');
 	const currentEnabledLabel = currentEnabled ? _('checked') : _('unchecked');
+	const tokenField = managerUI.getInputElement(managerUI.ids.TOKEN_FIELD_ID, 'input');
+	const existingToken = String(uci.get('nordvpn_easy', 'main', 'nordvpn_token') || '');
+	const tokenFieldValue = String(tokenField && tokenField.value != null ? tokenField.value : '').trim();
+	let tokenSourceLabel = _('missing');
 	let preferredLabel = _('Automatic / Best recommended');
 
 	if (selectedServer)
 		preferredLabel = managerFormat.formatServerLabel(selectedServer);
 	else if (preferredStation)
 		preferredLabel = preferredStation;
+
+	if (tokenFieldValue)
+		tokenSourceLabel = _('provided in form');
+	else if (existingToken)
+		tokenSourceLabel = _('preserving saved token');
 
 	if (previousEnabled !== currentEnabled)
 		lines.push(_('Enabled: %s -> %s').format(previousEnabledLabel, currentEnabledLabel));
@@ -273,6 +282,8 @@ function buildSaveApplyDebugLines(previousEnabled, currentEnabled, previousCount
 
 	if (currentMode === 'manual' && previousPreferredStation !== preferredStation)
 		lines.push(_('Preferred server: %s').format(preferredLabel));
+
+	lines.push(_('Token handling: %s').format(tokenSourceLabel));
 
 	return lines;
 }

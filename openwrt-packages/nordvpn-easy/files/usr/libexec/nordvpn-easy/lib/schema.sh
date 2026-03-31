@@ -153,6 +153,13 @@ nordvpn_easy_normalize_value() {
 	fi
 
 	case "$option" in
+		wan_if|vpn_if|vpn_addr)
+			if [ -n "$value" ]; then
+				printf '%s\n' "$value"
+			else
+				printf '%s\n' "$default_value"
+			fi
+			;;
 		server_selection_mode)
 			case "$value" in
 				manual)

@@ -106,6 +106,34 @@ write_runtime_option() {
 	printf "%s='%s'\n" "$key" "$(nordvpn_easy_shell_quote "$value")" >> "$RUNTIME_CONFIG"
 }
 
+runtime_file_key_state() {
+	local key="$1"
+	local raw_value=''
+
+	[ -f "$RUNTIME_CONFIG" ] || {
+		printf '%s\n' 'missing-file'
+		return 0
+	}
+
+	raw_value="$(sed -n "s/^${key}=//p" "$RUNTIME_CONFIG" | head -n 1)"
+
+	if [ -z "$raw_value" ]; then
+		printf '%s\n' 'missing'
+	elif [ "$raw_value" = "''" ]; then
+		printf '%s\n' 'empty'
+	else
+		printf '%s\n' 'present'
+	fi
+}
+
+runtime_file_debug_summary() {
+	printf '%s' "file_token=$(runtime_file_key_state 'NORDVPN_TOKEN'), "
+	printf '%s' "file_wan_if=$(runtime_file_key_state 'WAN_IF'), "
+	printf '%s' "file_vpn_if=$(runtime_file_key_state 'VPN_IF'), "
+	printf '%s' "file_vpn_addr=$(runtime_file_key_state 'VPN_ADDR'), "
+	printf '%s' "file_vpn_port=$(runtime_file_key_state 'VPN_PORT')"
+}
+
 render_runtime_config() {
 	local option env_name value
 
@@ -118,8 +146,13 @@ render_runtime_config() {
 	for option in $(nordvpn_easy_runtime_options); do
 		env_name="$(nordvpn_easy_env_name "$option")"
 		eval "value=\${cfg_${option}}"
-		write_runtime_option "$env_name" "$value"
+		write_runtime_option "$env_name" "$value" || {
+			log_service_error "failed to write runtime option $env_name into $RUNTIME_CONFIG"
+			return 1
+		}
 	done
+
+	log_service_info "runtime config rendered at $RUNTIME_CONFIG ($(runtime_file_debug_summary))"
 }
 
 run_core_action() {

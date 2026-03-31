@@ -104,11 +104,70 @@ lock_contention_is_nonfatal () {
   nordvpn_easy_lock_contention_is_nonfatal "$@"
 }
 
+config_line_state () {
+  CONFIG_KEY="$1"
+  CONFIG_RAW_VALUE=''
+
+  [ -f "$CONFIG_PATH" ] || {
+    printf '%s\n' 'missing-file'
+    return 0
+  }
+
+  CONFIG_RAW_VALUE=$(sed -n "s/^${CONFIG_KEY}=//p" "$CONFIG_PATH" | head -n 1)
+
+  if [ -z "$CONFIG_RAW_VALUE" ]; then
+    printf '%s\n' 'missing'
+  elif [ "$CONFIG_RAW_VALUE" = "''" ]; then
+    printf '%s\n' 'empty'
+  else
+    printf '%s\n' 'present'
+  fi
+}
+
+runtime_env_debug_summary () {
+  printf '%s' "token=$([ -n "$NORDVPN_TOKEN" ] && printf '%s' 'present' || printf '%s' 'missing'), "
+  printf '%s' "wan_if=${WAN_IF:-unset}, "
+  printf '%s' "vpn_if=${VPN_IF:-unset}, "
+  printf '%s' "vpn_addr=${VPN_ADDR:-unset}, "
+  printf '%s' "vpn_port=${VPN_PORT:-unset}, "
+  printf '%s' "vpn_country=${VPN_COUNTRY:-automatic}, "
+  printf '%s' "mode=${SERVER_SELECTION_MODE:-auto}"
+}
+
+runtime_config_file_debug_summary () {
+  printf '%s' "file_token=$(config_line_state 'NORDVPN_TOKEN'), "
+  printf '%s' "file_wan_if=$(config_line_state 'WAN_IF'), "
+  printf '%s' "file_vpn_if=$(config_line_state 'VPN_IF'), "
+  printf '%s' "file_vpn_addr=$(config_line_state 'VPN_ADDR'), "
+  printf '%s' "file_vpn_port=$(config_line_state 'VPN_PORT')"
+}
+
+validate_setup_runtime () {
+  MISSING_FIELDS=''
+
+  [ -n "$NORDVPN_TOKEN" ] || MISSING_FIELDS="${MISSING_FIELDS} NORDVPN_TOKEN"
+  [ -n "$WAN_IF" ] || MISSING_FIELDS="${MISSING_FIELDS} WAN_IF"
+  [ -n "$VPN_IF" ] || MISSING_FIELDS="${MISSING_FIELDS} VPN_IF"
+  [ -n "$VPN_ADDR" ] || MISSING_FIELDS="${MISSING_FIELDS} VPN_ADDR"
+  [ -n "$VPN_PORT" ] || MISSING_FIELDS="${MISSING_FIELDS} VPN_PORT"
+
+  if [ -n "$MISSING_FIELDS" ]; then
+    log "ERROR: SETUP PREREQUISITES MISSING:${MISSING_FIELDS} ($(runtime_env_debug_summary); $(runtime_config_file_debug_summary))"
+    return 1
+  fi
+
+  log "Setup/runtime prerequisites verified ($(runtime_env_debug_summary); $(runtime_config_file_debug_summary))"
+}
+
 load_config () {
   if [ -f "$CONFIG_PATH" ]; then
     # shellcheck disable=SC1090
-    . "$CONFIG_PATH"
-    log "Loaded runtime configuration from $CONFIG_PATH"
+    . "$CONFIG_PATH" || {
+      log "ERROR: FAILED TO SOURCE RUNTIME CONFIGURATION FROM $CONFIG_PATH"
+      return 1
+    }
+    nordvpn_easy_apply_env_defaults
+    log "Loaded runtime configuration from $CONFIG_PATH ($(runtime_env_debug_summary); $(runtime_config_file_debug_summary))"
   elif [ "$CONFIG_PATH_REQUIRED" -eq 1 ]; then
     log "ERROR: CONFIG FILE $CONFIG_PATH NOT FOUND"
     return 1
@@ -769,6 +828,7 @@ case "$ACTION" in
     bootstrap_if_needed && check_once
     ;;
   setup)
+    validate_setup_runtime &&
     bootstrap_if_needed && sync_server_selection && { [ "$PUBLIC_COUNTRY_VERIFIED" -eq 1 ] || verify_public_country_selection; } && log 'NordVPN configuration is ready'
     ;;
   rotate)

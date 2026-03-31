@@ -73,6 +73,29 @@ const CountrySelectValue = form.ListValue.extend({
 	}
 });
 
+const TokenValue = form.Value.extend({
+	cfgvalue: function(section_id) {
+		return uci.get(this.uciconfig || this.map.config, section_id, this.option) || '';
+	},
+
+	validate: function(section_id, value) {
+		const existingValue = uci.get(this.uciconfig || this.map.config, section_id, this.option) || '';
+		const normalizedValue = String(value != null ? value : '').trim();
+
+		if (!normalizedValue && !existingValue)
+			return _('Required. NordVPN access token.');
+
+		return true;
+	},
+
+	write: function(section_id, value) {
+		const existingValue = uci.get(this.uciconfig || this.map.config, section_id, this.option) || '';
+		const normalizedValue = String(value != null ? value : '').trim();
+
+		return uci.set(this.uciconfig || this.map.config, section_id, this.option, normalizedValue || existingValue || '');
+	}
+});
+
 return view.extend({
 	load: function() {
 		const uciLoad = uci.load('nordvpn_easy');
@@ -140,10 +163,10 @@ return view.extend({
 		o.default = '0';
 		o.rmempty = false;
 
-		o = s.option(form.Value, 'nordvpn_token', _('NordVPN Token'));
+		o = s.option(TokenValue, 'nordvpn_token', _('NordVPN Token'));
 		o.password = true;
 		o.rmempty = false;
-		o.description = _('Required. NordVPN access token.');
+		o.description = _('Required. NordVPN access token. If this password field submits empty, the saved token is preserved.');
 
 		o = s.option(CountrySelectValue, 'vpn_country', _('Server Country'));
 		o.value('', _('Automatic'));
