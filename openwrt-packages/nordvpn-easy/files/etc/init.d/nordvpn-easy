@@ -503,6 +503,7 @@ status_json() {
 	local wg_dump
 	local vpn_state
 	local operation
+	local interface_disabled='false'
 	local endpoint='N/A'
 	local latest_handshake='Never'
 	local latest_handshake_epoch='0'
@@ -524,6 +525,7 @@ status_json() {
 	peer_section="$(peer_section_name)"
 	vpn_state="$(vpn_status_value)"
 	operation="$(get_operation_status_value)"
+	[ "$(uci -q get "network.${cfg_vpn_if}.disabled" 2>/dev/null)" = '1' ] && interface_disabled='true'
 
 	if [ -n "$peer_section" ]; then
 		current_hostname="$(uci -q get "network.${peer_section}.nordvpn_hostname" 2>/dev/null)"
@@ -558,6 +560,7 @@ EOF
 	cat <<EOF
 {
   "enabled": $([ "$cfg_enabled" -eq 1 ] && printf '%s' 'true' || printf '%s' 'false'),
+  "interface_disabled": $interface_disabled,
   "server_selection_mode": "$(json_escape "$cfg_server_selection_mode")",
   "selected_country": "$(json_escape "$cfg_vpn_country")",
   "interface": "$(json_escape "$cfg_vpn_if")",

@@ -39,6 +39,7 @@ function parseLocalStatus(raw) {
 
 	return {
 		enabled: !!status.enabled,
+		interface_disabled: !!status.interface_disabled,
 		server_selection_mode: String(status.server_selection_mode || 'auto'),
 		selected_country: normalizeCountryCode(status.selected_country || ''),
 		interface: String(status.interface || ''),

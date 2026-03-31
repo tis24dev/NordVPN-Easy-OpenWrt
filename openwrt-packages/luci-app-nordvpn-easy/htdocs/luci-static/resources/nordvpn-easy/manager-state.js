@@ -151,7 +151,7 @@ function updateLocalStatus(state) {
 			managerUI.setManagerControlsDisabled(false);
 		}
 
-		if (!state.currentLocalStatus.enabled || managerUI.isDisableRequested(state))
+		if (!state.currentLocalStatus.enabled || state.currentLocalStatus.interface_disabled || managerUI.isDisableRequested(state))
 			managerUI.setVpnStatusIndicator('inactive', _('Disabled'));
 		else if (state.currentLocalStatus.connected || state.currentLocalStatus.vpn_status === 'active')
 			managerUI.setVpnStatusIndicator('active', _('Connected'));

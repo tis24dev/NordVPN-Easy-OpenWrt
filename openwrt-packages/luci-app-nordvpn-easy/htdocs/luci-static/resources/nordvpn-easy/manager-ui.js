@@ -201,7 +201,7 @@ function currentServerSummaryFromStatus(status, state) {
 	if (!status)
 		return _('Not configured');
 
-	if (!status.enabled || isDisableRequested(state))
+	if (!status.enabled || status.interface_disabled || isDisableRequested(state))
 		return _('Disabled');
 
 	if (!status.current_server_station)
@@ -238,7 +238,7 @@ function updateCountryMatchStatus(state) {
 	const expectedCountry = managerData.normalizeCountryCode(state.appliedCountryCode);
 	const actualCountry = managerData.normalizeCountryCode(state.currentPublicCountry);
 
-	if (!state.appliedEnabled || isDisableRequested(state))
+	if (!state.appliedEnabled || state.currentLocalStatus.interface_disabled || isDisableRequested(state))
 		return setCountryMatchIndicator('inactive', _('Inactive'));
 
 	if (state.currentOperationStatus.indexOf('busy:') === 0) {
