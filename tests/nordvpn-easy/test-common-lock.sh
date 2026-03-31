@@ -61,6 +61,21 @@ assert_eq '0' "$stale_rc" 'stale lock recovery'
 nordvpn_easy_release_lock
 
 mkdir -p "$LOCK_DIR"
+printf '%s\n' 'missing-pid-action' > "$LOCK_DIR/action"
+printf '%s\n' "$(date +%s)" > "$LOCK_DIR/started_at"
+printf '%s\n' 'held' > "$LOCK_DIR/state"
+LOCK_ACQUIRED=0
+
+missing_pid_rc=0
+nordvpn_easy_acquire_lock >/dev/null 2>&1 || missing_pid_rc=$?
+assert_eq '2' "$missing_pid_rc" 'missing pid metadata is treated as contention'
+[ -d "$LOCK_DIR" ] || {
+	printf '%s\n' 'FAIL: lock directory should remain when pid metadata is missing' >&2
+	exit 1
+}
+rm -rf "$LOCK_DIR"
+
+mkdir -p "$LOCK_DIR"
 printf '%s\n' "$$" > "$LOCK_DIR/pid"
 printf '%s\n' 'check' > "$LOCK_DIR/action"
 printf '%s\n' '1' > "$LOCK_DIR/started_at"

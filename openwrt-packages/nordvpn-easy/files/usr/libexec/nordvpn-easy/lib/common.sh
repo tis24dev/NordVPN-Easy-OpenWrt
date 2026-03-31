@@ -37,7 +37,10 @@ nordvpn_easy_log_blocker() {
 nordvpn_easy_install_exit_trap() {
 	[ "${NORDVPN_EASY_EXIT_TRAP_INSTALLED:-0}" -eq 1 ] && return 0
 
-	trap 'nordvpn_easy_on_exit' EXIT HUP INT TERM
+	trap 'nordvpn_easy_on_exit' EXIT
+	trap 'nordvpn_easy_on_signal 1' HUP
+	trap 'nordvpn_easy_on_signal 2' INT
+	trap 'nordvpn_easy_on_signal 15' TERM
 	NORDVPN_EASY_EXIT_TRAP_INSTALLED=1
 }
 
@@ -287,8 +290,17 @@ nordvpn_easy_acquire_lock() {
 		return 0
 	fi
 
+	if [ ! -d "$LOCK_DIR" ]; then
+		nordvpn_easy_log_blocker 'runtime' "could not create execution lock directory at $LOCK_DIR"
+		return 1
+	fi
+
 	if [ ! -f "$lock_pid_file" ]; then
-		stale_reason='missing pid metadata'
+		lock_action="$(cat "$lock_action_file" 2>/dev/null)"
+		lock_started_at="$(cat "$lock_started_at_file" 2>/dev/null)"
+		lock_age="$(nordvpn_easy_lock_age_seconds "$LOCK_DIR" "$lock_started_at")"
+		nordvpn_easy_log_blocker 'runtime' "execution lock metadata is incomplete (missing pid metadata, action=${lock_action:-unknown}, age=${lock_age}s)"
+		return 2
 	else
 		lock_pid="$(cat "$lock_pid_file" 2>/dev/null)"
 		case "$lock_pid" in
@@ -312,8 +324,12 @@ nordvpn_easy_acquire_lock() {
 	rm -rf "$LOCK_DIR" 2>/dev/null || return 1
 
 	if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-		nordvpn_easy_log_blocker 'runtime' "lost race recovering stale lock at $LOCK_DIR"
-		return 2
+		if [ -d "$LOCK_DIR" ]; then
+			nordvpn_easy_log_blocker 'runtime' "lost race recovering stale lock at $LOCK_DIR"
+			return 2
+		fi
+		nordvpn_easy_log_blocker 'runtime' "could not recreate execution lock directory at $LOCK_DIR"
+		return 1
 	fi
 	if ! nordvpn_easy_write_lock_metadata "$LOCK_DIR" "$$" "${ACTION:-unknown}" "$now_ts" 'stale_recovered'; then
 		rm -rf "$LOCK_DIR" 2>/dev/null
@@ -339,10 +355,27 @@ nordvpn_easy_on_exit() {
 	nordvpn_easy_cleanup_temp_paths
 }
 
+nordvpn_easy_on_signal() {
+	local signal_num="${1:-0}"
+
+	trap - EXIT HUP INT TERM
+	nordvpn_easy_on_exit
+
+	case "$signal_num" in
+		''|*[!0-9]*)
+			exit 1
+			;;
+		*)
+			exit $((128 + signal_num))
+			;;
+	esac
+}
+
 nordvpn_easy_export_diagnostics_log() {
 	local service_name="${1:-nordvpn-easy}"
 	local temp_dir=''
 	local tmp_log=''
+	local tail_rc=0
 
 	command -v logread >/dev/null 2>&1 || {
 		nordvpn_easy_log 'logread command not found'
@@ -357,6 +390,7 @@ nordvpn_easy_export_diagnostics_log() {
 		return 1
 	}
 
-	tail -n 500 "$tmp_log"
+	tail -n 500 "$tmp_log" || tail_rc=$?
 	rm -rf -- "$temp_dir"
+	return "$tail_rc"
 }

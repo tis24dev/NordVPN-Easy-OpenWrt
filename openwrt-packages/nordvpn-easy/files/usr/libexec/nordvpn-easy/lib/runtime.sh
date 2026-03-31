@@ -143,7 +143,10 @@ nordvpn_easy_parse_wg_dump_peer() {
 nordvpn_easy_operation_status_value() {
 	local lock_dir="${1:-$LOCK_DIR}"
 	nordvpn_easy_load_lock_metadata "$lock_dir"
+	nordvpn_easy_operation_status_from_loaded_lock
+}
 
+nordvpn_easy_operation_status_from_loaded_lock() {
 	if [ "$OPERATION_LOCK_STATE" = 'none' ]; then
 		printf '%s\n' 'idle'
 	elif [ -n "$OPERATION_LOCK_ACTION" ]; then
@@ -200,13 +203,23 @@ nordvpn_easy_load_lock_metadata() {
 
 nordvpn_easy_peer_section_name() {
 	local vpn_if="${1:-$VPN_IF}"
+	local peer_section=''
 
 	if uci -q get "network.${vpn_if}server.endpoint_host" >/dev/null 2>&1; then
 		printf '%s\n' "${vpn_if}server"
 		return 0
 	fi
 
-	uci show network 2>/dev/null | grep "^network\..*=wireguard_${vpn_if}$" | head -1 | cut -d. -f2 | cut -d= -f1
+	peer_section="$(
+		uci show network 2>/dev/null | awk -F '[.=]' -v target="wireguard_${vpn_if}" '
+			$1 == "network" && $3 == target {
+				print $2
+				exit
+			}
+		'
+	)"
+	[ -n "$peer_section" ] || return 1
+	printf '%s\n' "$peer_section"
 }
 
 nordvpn_easy_runtime_configured() {
@@ -252,16 +265,16 @@ nordvpn_easy_vpn_status_value() {
 		return 0
 	fi
 
-	if command -v ifstatus >/dev/null 2>&1; then
+	if command -v ifstatus >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
 		if ifstatus "$vpn_if" 2>/dev/null | jq -er '.up == true' >/dev/null 2>&1; then
 			printf '%s\n' 'active'
 			return 0
 		fi
-	else
-		if ip link show dev "$vpn_if" >/dev/null 2>&1; then
-			printf '%s\n' 'active'
-			return 0
-		fi
+	fi
+
+	if ip link show dev "$vpn_if" >/dev/null 2>&1; then
+		printf '%s\n' 'active'
+		return 0
 	fi
 
 	case "$operation" in
@@ -305,8 +318,8 @@ nordvpn_easy_emit_status_json() {
 	local preferred_hostname="${PREFERRED_SERVER_HOSTNAME:-}"
 	local preferred_station="${PREFERRED_SERVER_STATION:-}"
 
-	operation="$(nordvpn_easy_operation_status_value "${LOCK_DIR:-/tmp/nordvpn-easy.lock}")"
 	nordvpn_easy_load_lock_metadata "${LOCK_DIR:-/tmp/nordvpn-easy.lock}"
+	operation="$(nordvpn_easy_operation_status_from_loaded_lock)"
 	operation_lock_state="$OPERATION_LOCK_STATE"
 	operation_lock_pid="$OPERATION_LOCK_PID"
 	operation_lock_action="$OPERATION_LOCK_ACTION"

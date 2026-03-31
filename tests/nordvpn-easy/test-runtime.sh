@@ -54,6 +54,7 @@ nordvpn_easy_load_lock_metadata "$LOCK_DIR"
 assert_eq 'stale_recovered' "$OPERATION_LOCK_STATE" 'lock metadata preserves recovered state'
 assert_eq "$$" "$OPERATION_LOCK_PID" 'lock metadata exposes pid'
 assert_eq 'check' "$OPERATION_LOCK_ACTION" 'lock metadata exposes action'
+assert_eq 'busy:check' "$(nordvpn_easy_operation_status_from_loaded_lock)" 'operation snapshot uses already loaded metadata'
 
 DESIRED_ENABLED=1
 VPN_IF='wg0'
@@ -84,7 +85,9 @@ uci() {
 			esac
 			;;
 		show)
-			return 1
+			printf '%s\n' "network.wg0server=wireguard_wg0"
+			printf '%s\n' "network.wg0.proto='wireguard'"
+			return 0
 			;;
 		*)
 			return 1
@@ -94,6 +97,10 @@ uci() {
 
 ifstatus() {
 	return 1
+}
+
+ip() {
+	[ "$1" = 'link' ] && [ "$2" = 'show' ] && [ "$3" = 'dev' ] && [ "$4" = 'wg0' ]
 }
 
 wg() {
@@ -106,5 +113,7 @@ assert_eq 'stale_recovered' "$(printf '%s' "$STATUS_JSON" | jq -r '.operation_lo
 assert_eq "$$" "$(printf '%s' "$STATUS_JSON" | jq -r '.operation_lock_pid')" 'status json exposes lock pid'
 assert_eq 'check' "$(printf '%s' "$STATUS_JSON" | jq -r '.operation_lock_action')" 'status json exposes lock action'
 assert_eq 'false' "$(printf '%s' "$STATUS_JSON" | jq -r '.runtime_disabled')" 'status json keeps runtime disabled false'
+assert_eq 'active' "$(printf '%s' "$STATUS_JSON" | jq -r '.vpn_status')" 'status json falls back to ip link when ifstatus probe fails'
+assert_eq 'wg0server' "$(nordvpn_easy_peer_section_name 'wg0')" 'peer section lookup falls back to exact section match'
 
 printf '%s\n' 'test-runtime.sh: ok'

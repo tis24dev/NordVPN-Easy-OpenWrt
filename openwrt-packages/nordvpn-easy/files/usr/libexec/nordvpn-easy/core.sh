@@ -825,14 +825,14 @@ if [ -z "$CONFIG_PATH" ] && [ -n "${NORDVPN_CONFIG_FILE:-}" ]; then
   CONFIG_PATH_REQUIRED=1
 fi
 
-load_config || exit 1
-
 case "$ACTION" in
   help)
     usage
     exit 0
     ;;
 esac
+
+load_config || exit 1
 
 if [ "$ACTION" = 'public_ip' ]; then
   PUBLIC_LOOKUP_LOG_MODE="${1:-verbose}"
