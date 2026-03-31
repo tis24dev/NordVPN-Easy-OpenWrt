@@ -75,12 +75,22 @@ const CountrySelectValue = form.ListValue.extend({
 });
 
 const TokenValue = form.Value.extend({
+	storedValue: function(section_id) {
+		return uci.get(this.uciconfig || this.map.config, section_id, this.option) || '';
+	},
+
 	cfgvalue: function(section_id) {
 		return '';
 	},
 
+	formvalue: function(section_id) {
+		const enteredValue = String(this.super('formvalue', arguments) || '').trim();
+
+		return enteredValue || this.storedValue(section_id);
+	},
+
 	validate: function(section_id, value) {
-		const existingValue = uci.get(this.uciconfig || this.map.config, section_id, this.option) || '';
+		const existingValue = this.storedValue(section_id);
 		const normalizedValue = String(value != null ? value : '').trim();
 
 		if (!normalizedValue && !existingValue)
@@ -89,8 +99,20 @@ const TokenValue = form.Value.extend({
 		return true;
 	},
 
+	renderWidget: function(section_id, option_index, cfgvalue) {
+		const originalPlaceholder = this.placeholder;
+
+		if (!cfgvalue && this.storedValue(section_id))
+			this.placeholder = _('Saved token present');
+
+		const widget = this.super('renderWidget', arguments);
+
+		this.placeholder = originalPlaceholder;
+		return widget;
+	},
+
 	write: function(section_id, value) {
-		const existingValue = uci.get(this.uciconfig || this.map.config, section_id, this.option) || '';
+		const existingValue = this.storedValue(section_id);
 		const normalizedValue = String(value != null ? value : '').trim();
 
 		return uci.set(this.uciconfig || this.map.config, section_id, this.option, normalizedValue || existingValue || '');
