@@ -6,8 +6,7 @@
 
 function shouldSkipBackgroundPoll(state) {
 	return state.pollingSuspended ||
-		state.phase === managerStore.PHASES.SAVING ||
-		state.phase === managerStore.PHASES.RUNTIME_BUSY;
+		state.phase === managerStore.PHASES.SAVING;
 }
 
 function start(state) {

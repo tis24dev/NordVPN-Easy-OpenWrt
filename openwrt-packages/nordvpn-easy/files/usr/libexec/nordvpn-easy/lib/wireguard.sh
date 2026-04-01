@@ -1,4 +1,5 @@
 #!/bin/sh
+# shellcheck disable=SC2153
 
 nordvpn_easy_vpn_is_configured() {
 	[ "$(uci -q get "network.${VPN_IF}.proto" 2>/dev/null)" = 'wireguard' ]
@@ -112,6 +113,83 @@ nordvpn_easy_ensure_vpn_interface_enabled() {
 nordvpn_easy_ping_interface() {
 	[ -n "$1" ] || return 1
 	ping -q -c 1 -W 5 "$(pick_ping_ip)" -I "$1" >/dev/null 2>&1
+}
+
+nordvpn_easy_wait_for_vpn_connectivity() {
+	local vpn_if="${1:-$VPN_IF}"
+	local wait_timeout="${2:-$POST_RESTART_DELAY}"
+	local wait_context="${3:-runtime validation}"
+	local wait_timeout_label=''
+	local start_ts='0'
+	local now_ts='0'
+	local elapsed='unknown'
+	local deadline='0'
+
+	case "$wait_timeout" in
+		''|*[!0-9]*)
+			wait_timeout=0
+			;;
+	esac
+
+	if [ "$wait_timeout" -le 0 ]; then
+		nordvpn_easy_ping_interface "$vpn_if"
+		return $?
+	fi
+
+	wait_timeout_label="$wait_timeout"
+
+	start_ts="$(date +%s 2>/dev/null || printf '%s' '0')"
+	case "$start_ts" in
+		''|*[!0-9]*)
+			start_ts='0'
+			;;
+	esac
+
+	if [ "$start_ts" -gt 0 ]; then
+		deadline=$((start_ts + wait_timeout))
+	fi
+
+	log "apply: waiting up to ${wait_timeout}s for VPN connectivity on $vpn_if after ${wait_context}"
+
+	while :; do
+		if nordvpn_easy_ping_interface "$vpn_if"; then
+			now_ts="$(date +%s 2>/dev/null || printf '%s' '0')"
+			case "$now_ts" in
+				''|*[!0-9]*)
+					elapsed='unknown'
+					;;
+				*)
+					if [ "$start_ts" -gt 0 ]; then
+						elapsed=$((now_ts - start_ts))
+						[ "$elapsed" -lt 0 ] && elapsed=0
+					fi
+					;;
+			esac
+
+			log "apply: VPN connectivity validated on $vpn_if after ${elapsed}s"
+			return 0
+		fi
+
+		if [ "$deadline" -gt 0 ]; then
+			now_ts="$(date +%s 2>/dev/null || printf '%s' '0')"
+			case "$now_ts" in
+				''|*[!0-9]*)
+					deadline='0'
+					;;
+				*)
+					[ "$now_ts" -ge "$deadline" ] && break
+					;;
+			esac
+		else
+			wait_timeout=$((wait_timeout - 1))
+			[ "$wait_timeout" -le 0 ] && break
+		fi
+
+		sleep 1
+	done
+
+	log "apply: VPN connectivity did not validate on $vpn_if within ${wait_timeout_label}s after ${wait_context}"
+	return 1
 }
 
 nordvpn_easy_resolve_wan_device() {
@@ -244,7 +322,10 @@ nordvpn_easy_current_server_matches_recommendations() {
 }
 
 nordvpn_easy_apply_server_change_runtime() {
+	local wait_context='network restart'
+
 	if [ "$1" = 'reload' ]; then
+		wait_context="cycling $VPN_IF"
 		log "apply: cycling VPN interface $VPN_IF to apply the new peer configuration"
 		ifdown "$VPN_IF" >/dev/null 2>&1 || true
 		sleep "$INTERFACE_RESTART_DELAY"
@@ -252,18 +333,14 @@ nordvpn_easy_apply_server_change_runtime() {
 			log "ERROR: IFUP FAILED AFTER CHANGING VPN SERVER ON $VPN_IF"
 			return 1
 		}
-		log "apply: waiting ${POST_RESTART_DELAY}s after cycling $VPN_IF before validating VPN connectivity"
 	else
 		/etc/init.d/network restart || {
 			log 'ERROR: NETWORK RESTART FAILED'
 			return 1
 		}
-		log "apply: waiting ${POST_RESTART_DELAY}s after network restart before validating VPN connectivity"
 	fi
 
-	sleep "$POST_RESTART_DELAY"
-
-	if ping_interface "$VPN_IF"; then
+	if nordvpn_easy_wait_for_vpn_connectivity "$VPN_IF" "$POST_RESTART_DELAY" "$wait_context"; then
 		log 'apply: VPN connection restored after runtime server change'
 		verify_public_country_selection
 		return 0

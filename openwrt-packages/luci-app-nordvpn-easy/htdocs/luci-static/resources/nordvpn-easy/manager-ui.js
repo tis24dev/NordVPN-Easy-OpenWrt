@@ -246,11 +246,12 @@ function updateCountryMatchStatus(state) {
 	if (state.currentOperationStatus.indexOf('busy:') === 0) {
 		busyAction = state.currentOperationStatus.substring(5);
 
-		if (busyAction !== 'refresh_countries' && busyAction !== 'server_catalog')
+		if (busyAction !== 'refresh_countries' && busyAction !== 'server_catalog' && !actualCountry)
 			return setCountryMatchIndicator('checking', _('Checking'));
 	}
 	else if (state.currentOperationStatus === 'busy') {
-		return setCountryMatchIndicator('checking', _('Checking'));
+		if (!actualCountry)
+			return setCountryMatchIndicator('checking', _('Checking'));
 	}
 
 	if (!expectedCountry)

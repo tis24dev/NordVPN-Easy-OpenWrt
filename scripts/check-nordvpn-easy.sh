@@ -40,6 +40,7 @@ SH_FILES=(
 	"$ROOT_DIR/tests/nordvpn-easy/test-init-start-soft-fail.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-package-lockstep.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-runtime.sh"
+	"$ROOT_DIR/tests/nordvpn-easy/test-wireguard.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-service-config.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-actions.sh"
 )
@@ -65,6 +66,7 @@ sh "$ROOT_DIR/tests/nordvpn-easy/test-init-run-core.sh"
 sh "$ROOT_DIR/tests/nordvpn-easy/test-init-start-soft-fail.sh"
 sh "$ROOT_DIR/tests/nordvpn-easy/test-package-lockstep.sh"
 sh "$ROOT_DIR/tests/nordvpn-easy/test-runtime.sh"
+sh "$ROOT_DIR/tests/nordvpn-easy/test-wireguard.sh"
 sh "$ROOT_DIR/tests/nordvpn-easy/test-service-config.sh"
 sh "$ROOT_DIR/tests/nordvpn-easy/test-actions.sh"
 

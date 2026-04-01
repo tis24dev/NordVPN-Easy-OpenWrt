@@ -577,6 +577,7 @@ function handleSaveApply(viewState, state, ev, mode) {
 						state.pendingOperationLabel = managerFormat.formatActionsLabel(actions);
 						state.currentOperationStatus = 'busy:' + state.pendingOperationLabel;
 						managerStore.setPhase(state, managerStore.PHASES.RUNTIME_BUSY);
+						managerStore.resumePolling(state);
 						notifyDebugBlock(_('Runtime actions queued'), [
 							_('Executing: %s').format(state.pendingOperationLabel),
 							_('Enabled state after save: %s').format(enabled ? _('checked') : _('unchecked'))
