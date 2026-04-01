@@ -13,6 +13,7 @@ CORE_SCRIPT='/usr/libexec/nordvpn-easy/core.sh'
 CONFIG_CONTEXT_LIB='/usr/libexec/nordvpn-easy/lib/config-context.sh'
 CRON_PATH='/etc/cron.d/nordvpn-easy'
 HOTPLUG_PATH='/etc/hotplug.d/iface/95-nordvpn-easy'
+SERVICE_BACKEND_PAYLOAD_SIGNATURE='render-contract-v2'
 EXTRA_COMMANDS='setup check rotate refresh_countries refresh_countries_force server_catalog public_ip public_country operation_status vpn_status status_json diagnostics_log install_hooks remove_hooks disable_runtime render_runtime_config'
 EXTRA_HELP='  setup                 Run setup immediately
   check                 Run one health check immediately
@@ -50,19 +51,34 @@ load_service_config() {
 	nordvpn_easy_load_service_context 'cfg_' "$UCI_CONFIG" "$UCI_SECTION"
 }
 
+nordvpn_easy_service_backend_payload_summary() {
+	local lib_payload='unavailable'
+	local payload_match='0'
+
+	lib_payload="$(nordvpn_easy_backend_payload_signature 2>/dev/null || printf '%s' 'unavailable')"
+	[ "$SERVICE_BACKEND_PAYLOAD_SIGNATURE" = "$lib_payload" ] && payload_match='1'
+
+	printf '%s' "service_payload=${SERVICE_BACKEND_PAYLOAD_SIGNATURE}, lib_payload=${lib_payload}, payload_match=${payload_match}"
+}
+
 render_runtime_config() {
 	local target_config="${1:-$RUNTIME_CONFIG}"
 	local written_options=0
 
 	load_service_config || return 1
-	log_service_info "service: rendering runtime config to $target_config ($(nordvpn_easy_service_debug_summary 'cfg_'))"
+	log_service_info "service: rendering runtime config to $target_config ($(nordvpn_easy_service_debug_summary 'cfg_'), $(nordvpn_easy_service_backend_payload_summary))"
 
-	written_options="$(nordvpn_easy_render_runtime_config "$target_config" 'cfg_')" || {
+	nordvpn_easy_render_runtime_config "$target_config" 'cfg_' written_options || {
 		log_service_error "service: failed to render runtime config into $target_config"
 		return 1
 	}
 
-	log_service_info "service: runtime config rendered at $target_config (written_options=$written_options, $(nordvpn_easy_runtime_file_debug_summary "$target_config"))"
+	nordvpn_easy_validate_runtime_config "$target_config" 'cfg_' || {
+		log_service_error "service: rendered runtime config failed validation at $target_config ($(nordvpn_easy_runtime_file_debug_summary "$target_config"), $(nordvpn_easy_runtime_config_validation_summary), $(nordvpn_easy_service_backend_payload_summary))"
+		return 1
+	}
+
+	log_service_info "service: runtime config rendered at $target_config (written_options=$written_options, $(nordvpn_easy_runtime_file_debug_summary "$target_config"), $(nordvpn_easy_runtime_config_validation_summary), $(nordvpn_easy_service_backend_payload_summary))"
 }
 
 run_core_action() {
@@ -88,15 +104,20 @@ run_core_action() {
 		return 1
 	}
 	action_config="$(nordvpn_easy_temp_file_path "$action_temp_dir" "nordvpn-easy.${action}.conf")"
-	written_options="$(nordvpn_easy_render_runtime_config "$action_config" 'cfg_')" || {
+	nordvpn_easy_render_runtime_config "$action_config" 'cfg_' written_options || {
 		rm -rf -- "$action_temp_dir"
 		log_service_error "apply: failed to render temporary config for core action '$action'"
+		return 1
+	}
+	nordvpn_easy_validate_runtime_config "$action_config" 'cfg_' || {
+		log_service_error "apply: rendered temporary config for '$action' failed validation at $action_config ($(nordvpn_easy_runtime_file_debug_summary "$action_config"), $(nordvpn_easy_runtime_config_validation_summary), $(nordvpn_easy_service_backend_payload_summary))"
+		rm -rf -- "$action_temp_dir"
 		return 1
 	}
 	action_started_at="$(date +%s 2>/dev/null || printf '%s' '0')"
 	log_service_info "apply: running core action '$action' (args=$(nordvpn_easy_debug_cli_args "$@"))"
 	log_service_info "apply: core action context for $action: $(nordvpn_easy_service_debug_summary 'cfg_')"
-	log_service_info "apply: rendered temporary config for '$action' at $action_config (written_options=$written_options, $(nordvpn_easy_runtime_file_debug_summary "$action_config"))"
+	log_service_info "apply: rendered temporary config for '$action' at $action_config (written_options=$written_options, $(nordvpn_easy_runtime_file_debug_summary "$action_config"), $(nordvpn_easy_runtime_config_validation_summary), $(nordvpn_easy_service_backend_payload_summary))"
 	"$CORE_SCRIPT" "$action" --config "$action_config" "$@"
 	rc=$?
 	rm -rf -- "$action_temp_dir"

@@ -12,6 +12,10 @@ CONFIG_CONTEXT_COMMON_LIB="${CONFIG_CONTEXT_LIB_DIR}/common.sh"
 # shellcheck disable=SC1090
 . "$CONFIG_CONTEXT_COMMON_LIB" || exit 1
 
+NORDVPN_EASY_RUNTIME_CONFIG_VALIDATION_STATUS=''
+NORDVPN_EASY_RUNTIME_CONFIG_VALIDATION_ERROR=''
+NORDVPN_EASY_RUNTIME_CONFIG_VALIDATION_PREVIEW=''
+
 nordvpn_easy_assign_shell_var() {
 	local var_name="$1"
 	local value="$2"
@@ -178,6 +182,20 @@ nordvpn_easy_write_runtime_option() {
 	printf "%s='%s'\n" "$key" "$(nordvpn_easy_shell_quote "$value")" >> "$target_file"
 }
 
+nordvpn_easy_runtime_expected_value_from_service() {
+	local prefix="${1:-cfg_}"
+	local option="$2"
+	local value=''
+
+	if [ "$option" = 'enabled' ]; then
+		eval "value=\${${prefix}enabled-0}"
+	else
+		eval "value=\${${prefix}${option}-}"
+	fi
+
+	nordvpn_easy_normalize_value "$option" "$value"
+}
+
 nordvpn_easy_runtime_file_key_state() {
 	local runtime_file="$1"
 	local key="$2"
@@ -206,6 +224,33 @@ nordvpn_easy_runtime_file_key_state() {
 	fi
 }
 
+nordvpn_easy_runtime_file_key_preview() {
+	local runtime_file="$1"
+	local preview=''
+
+	[ -f "$runtime_file" ] || {
+		printf '%s\n' 'none'
+		return 0
+	}
+
+	preview="$(
+		awk -F= '
+			NR <= 8 {
+				if (count > 0)
+					printf ","
+				printf "%s", $1
+				count++
+			}
+			END {
+				if (count == 0)
+					printf "none"
+			}
+		' "$runtime_file"
+	)"
+
+	printf '%s\n' "$preview"
+}
+
 nordvpn_easy_runtime_file_debug_summary() {
 	local runtime_file="$1"
 
@@ -216,9 +261,96 @@ nordvpn_easy_runtime_file_debug_summary() {
 	printf '%s' "file_vpn_port=$(nordvpn_easy_runtime_file_key_state "$runtime_file" 'VPN_PORT')"
 }
 
+nordvpn_easy_validate_runtime_config() {
+	local runtime_file="$1"
+	local prefix="${2:-cfg_}"
+	local missing_keys=''
+	local key_state=''
+	local roundtrip_result=''
+	local env_key=''
+	local option=''
+
+	NORDVPN_EASY_RUNTIME_CONFIG_VALIDATION_STATUS='failed'
+	NORDVPN_EASY_RUNTIME_CONFIG_VALIDATION_ERROR=''
+	NORDVPN_EASY_RUNTIME_CONFIG_VALIDATION_PREVIEW="$(nordvpn_easy_runtime_file_key_preview "$runtime_file")"
+
+	[ -f "$runtime_file" ] || {
+		NORDVPN_EASY_RUNTIME_CONFIG_VALIDATION_ERROR='rendered runtime config file is missing'
+		return 1
+	}
+
+	for env_key in DESIRED_ENABLED ENABLED $(nordvpn_easy_runtime_env_keys); do
+		key_state="$(nordvpn_easy_runtime_file_key_state "$runtime_file" "$env_key")"
+		if [ "$key_state" = 'missing' ] || [ "$key_state" = 'missing-file' ]; then
+			missing_keys="${missing_keys} ${env_key}"
+		fi
+	done
+
+	if [ -n "$missing_keys" ]; then
+		NORDVPN_EASY_RUNTIME_CONFIG_VALIDATION_ERROR="missing rendered keys:${missing_keys# }"
+		return 1
+	fi
+
+	roundtrip_result="$(
+		(
+			for env_key in DESIRED_ENABLED ENABLED $(nordvpn_easy_runtime_env_keys); do
+				unset "$env_key"
+			done
+
+			# shellcheck disable=SC1090
+			. "$runtime_file" || {
+				printf '%s\n' 'source_failed'
+				exit 0
+			}
+
+			env_key='DESIRED_ENABLED'
+			[ "${DESIRED_ENABLED-__missing__}" = "$(nordvpn_easy_runtime_expected_value_from_service "$prefix" 'enabled')" ] || {
+				printf '%s\n' "$env_key"
+				exit 0
+			}
+
+			env_key='ENABLED'
+			[ "${ENABLED-__missing__}" = "$(nordvpn_easy_runtime_expected_value_from_service "$prefix" 'enabled')" ] || {
+				printf '%s\n' "$env_key"
+				exit 0
+			}
+
+			for option in $(nordvpn_easy_runtime_options); do
+				env_key="$(nordvpn_easy_env_name "$option")"
+				eval "actual_value=\${$env_key-__missing__}"
+				expected_value="$(nordvpn_easy_runtime_expected_value_from_service "$prefix" "$option")"
+				[ "$actual_value" = "$expected_value" ] || {
+					printf '%s\n' "$env_key"
+					exit 0
+				}
+			done
+
+			printf '%s\n' 'ok'
+		)
+	)"
+
+	if [ "$roundtrip_result" != 'ok' ]; then
+		NORDVPN_EASY_RUNTIME_CONFIG_VALIDATION_ERROR="round-trip mismatch for ${roundtrip_result}"
+		return 1
+	fi
+
+	NORDVPN_EASY_RUNTIME_CONFIG_VALIDATION_STATUS='ok'
+	NORDVPN_EASY_RUNTIME_CONFIG_VALIDATION_ERROR=''
+	return 0
+}
+
+nordvpn_easy_runtime_config_validation_summary() {
+	local status="${NORDVPN_EASY_RUNTIME_CONFIG_VALIDATION_STATUS:-unknown}"
+	local reason="${NORDVPN_EASY_RUNTIME_CONFIG_VALIDATION_ERROR:-none}"
+	local preview="${NORDVPN_EASY_RUNTIME_CONFIG_VALIDATION_PREVIEW:-none}"
+
+	printf '%s' "render_validation=${status}, reason=${reason}, lhs_preview=${preview}"
+}
+
 nordvpn_easy_render_runtime_config() {
 	local target_config="$1"
 	local prefix="${2:-cfg_}"
+	local result_var="${3:-}"
 	local temp_dir=''
 	local target_tmp=''
 	local option env_name value desired_enabled
@@ -272,5 +404,9 @@ nordvpn_easy_render_runtime_config() {
 	rm -rf -- "$temp_dir"
 	umask "$original_umask"
 
-	printf '%s\n' "$written_options"
+	if [ -n "$result_var" ]; then
+		nordvpn_easy_assign_shell_var "$result_var" "$written_options"
+	else
+		printf '%s\n' "$written_options"
+	fi
 }

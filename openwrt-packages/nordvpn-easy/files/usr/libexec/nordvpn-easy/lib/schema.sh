@@ -1,6 +1,7 @@
 #!/bin/sh
 
 NORDVPN_EASY_SCHEMA_VERSION="${NORDVPN_EASY_SCHEMA_VERSION:-2}"
+NORDVPN_EASY_BACKEND_PAYLOAD_SIGNATURE="${NORDVPN_EASY_BACKEND_PAYLOAD_SIGNATURE:-render-contract-v2}"
 
 nordvpn_easy_shell_quote() {
 	printf "%s" "$1" | sed "s/'/'\\\\''/g"
@@ -34,30 +35,42 @@ config_schema_version
 EOF
 }
 
-nordvpn_easy_runtime_options() {
+nordvpn_easy_backend_payload_signature() {
+	printf '%s\n' "$NORDVPN_EASY_BACKEND_PAYLOAD_SIGNATURE"
+}
+
+nordvpn_easy_runtime_bindings() {
 	cat <<'EOF'
-nordvpn_token
-wan_if
-vpn_if
-vpn_country
-server_selection_mode
-preferred_server_hostname
-preferred_server_station
-server_cache_enabled
-server_cache_ttl
-vpn_port
-vpn_addr
-vpn_dns1
-vpn_dns2
-check_cron_schedule
-enable_hotplug
-failure_retry_delay
-server_rotate_threshold
-interface_restart_threshold
-max_interface_restarts
-interface_restart_delay
-post_restart_delay
+nordvpn_token NORDVPN_TOKEN
+wan_if WAN_IF
+vpn_if VPN_IF
+vpn_country VPN_COUNTRY
+server_selection_mode SERVER_SELECTION_MODE
+preferred_server_hostname PREFERRED_SERVER_HOSTNAME
+preferred_server_station PREFERRED_SERVER_STATION
+server_cache_enabled SERVER_CACHE_ENABLED
+server_cache_ttl SERVER_CACHE_TTL
+vpn_port VPN_PORT
+vpn_addr VPN_ADDR
+vpn_dns1 VPN_DNS1
+vpn_dns2 VPN_DNS2
+check_cron_schedule CHECK_CRON_SCHEDULE
+enable_hotplug ENABLE_HOTPLUG
+failure_retry_delay FAILURE_RETRY_DELAY
+server_rotate_threshold SERVER_ROTATE_THRESHOLD
+interface_restart_threshold INTERFACE_RESTART_THRESHOLD
+max_interface_restarts MAX_INTERFACE_RESTARTS
+interface_restart_delay INTERFACE_RESTART_DELAY
+post_restart_delay POST_RESTART_DELAY
 EOF
+}
+
+nordvpn_easy_runtime_options() {
+	nordvpn_easy_runtime_bindings | awk '{ print $1 }'
+}
+
+nordvpn_easy_runtime_env_keys() {
+	nordvpn_easy_runtime_bindings | awk '{ print $2 }'
 }
 
 nordvpn_easy_default() {
@@ -114,7 +127,16 @@ nordvpn_easy_is_uint_option() {
 }
 
 nordvpn_easy_env_name() {
-	printf '%s\n' "$1" | tr '[:lower:]' '[:upper:]'
+	nordvpn_easy_runtime_bindings | awk -v option="$1" '
+		$1 == option {
+			print $2
+			found = 1
+			exit
+		}
+		END {
+			exit(found ? 0 : 1)
+		}
+	'
 }
 
 nordvpn_easy_normalize_bool() {

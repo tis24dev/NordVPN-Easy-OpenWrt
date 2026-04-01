@@ -58,6 +58,7 @@ PUBLIC_COUNTRY_VERIFIED=0
 SERVER_CATALOG_QUERY=''
 SERVER_CATALOG_FORCE='0'
 PUBLIC_LOOKUP_LOG_MODE='verbose'
+CORE_BACKEND_PAYLOAD_SIGNATURE='render-contract-v2'
 
 # List of IPs to randomly ping
 IP0='8.8.8.8'
@@ -83,6 +84,16 @@ IP19='209.244.0.4'
 
 log () {
   nordvpn_easy_log_phase "${LOG_PHASE:-runtime}" "$@"
+}
+
+backend_payload_summary () {
+  local lib_payload='unavailable'
+  local payload_match='0'
+
+  lib_payload="$(nordvpn_easy_backend_payload_signature 2>/dev/null || printf '%s' 'unavailable')"
+  [ "$CORE_BACKEND_PAYLOAD_SIGNATURE" = "$lib_payload" ] && payload_match='1'
+
+  printf '%s' "core_payload=${CORE_BACKEND_PAYLOAD_SIGNATURE}, lib_payload=${lib_payload}, payload_match=${payload_match}"
 }
 
 curl_rc_meaning () {
@@ -146,19 +157,19 @@ validate_setup_runtime () {
 load_config () {
   if [ -n "$CONFIG_PATH" ] && [ -f "$CONFIG_PATH" ]; then
     nordvpn_easy_load_runtime_context_from_file "$CONFIG_PATH" || {
-      nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "failed to source runtime configuration from $CONFIG_PATH"
+      nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "failed to source runtime configuration from $CONFIG_PATH ($(backend_payload_summary))"
       return 1
     }
-    log "Loaded runtime configuration from $CONFIG_PATH ($(nordvpn_easy_runtime_env_debug_summary); $(nordvpn_easy_runtime_file_debug_summary "$CONFIG_PATH"))"
+    log "Loaded runtime configuration from $CONFIG_PATH ($(nordvpn_easy_runtime_env_debug_summary); $(nordvpn_easy_runtime_file_debug_summary "$CONFIG_PATH"); $(backend_payload_summary))"
   elif [ "$CONFIG_PATH_REQUIRED" -eq 1 ]; then
-    nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "required config file $CONFIG_PATH was not found"
+    nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "required config file $CONFIG_PATH was not found ($(backend_payload_summary))"
     return 1
   else
     nordvpn_easy_load_runtime_context_from_uci || {
-      nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" 'failed to load runtime configuration from UCI'
+      nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "failed to load runtime configuration from UCI ($(backend_payload_summary))"
       return 1
     }
-    log "Loaded runtime configuration from ${CONFIG_CONTEXT_SOURCE:-uci} ($(nordvpn_easy_runtime_env_debug_summary))"
+    log "Loaded runtime configuration from ${CONFIG_CONTEXT_SOURCE:-uci} ($(nordvpn_easy_runtime_env_debug_summary); $(backend_payload_summary))"
   fi
 }
 
