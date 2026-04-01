@@ -117,6 +117,17 @@ function downloadTextFile(name, content) {
 	window.URL.revokeObjectURL(url);
 }
 
+function logEvent(message) {
+	const normalized = String(message != null ? message : '').trim();
+
+	if (!normalized)
+		return Promise.resolve(null);
+
+	return fs.exec('/bin/busybox', [ 'logger', '-t', 'nordvpn-easy', normalized ]).catch(function() {
+		return null;
+	});
+}
+
 return baseclass.extend({
 	parseJson: parseJson,
 	parseExecJsonResponse: parseExecJsonResponse,
@@ -127,5 +138,6 @@ return baseclass.extend({
 	runActions: runActions,
 	notifyInfo: notifyInfo,
 	notifyError: notifyError,
-	downloadTextFile: downloadTextFile
+	downloadTextFile: downloadTextFile,
+	logEvent: logEvent
 });

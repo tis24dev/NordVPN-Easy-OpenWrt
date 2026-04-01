@@ -174,8 +174,18 @@ nordvpn_easy_sync_server_selection() {
 	nordvpn_easy_get_servers_list || return 1
 
 	if nordvpn_easy_current_server_matches_recommendations; then
-		log 'Current VPN server already matches the selected country/filter'
-		return 0
+		if [ -n "$VPN_COUNTRY" ]; then
+			nordvpn_easy_require_core_action_helpers verify_public_country_selection || return 1
+			if verify_public_country_selection 1; then
+				log 'Current VPN server already matches the selected country/filter and public country verification passed'
+				return 0
+			fi
+
+			log 'Current VPN server matches the selected country/filter metadata, but public country verification mismatched; changing server'
+		else
+			log 'Current VPN server already matches the selected country/filter'
+			return 0
+		fi
 	fi
 
 	log 'Current VPN server does not match the selected country/filter, changing server'
@@ -225,7 +235,7 @@ nordvpn_easy_change_vpn_server() {
 			break
 		fi
 
-		log "apply: candidate $HOST_NAME ($SERVER_IP) did not restore VPN connectivity, moving to the next candidate"
+		log "apply: candidate $HOST_NAME ($SERVER_IP) did not satisfy runtime validation, moving to the next candidate"
 	done < "$SERVER_CANDIDATES_FILE"
 
 	rm -rf -- "$temp_dir"

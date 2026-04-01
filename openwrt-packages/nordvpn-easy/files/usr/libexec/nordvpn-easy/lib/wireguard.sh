@@ -342,7 +342,14 @@ nordvpn_easy_apply_server_change_runtime() {
 
 	if nordvpn_easy_wait_for_vpn_connectivity "$VPN_IF" "$POST_RESTART_DELAY" "$wait_context"; then
 		log 'apply: VPN connection restored after runtime server change'
-		verify_public_country_selection
+		if [ -n "$VPN_COUNTRY" ]; then
+			verify_public_country_selection 1 || {
+				log 'apply: VPN connection restored, but public country verification still mismatches the selected country; trying another server'
+				return 1
+			}
+		else
+			verify_public_country_selection
+		fi
 		return 0
 	fi
 

@@ -71,6 +71,9 @@ LAST_SET_PUBLIC_KEY=''
 SAVED_PREFERENCE=''
 PREFERRED_SERVER_HOSTNAME='it12.nordvpn.com'
 PREFERRED_SERVER_STATION='it123'
+CURRENT_SERVER_MATCHES=0
+VERIFY_CALLS=0
+VERIFY_FAIL=0
 
 log() { :; }
 fetch_server_catalog() { return 0; }
@@ -83,6 +86,7 @@ nordvpn_easy_get_servers_list() { return 0; }
 nordvpn_easy_server_selection_is_manual() { [ "${SERVER_SELECTION_MODE:-auto}" = 'manual' ]; }
 nordvpn_easy_vpn_is_configured() { return 0; }
 nordvpn_easy_preferred_server_matches_current() { return 1; }
+nordvpn_easy_current_server_matches_recommendations() { [ "$CURRENT_SERVER_MATCHES" -eq 1 ]; }
 nordvpn_easy_apply_preferred_server_from_catalog() { return 0; }
 nordvpn_easy_apply_server_change_runtime() {
 	APPLY_COUNT=$((APPLY_COUNT + 1))
@@ -90,6 +94,10 @@ nordvpn_easy_apply_server_change_runtime() {
 		return 1
 	fi
 	return 0
+}
+verify_public_country_selection() {
+	VERIFY_CALLS=$((VERIFY_CALLS + 1))
+	[ "$VERIFY_FAIL" -eq 0 ]
 }
 
 uci() {
@@ -158,5 +166,33 @@ assert_eq '1' "$APPLY_COUNT" 'manual rotation keeps the first successful runtime
 assert_eq 'it12.nordvpn.com|it123' "$SAVED_PREFERENCE" 'manual rotation keeps the applied server preference even when commit warns'
 assert_eq 'it12.nordvpn.com' "$PREFERRED_SERVER_HOSTNAME" 'manual hostname updated in environment'
 assert_eq 'it123' "$PREFERRED_SERVER_STATION" 'manual station updated in environment'
+
+SERVER_SELECTION_MODE='auto'
+VPN_COUNTRY='IT'
+CURRENT_SERVER_MATCHES=1
+VERIFY_CALLS=0
+VERIFY_FAIL=0
+APPLY_COUNT=0
+COMMIT_NETWORK_COUNT=0
+
+nordvpn_easy_sync_server_selection
+
+assert_eq '1' "$VERIFY_CALLS" 'auto sync verifies public country before accepting a recommended current server'
+assert_eq '0' "$APPLY_COUNT" 'auto sync keeps the current recommended server when public country verification passes'
+assert_eq '0' "$COMMIT_NETWORK_COUNT" 'auto sync does not rewrite the network config when public country verification passes'
+
+CURRENT_SERVER_MATCHES=1
+VERIFY_CALLS=0
+VERIFY_FAIL=1
+APPLY_COUNT=0
+COMMIT_NETWORK_COUNT=0
+LAST_SET_SERVER=''
+
+nordvpn_easy_sync_server_selection
+
+assert_eq '1' "$VERIFY_CALLS" 'auto sync retries verification when a recommended current server geolocates incorrectly'
+assert_eq '1' "$APPLY_COUNT" 'auto sync rotates away from a recommended server when public country verification mismatches'
+assert_eq '1' "$COMMIT_NETWORK_COUNT" 'auto sync commits the rotated network config when public country verification mismatches'
+assert_eq 'it12.nordvpn.com|it123' "$LAST_SET_SERVER" 'auto sync picks a replacement server after public country verification mismatches'
 
 printf '%s\n' 'test-actions.sh: ok'

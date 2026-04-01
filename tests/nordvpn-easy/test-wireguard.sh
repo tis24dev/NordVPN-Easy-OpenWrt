@@ -37,6 +37,11 @@ FAKE_NOW_FILE="$TMP_DIR/fake-now"
 SLEEP_CALLS=''
 PING_ATTEMPTS=0
 SUCCESS_ON_ATTEMPT=0
+IFDOWN_CALLS=0
+IFUP_CALLS=0
+VERIFY_CALLS=0
+VERIFY_ARGS=''
+VERIFY_RETURN=0
 
 date() {
 	local now_value
@@ -55,13 +60,30 @@ sleep() {
 	SLEEP_CALLS="${SLEEP_CALLS}${1},"
 }
 
+ifdown() {
+	IFDOWN_CALLS=$((IFDOWN_CALLS + 1))
+	return 0
+}
+
+ifup() {
+	IFUP_CALLS=$((IFUP_CALLS + 1))
+	return 0
+}
+
 nordvpn_easy_ping_interface() {
 	PING_ATTEMPTS=$((PING_ATTEMPTS + 1))
 	[ "$SUCCESS_ON_ATTEMPT" -gt 0 ] && [ "$PING_ATTEMPTS" -ge "$SUCCESS_ON_ATTEMPT" ]
 }
 
+verify_public_country_selection() {
+	VERIFY_CALLS=$((VERIFY_CALLS + 1))
+	VERIFY_ARGS="${VERIFY_ARGS}${1:-0},"
+	[ "$VERIFY_RETURN" -eq 0 ]
+}
+
 VPN_IF='wg0'
 POST_RESTART_DELAY='5'
+INTERFACE_RESTART_DELAY='1'
 
 printf '%s\n' '100' > "$FAKE_NOW_FILE"
 SLEEP_CALLS=''
@@ -81,5 +103,39 @@ nordvpn_easy_wait_for_vpn_connectivity "$VPN_IF" '3' 'timeout-test' || WAIT_RC=$
 
 assert_eq '1' "$WAIT_RC" 'wait helper fails when connectivity never returns'
 assert_eq '1,1,' "$SLEEP_CALLS" 'wait helper retries until the timeout window is exhausted'
+
+printf '%s\n' '300' > "$FAKE_NOW_FILE"
+SLEEP_CALLS=''
+PING_ATTEMPTS=0
+SUCCESS_ON_ATTEMPT=1
+IFDOWN_CALLS=0
+IFUP_CALLS=0
+VERIFY_CALLS=0
+VERIFY_ARGS=''
+VERIFY_RETURN=1
+VPN_COUNTRY='IT'
+APPLY_RC=0
+nordvpn_easy_apply_server_change_runtime reload || APPLY_RC=$?
+
+assert_eq '1' "$APPLY_RC" 'runtime apply fails when strict public-country verification mismatches'
+assert_eq '1' "$IFDOWN_CALLS" 'runtime apply cycles the interface before strict verification'
+assert_eq '1' "$IFUP_CALLS" 'runtime apply brings the interface back up before strict verification'
+assert_eq '1' "$VERIFY_CALLS" 'runtime apply verifies public country after connectivity is restored'
+assert_eq '1,' "$VERIFY_ARGS" 'runtime apply requests strict public-country verification when a country is selected'
+
+printf '%s\n' '400' > "$FAKE_NOW_FILE"
+SLEEP_CALLS=''
+PING_ATTEMPTS=0
+SUCCESS_ON_ATTEMPT=1
+VERIFY_CALLS=0
+VERIFY_ARGS=''
+VERIFY_RETURN=0
+VPN_COUNTRY=''
+APPLY_RC=0
+nordvpn_easy_apply_server_change_runtime reload || APPLY_RC=$?
+
+assert_eq '0' "$APPLY_RC" 'runtime apply succeeds with automatic country selection when connectivity is restored'
+assert_eq '1' "$VERIFY_CALLS" 'runtime apply still records public-country verification in automatic mode'
+assert_eq '0,' "$VERIFY_ARGS" 'runtime apply uses non-strict verification when no country is selected'
 
 printf '%s\n' 'test-wireguard.sh: ok'
