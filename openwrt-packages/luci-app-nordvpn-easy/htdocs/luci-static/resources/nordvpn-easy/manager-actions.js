@@ -54,6 +54,63 @@ function buildSaveApplyDebugLines(previousEnabled, currentEnabled, previousCount
 	return lines;
 }
 
+function normalizeSelectionMode(mode) {
+	return String(mode || 'auto');
+}
+
+function hasServerSelectionChanged(previousCountry, currentCountry, previousMode, currentMode, previousPreferredStation, preferredStation) {
+	if (managerData.normalizeCountryCode(previousCountry || '') !== managerData.normalizeCountryCode(currentCountry || ''))
+		return true;
+
+	if (normalizeSelectionMode(previousMode) !== normalizeSelectionMode(currentMode))
+		return true;
+
+	if (normalizeSelectionMode(currentMode) === 'manual' && String(previousPreferredStation || '') !== String(preferredStation || ''))
+		return true;
+
+	return false;
+}
+
+function deriveRuntimeActionPlan(previousEnabled, enabled, previousCountry, country, previousMode, mode, previousPreferredStation, preferredStation) {
+	const currentEnabled = !!enabled;
+	const wasEnabled = !!previousEnabled;
+	const currentMode = normalizeSelectionMode(mode);
+	const serverSelectionChanged = hasServerSelectionChanged(
+		previousCountry,
+		country,
+		previousMode,
+		currentMode,
+		previousPreferredStation,
+		preferredStation
+	);
+	const plan = {
+		actions: [],
+		successMessage: '',
+		serverSelectionChanged: serverSelectionChanged
+	};
+
+	if (!wasEnabled && currentEnabled) {
+		plan.actions = [ 'setup', 'install_hooks' ];
+		plan.successMessage = _('NordVPN Easy enabled: setup completed and hooks installed.');
+		return plan;
+	}
+
+	if (wasEnabled && !currentEnabled) {
+		plan.actions = [ 'disable_runtime' ];
+		plan.successMessage = _('NordVPN Easy disabled: VPN interface stopped and hooks removed.');
+		return plan;
+	}
+
+	if (currentEnabled && serverSelectionChanged) {
+		plan.actions = [ 'disable_runtime', 'setup', 'install_hooks' ];
+		plan.successMessage = currentMode === 'manual'
+			? _('NordVPN Easy restarted and synchronized the selected manual server.')
+			: _('NordVPN Easy restarted and synchronized the automatic server selection.');
+	}
+
+	return plan;
+}
+
 function notifyDebugBlock(title, lines) {
 	if (!lines || !lines.length)
 		return;
@@ -398,6 +455,14 @@ function handleSaveApply(viewState, state, ev, mode) {
 	const preferredStation = managerUI.getSelectedPreferredStation();
 	const preferredStationChanged = (currentMode === 'manual' && preferredStation !== previousPreferredStation);
 	const enteringManualMode = (currentMode === 'manual' && previousMode !== 'manual');
+	const serverSelectionChanged = hasServerSelectionChanged(
+		previousCountry,
+		currentCountry,
+		previousMode,
+		currentMode,
+		previousPreferredStation,
+		preferredStation
+	);
 	const selectedServer = preferredStation ? state.serverCatalogIndex[preferredStation] : null;
 	const debugLines = buildSaveApplyDebugLines(
 		previousEnabled,
@@ -449,14 +514,12 @@ function handleSaveApply(viewState, state, ev, mode) {
 		);
 	}
 	else if (previousEnabled && (
-		previousCountry !== currentCountry ||
-		previousMode !== currentMode ||
-		(currentMode === 'manual' && previousPreferredStation !== preferredStation)
+		serverSelectionChanged
 	)) {
 		confirmationPromise = managerUI.showConfirmationModal(
 			_('Confirm Server Change'),
 			[
-				_('Applying these changes will briefly interrupt the VPN connection while NordVPN Easy reconfigures the tunnel.'),
+				_('Applying these changes will stop the current VPN tunnel, restart NordVPN Easy, and then reconnect with the selected server settings.'),
 				currentMode === 'manual'
 					? (selectedServer
 						? _('Preferred server: %s').format(managerFormat.formatServerLabel(selectedServer))
@@ -533,8 +596,18 @@ function handleSaveApply(viewState, state, ev, mode) {
 						const country = managerData.normalizeCountryCode(uci.get('nordvpn_easy', 'main', 'vpn_country') || '');
 						const modeValue = String(uci.get('nordvpn_easy', 'main', 'server_selection_mode') || 'auto');
 						const preferred = String(uci.get('nordvpn_easy', 'main', 'preferred_server_station') || '');
-						let actions = [];
-						let successMessage = '';
+						const runtimePlan = deriveRuntimeActionPlan(
+							previousEnabled,
+							enabled,
+							previousCountry,
+							country,
+							previousMode,
+							modeValue,
+							previousPreferredStation,
+							preferred
+						);
+						const actions = runtimePlan.actions;
+						const successMessage = runtimePlan.successMessage;
 
 						viewState.initialEnabled = enabled;
 						viewState.initialCountry = country;
@@ -542,25 +615,6 @@ function handleSaveApply(viewState, state, ev, mode) {
 						viewState.initialPreferredStation = preferred;
 						state.appliedEnabled = enabled;
 						state.appliedCountryCode = country;
-
-						if (!previousEnabled && enabled) {
-							actions = [ 'setup', 'install_hooks' ];
-							successMessage = _('NordVPN Easy enabled: setup completed and hooks installed.');
-						}
-						else if (previousEnabled && !enabled) {
-							actions = [ 'disable_runtime' ];
-							successMessage = _('NordVPN Easy disabled: VPN interface stopped and hooks removed.');
-						}
-						else if (enabled && (
-							previousCountry !== country ||
-							previousMode !== modeValue ||
-							(modeValue === 'manual' && previousPreferredStation !== preferred)
-						)) {
-							actions = [ 'setup' ];
-							successMessage = modeValue === 'manual'
-								? _('Manual preferred server updated and synchronized.')
-								: _('NordVPN Easy synchronized the automatic server selection.');
-						}
 
 						if (!actions.length) {
 							notifyDebugBlock(_('Configuration applied'), [
@@ -637,6 +691,8 @@ function handleSaveApply(viewState, state, ev, mode) {
 }
 
 return baseclass.extend({
+	hasServerSelectionChanged: hasServerSelectionChanged,
+	deriveRuntimeActionPlan: deriveRuntimeActionPlan,
 	loadServerCatalog: loadServerCatalog,
 	updatePublicIp: updatePublicIp,
 	updatePublicCountry: updatePublicCountry,
