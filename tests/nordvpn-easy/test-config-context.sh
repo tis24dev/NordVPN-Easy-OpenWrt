@@ -302,10 +302,24 @@ nordvpn_easy_validate_runtime_config "\$RUNTIME_FILE" 'cfg_'
 case "\$WRITTEN_OPTIONS" in
 	''|*[!0-9]*) exit 1 ;;
 esac
-printf '%s\n' 'busybox-ok'
+
+RUNTIME_FILE_RV="\$TMP_DIR/runtime-busybox-resultvar.conf"
+WRITTEN_OPTIONS_RV=''
+nordvpn_easy_render_runtime_config "\$RUNTIME_FILE_RV" 'cfg_' WRITTEN_OPTIONS_RV
+[ "\$(nordvpn_easy_runtime_file_key_state "\$RUNTIME_FILE_RV" 'NORDVPN_TOKEN')" = 'present' ]
+[ "\$(nordvpn_easy_runtime_file_key_state "\$RUNTIME_FILE_RV" 'WAN_IF')" = 'present' ]
+[ "\$(nordvpn_easy_runtime_file_key_state "\$RUNTIME_FILE_RV" 'VPN_IF')" = 'present' ]
+nordvpn_easy_validate_runtime_config "\$RUNTIME_FILE_RV" 'cfg_'
+[ "\$NORDVPN_EASY_RUNTIME_CONFIG_VALIDATION_STATUS" = 'ok' ]
+[ "\$WRITTEN_OPTIONS" = "\$WRITTEN_OPTIONS_RV" ]
+case "\$WRITTEN_OPTIONS_RV" in
+	''|*[!0-9]*) exit 1 ;;
+esac
+
+printf '%s\n' 'busybox-ok:stdout+resultvar'
 EOF
 	)"
-	assert_eq 'busybox-ok' "$BUSYBOX_RESULT" 'busybox ash render path remains valid'
+	assert_eq 'busybox-ok:stdout+resultvar' "$BUSYBOX_RESULT" 'busybox ash render path remains valid for stdout and result_var'
 fi
 
 printf '%s\n' 'test-config-context.sh: ok'
