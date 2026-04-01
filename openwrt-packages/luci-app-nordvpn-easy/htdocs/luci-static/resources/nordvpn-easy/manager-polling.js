@@ -28,14 +28,7 @@ function start(state) {
 			return Promise.resolve();
 
 		return managerActions.updatePublicIp(state, { quiet: true });
-	}, 10);
-
-	poll.add(function() {
-		if (shouldSkipBackgroundPoll(state))
-			return Promise.resolve();
-
-		return managerActions.updatePublicCountry(state, { quiet: true });
-	}, 30);
+	}, 5);
 }
 
 return baseclass.extend({

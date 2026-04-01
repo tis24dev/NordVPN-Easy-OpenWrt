@@ -108,6 +108,15 @@ function loadServerCatalog(state, country, forceRefresh) {
 	});
 }
 
+function normalizePublicIpValue(value) {
+	const publicIp = String(value != null ? value : '').trim();
+
+	if (!publicIp || publicIp === 'null' || publicIp === 'undefined')
+		return '';
+
+	return publicIp;
+}
+
 function updatePublicIp(state, options) {
 	const opts = options || {};
 	const extraArgs = opts.quiet ? [ 'quiet' ] : [];
@@ -117,14 +126,45 @@ function updatePublicIp(state, options) {
 
 	return managerStore.runExclusive(state, 'publicIp', function() {
 		return service.execService('public_ip', extraArgs).then(function(res) {
-			const publicIp = res.stdout ? res.stdout.trim() : '';
+			const publicIp = (res.code === 0) ? normalizePublicIpValue(res.stdout) : '';
+			const previousPublicIp = state.currentPublicIp;
+			const shouldRefreshCountry = !!publicIp && (
+				opts.force ||
+				publicIp !== previousPublicIp ||
+				!state.currentPublicCountry ||
+				state.currentPublicCountryIp !== publicIp
+			);
 
+			state.currentPublicIp = publicIp;
 			managerUI.replaceStatusText(
 				managerUI.ids.PUBLIC_IP_STATUS_ID,
-				(res.code === 0 && publicIp && publicIp !== 'null' && publicIp !== 'undefined') ? publicIp : _('Unavailable')
+				publicIp || _('Unavailable')
 			);
+
+			if (!publicIp) {
+				state.currentPublicCountry = '';
+				state.currentPublicCountryIp = '';
+				managerUI.replaceStatusText(managerUI.ids.PUBLIC_COUNTRY_STATUS_ID, _('Unavailable'));
+				managerUI.updateCountryMatchStatus(state);
+				return;
+			}
+
+			if (!shouldRefreshCountry)
+				return;
+
+			managerUI.replaceStatusText(managerUI.ids.PUBLIC_COUNTRY_STATUS_ID, _('Checking...'));
+			return updatePublicCountry(state, {
+				quiet: opts.quiet,
+				force: !!opts.force,
+				expectedPublicIp: publicIp
+			});
 		}).catch(function() {
+			state.currentPublicIp = '';
+			state.currentPublicCountry = '';
+			state.currentPublicCountryIp = '';
 			managerUI.replaceStatusText(managerUI.ids.PUBLIC_IP_STATUS_ID, _('Unavailable'));
+			managerUI.replaceStatusText(managerUI.ids.PUBLIC_COUNTRY_STATUS_ID, _('Unavailable'));
+			managerUI.updateCountryMatchStatus(state);
 		});
 	});
 }
@@ -132,19 +172,30 @@ function updatePublicIp(state, options) {
 function updatePublicCountry(state, options) {
 	const opts = options || {};
 	const extraArgs = opts.quiet ? [ 'quiet' ] : [];
+	const expectedPublicIp = normalizePublicIpValue(opts.expectedPublicIp || state.currentPublicIp);
 
 	if (state.pollingSuspended && !opts.force)
 		return Promise.resolve();
 
 	return managerStore.runExclusive(state, 'publicCountry', function() {
+		if (!expectedPublicIp) {
+			state.currentPublicCountry = '';
+			state.currentPublicCountryIp = '';
+			managerUI.replaceStatusText(managerUI.ids.PUBLIC_COUNTRY_STATUS_ID, _('Unavailable'));
+			managerUI.updateCountryMatchStatus(state);
+			return;
+		}
+
 		return service.execService('public_country', extraArgs).then(function(res) {
 			const publicCountry = managerData.normalizeCountryCode(res.stdout ? res.stdout.trim() : '');
 
 			state.currentPublicCountry = (res.code === 0 && publicCountry) ? publicCountry : '';
+			state.currentPublicCountryIp = state.currentPublicCountry ? expectedPublicIp : '';
 			managerUI.replaceStatusText(managerUI.ids.PUBLIC_COUNTRY_STATUS_ID, state.currentPublicCountry || _('Unavailable'));
 			managerUI.updateCountryMatchStatus(state);
 		}).catch(function() {
 			state.currentPublicCountry = '';
+			state.currentPublicCountryIp = '';
 			managerUI.replaceStatusText(managerUI.ids.PUBLIC_COUNTRY_STATUS_ID, _('Unavailable'));
 			managerUI.updateCountryMatchStatus(state);
 		});
@@ -544,7 +595,6 @@ function handleSaveApply(viewState, state, ev, mode) {
 							managerStore.resumePolling(state);
 							updateLocalStatus(state, { force: true });
 							updatePublicIp(state, { force: true });
-							updatePublicCountry(state, { force: true });
 						});
 					}).catch(function(err) {
 						const message = (err && err.message) ? err.message : String(err);
