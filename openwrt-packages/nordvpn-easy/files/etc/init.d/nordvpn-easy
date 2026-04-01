@@ -90,6 +90,7 @@ run_core_action() {
 	local action_config=''
 	local written_options=0
 	local failure_log_mode="${RUN_CORE_ACTION_FAILURE_LOG_MODE:-error}"
+	local action_log_mode='verbose'
 	local rc=0
 	shift
 
@@ -114,10 +115,22 @@ run_core_action() {
 		rm -rf -- "$action_temp_dir"
 		return 1
 	}
+
+	case "$action:${1:-}" in
+		status_json:*|operation_status:*|vpn_status:*|diagnostics_log:*)
+			action_log_mode='quiet'
+			;;
+		public_ip:quiet|public_country:quiet)
+			action_log_mode='quiet'
+			;;
+	esac
+
 	action_started_at="$(date +%s 2>/dev/null || printf '%s' '0')"
-	log_service_info "apply: running core action '$action' (args=$(nordvpn_easy_debug_cli_args "$@"))"
-	log_service_info "apply: core action context for $action: $(nordvpn_easy_service_debug_summary 'cfg_')"
-	log_service_info "apply: rendered temporary config for '$action' at $action_config (written_options=$written_options, $(nordvpn_easy_runtime_file_debug_summary "$action_config"), $(nordvpn_easy_runtime_config_validation_summary), $(nordvpn_easy_service_backend_payload_summary))"
+	if [ "$action_log_mode" != 'quiet' ]; then
+		log_service_info "apply: running core action '$action' (args=$(nordvpn_easy_debug_cli_args "$@"))"
+		log_service_info "apply: core action context for $action: $(nordvpn_easy_service_debug_summary 'cfg_')"
+		log_service_info "apply: rendered temporary config for '$action' at $action_config (written_options=$written_options, $(nordvpn_easy_runtime_file_debug_summary "$action_config"), $(nordvpn_easy_runtime_config_validation_summary), $(nordvpn_easy_service_backend_payload_summary))"
+	fi
 	"$CORE_SCRIPT" "$action" --config "$action_config" "$@"
 	rc=$?
 	rm -rf -- "$action_temp_dir"
@@ -139,7 +152,9 @@ run_core_action() {
 	esac
 
 	if [ "$rc" -eq 0 ]; then
-		log_service_info "apply: core action '$action' completed successfully (duration=${action_duration}s)"
+		if [ "$action_log_mode" != 'quiet' ]; then
+			log_service_info "apply: core action '$action' completed successfully (duration=${action_duration}s)"
+		fi
 	elif [ "$failure_log_mode" = 'info' ]; then
 		log_service_info "apply: core action '$action' failed but is deferred (duration=${action_duration}s, rc=$rc)"
 	else

@@ -848,7 +848,7 @@ load_config || exit 1
 if [ "$ACTION" = 'public_ip' ]; then
   PUBLIC_LOOKUP_LOG_MODE="${1:-verbose}"
   LOG_PHASE='poll'
-  log "public_ip request starting (mode=${PUBLIC_LOOKUP_LOG_MODE})"
+  public_lookup_log "public_ip request starting (mode=${PUBLIC_LOOKUP_LOG_MODE})"
   command -v curl >/dev/null 2>&1 || {
     log 'curl IS MISSING, PLEASE INSTALL'
     exit 1
@@ -857,7 +857,7 @@ if [ "$ACTION" = 'public_ip' ]; then
   get_public_ip
   ACTION_RC=$?
   if [ "$ACTION_RC" -eq 0 ]; then
-    log 'public_ip request completed successfully'
+    public_lookup_log 'public_ip request completed successfully'
   else
     nordvpn_easy_log_blocker "$LOG_PHASE" "public_ip request failed (rc=$ACTION_RC)"
   fi
@@ -867,12 +867,12 @@ fi
 if [ "$ACTION" = 'public_country' ]; then
   PUBLIC_LOOKUP_LOG_MODE="${1:-verbose}"
   LOG_PHASE='poll'
-  log "public_country request starting (mode=${PUBLIC_LOOKUP_LOG_MODE})"
+  public_lookup_log "public_country request starting (mode=${PUBLIC_LOOKUP_LOG_MODE})"
   require_commands || exit 1
   get_public_country
   ACTION_RC=$?
   if [ "$ACTION_RC" -eq 0 ]; then
-    log 'public_country request completed successfully'
+    public_lookup_log 'public_country request completed successfully'
   else
     nordvpn_easy_log_blocker "$LOG_PHASE" "public_country request failed (rc=$ACTION_RC)"
   fi

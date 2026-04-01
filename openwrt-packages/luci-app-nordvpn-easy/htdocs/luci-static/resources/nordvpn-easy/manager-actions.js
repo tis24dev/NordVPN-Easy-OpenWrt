@@ -71,7 +71,18 @@ function hasServerSelectionChanged(previousCountry, currentCountry, previousMode
 	return false;
 }
 
-function deriveRuntimeActionPlan(previousEnabled, enabled, previousCountry, country, previousMode, mode, previousPreferredStation, preferredStation) {
+function hasRuntimeInterfaceSnapshot(runtimeStatus) {
+	return !!(runtimeStatus && typeof runtimeStatus.interface === 'string' && runtimeStatus.interface);
+}
+
+function runtimeNeedsReconciliation(runtimeStatus) {
+	if (!hasRuntimeInterfaceSnapshot(runtimeStatus))
+		return false;
+
+	return !!(runtimeStatus.runtime_disabled || runtimeStatus.interface_disabled || runtimeStatus.runtime_configured === false);
+}
+
+function deriveRuntimeActionPlan(previousEnabled, enabled, previousCountry, country, previousMode, mode, previousPreferredStation, preferredStation, runtimeStatus) {
 	const currentEnabled = !!enabled;
 	const wasEnabled = !!previousEnabled;
 	const currentMode = normalizeSelectionMode(mode);
@@ -83,6 +94,7 @@ function deriveRuntimeActionPlan(previousEnabled, enabled, previousCountry, coun
 		previousPreferredStation,
 		preferredStation
 	);
+	const runtimeReconciliationRequired = currentEnabled && runtimeNeedsReconciliation(runtimeStatus);
 	const plan = {
 		actions: [],
 		successMessage: '',
@@ -102,10 +114,16 @@ function deriveRuntimeActionPlan(previousEnabled, enabled, previousCountry, coun
 	}
 
 	if (currentEnabled && serverSelectionChanged) {
-		plan.actions = [ 'disable_runtime', 'setup', 'install_hooks' ];
+		plan.actions = [ 'setup', 'install_hooks' ];
 		plan.successMessage = currentMode === 'manual'
 			? _('NordVPN Easy restarted and synchronized the selected manual server.')
 			: _('NordVPN Easy restarted and synchronized the automatic server selection.');
+		return plan;
+	}
+
+	if (runtimeReconciliationRequired) {
+		plan.actions = [ 'setup', 'install_hooks' ];
+		plan.successMessage = _('NordVPN Easy runtime synchronized with the saved configuration.');
 	}
 
 	return plan;
@@ -519,7 +537,7 @@ function handleSaveApply(viewState, state, ev, mode) {
 		confirmationPromise = managerUI.showConfirmationModal(
 			_('Confirm Server Change'),
 			[
-				_('Applying these changes will stop the current VPN tunnel, restart NordVPN Easy, and then reconnect with the selected server settings.'),
+				_('Applying these changes will reconfigure the current VPN tunnel, cycle the VPN interface, and then reconnect with the selected server settings.'),
 				currentMode === 'manual'
 					? (selectedServer
 						? _('Preferred server: %s').format(managerFormat.formatServerLabel(selectedServer))
@@ -604,7 +622,8 @@ function handleSaveApply(viewState, state, ev, mode) {
 							previousMode,
 							modeValue,
 							previousPreferredStation,
-							preferred
+							preferred,
+							state.currentLocalStatus
 						);
 						const actions = runtimePlan.actions;
 						const successMessage = runtimePlan.successMessage;
