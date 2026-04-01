@@ -6,6 +6,8 @@ ROOT_DIR="$(CDPATH='' cd -- "$(dirname "$0")/../.." && pwd)"
 INIT_SCRIPT="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/etc/init.d/nordvpn-easy"
 TMP_DIR="$(mktemp -d)"
 CORE_CAPTURE="$TMP_DIR/core-args.txt"
+INFO_CAPTURE="$TMP_DIR/info.log"
+ERROR_CAPTURE="$TMP_DIR/error.log"
 VALIDATION_MODE='pass'
 
 cleanup() {
@@ -38,8 +40,8 @@ extract_function() {
 eval "$(extract_function run_core_action)"
 
 load_service_config() { :; }
-log_service_info() { :; }
-log_service_error() { :; }
+log_service_info() { printf '%s\n' "$1" >> "$INFO_CAPTURE"; }
+log_service_error() { printf '%s\n' "$1" >> "$ERROR_CAPTURE"; }
 nordvpn_easy_debug_cli_args() { printf '%s\n' 'none'; }
 nordvpn_easy_service_debug_summary() { printf '%s\n' 'enabled=1 (checked/on), token=present'; }
 nordvpn_easy_runtime_file_debug_summary() { printf '%s\n' 'file_token=present'; }
@@ -79,6 +81,8 @@ chmod +x "$TMP_DIR/core.sh"
 
 CORE_SCRIPT="$TMP_DIR/core.sh"
 
+: > "$INFO_CAPTURE"
+: > "$ERROR_CAPTURE"
 run_core_action status_json
 
 CORE_ARGS="$(cat "$CORE_CAPTURE")"
@@ -94,6 +98,28 @@ esac
 CONFIG_PATH_FROM_ARGS="${CORE_ARGS#status_json --config }"
 [ ! -f "$CONFIG_PATH_FROM_ARGS" ] || {
 	printf '%s\n' 'FAIL: temporary action config should be cleaned up after core execution' >&2
+	exit 1
+}
+[ ! -s "$INFO_CAPTURE" ] || {
+	printf '%s\n' 'FAIL: quiet status_json core action should not emit info logs on success' >&2
+	exit 1
+}
+
+rm -f "$CORE_CAPTURE"
+: > "$INFO_CAPTURE"
+run_core_action setup
+
+CORE_ARGS="$(cat "$CORE_CAPTURE")"
+case "$CORE_ARGS" in
+	"setup --config $TMP_DIR"/action.*"/nordvpn-easy.setup.conf")
+		;;
+	*)
+		printf '%s\n' "FAIL: setup core action did not receive expected --config argument: $CORE_ARGS" >&2
+		exit 1
+		;;
+esac
+[ -s "$INFO_CAPTURE" ] || {
+	printf '%s\n' 'FAIL: setup core action should emit info logs on success' >&2
 	exit 1
 }
 

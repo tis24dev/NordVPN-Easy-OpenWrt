@@ -379,12 +379,19 @@ nordvpn_easy_export_diagnostics_log() {
 	local service_name="${1:-nordvpn-easy}"
 	local temp_dir=''
 	local tmp_log=''
+	local tail_lines="${NORDVPN_EASY_DIAGNOSTICS_TAIL_LINES:-2000}"
 	local tail_rc=0
 
 	command -v logread >/dev/null 2>&1 || {
 		nordvpn_easy_log 'logread command not found'
 		return 1
 	}
+
+	case "$tail_lines" in
+		''|*[!0-9]*)
+			tail_lines='2000'
+			;;
+	esac
 
 	nordvpn_easy_mktemp_dir 'diagnostics' temp_dir || return 1
 	tmp_log="$(nordvpn_easy_temp_file_path "$temp_dir" "${service_name}.diagnostics.log")"
@@ -394,7 +401,7 @@ nordvpn_easy_export_diagnostics_log() {
 		return 1
 	}
 
-	tail -n 500 "$tmp_log" || tail_rc=$?
+	tail -n "$tail_lines" "$tmp_log" || tail_rc=$?
 	rm -rf -- "$temp_dir"
 	return "$tail_rc"
 }
