@@ -91,6 +91,27 @@ function normalizeValue(value) {
 	return JSON.parse(JSON.stringify(value));
 }
 
+const healthyRuntime = {
+	interface: 'wg0',
+	runtime_disabled: false,
+	interface_disabled: false,
+	runtime_configured: true
+};
+
+const disabledRuntime = {
+	interface: 'wg0',
+	runtime_disabled: true,
+	interface_disabled: true,
+	runtime_configured: true
+};
+
+const missingRuntime = {
+	interface: 'wg0',
+	runtime_disabled: false,
+	interface_disabled: false,
+	runtime_configured: false
+};
+
 assert.equal(typeof managerActions.hasServerSelectionChanged, 'function', 'hasServerSelectionChanged is exported');
 assert.equal(typeof managerActions.deriveRuntimeActionPlan, 'function', 'deriveRuntimeActionPlan is exported');
 
@@ -119,7 +140,7 @@ assert.equal(
 );
 
 assert.deepEqual(
-	normalizeValue(managerActions.deriveRuntimeActionPlan(false, true, '', 'UY', 'auto', 'auto', '', '')),
+	normalizeValue(managerActions.deriveRuntimeActionPlan(false, true, '', 'UY', 'auto', 'auto', '', '', healthyRuntime)),
 	{
 		actions: [ 'setup', 'install_hooks' ],
 		successMessage: 'NordVPN Easy enabled: setup completed and hooks installed.',
@@ -129,7 +150,7 @@ assert.deepEqual(
 );
 
 assert.deepEqual(
-	normalizeValue(managerActions.deriveRuntimeActionPlan(true, false, 'AT', 'AT', 'auto', 'auto', '', '')),
+	normalizeValue(managerActions.deriveRuntimeActionPlan(true, false, 'AT', 'AT', 'auto', 'auto', '', '', healthyRuntime)),
 	{
 		actions: [ 'disable_runtime' ],
 		successMessage: 'NordVPN Easy disabled: VPN interface stopped and hooks removed.',
@@ -139,9 +160,9 @@ assert.deepEqual(
 );
 
 assert.deepEqual(
-	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'AT', 'UY', 'auto', 'auto', '', '')),
+	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'AT', 'UY', 'auto', 'auto', '', '', healthyRuntime)),
 	{
-		actions: [ 'disable_runtime', 'setup', 'install_hooks' ],
+		actions: [ 'setup', 'install_hooks' ],
 		successMessage: 'NordVPN Easy restarted and synchronized the automatic server selection.',
 		serverSelectionChanged: true
 	},
@@ -149,9 +170,9 @@ assert.deepEqual(
 );
 
 assert.deepEqual(
-	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'UY', 'UY', 'auto', 'manual', '', 'uy123')),
+	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'UY', 'UY', 'auto', 'manual', '', 'uy123', healthyRuntime)),
 	{
-		actions: [ 'disable_runtime', 'setup', 'install_hooks' ],
+		actions: [ 'setup', 'install_hooks' ],
 		successMessage: 'NordVPN Easy restarted and synchronized the selected manual server.',
 		serverSelectionChanged: true
 	},
@@ -159,9 +180,9 @@ assert.deepEqual(
 );
 
 assert.deepEqual(
-	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'UY', 'UY', 'manual', 'manual', 'uy123', 'uy456')),
+	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'UY', 'UY', 'manual', 'manual', 'uy123', 'uy456', healthyRuntime)),
 	{
-		actions: [ 'disable_runtime', 'setup', 'install_hooks' ],
+		actions: [ 'setup', 'install_hooks' ],
 		successMessage: 'NordVPN Easy restarted and synchronized the selected manual server.',
 		serverSelectionChanged: true
 	},
@@ -169,13 +190,33 @@ assert.deepEqual(
 );
 
 assert.deepEqual(
-	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'UY', 'UY', 'auto', 'auto', '', '')),
+	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'UY', 'UY', 'auto', 'auto', '', '', healthyRuntime)),
 	{
 		actions: [],
 		successMessage: '',
 		serverSelectionChanged: false
 	},
 	'no runtime-relevant change produces no runtime actions'
+);
+
+assert.deepEqual(
+	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'UY', 'UY', 'auto', 'auto', '', '', disabledRuntime)),
+	{
+		actions: [ 'setup', 'install_hooks' ],
+		successMessage: 'NordVPN Easy runtime synchronized with the saved configuration.',
+		serverSelectionChanged: false
+	},
+	'disabled runtime with unchanged config is reconciled'
+);
+
+assert.deepEqual(
+	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'UY', 'UY', 'auto', 'auto', '', '', missingRuntime)),
+	{
+		actions: [ 'setup', 'install_hooks' ],
+		successMessage: 'NordVPN Easy runtime synchronized with the saved configuration.',
+		serverSelectionChanged: false
+	},
+	'missing runtime with unchanged config is reconciled'
 );
 
 console.log('test-manager-actions.js: ok');
