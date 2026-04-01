@@ -10,12 +10,10 @@ UCI_CONFIG='nordvpn_easy'
 UCI_SECTION='main'
 RUNTIME_CONFIG='/var/etc/nordvpn-easy.conf'
 CORE_SCRIPT='/usr/libexec/nordvpn-easy/core.sh'
-SCHEMA_LIB='/usr/libexec/nordvpn-easy/lib/schema.sh'
-RUNTIME_LIB='/usr/libexec/nordvpn-easy/lib/runtime.sh'
-SERVICE_CONFIG_LIB='/usr/libexec/nordvpn-easy/lib/service-config.sh'
+CONFIG_CONTEXT_LIB='/usr/libexec/nordvpn-easy/lib/config-context.sh'
 CRON_PATH='/etc/cron.d/nordvpn-easy'
 HOTPLUG_PATH='/etc/hotplug.d/iface/95-nordvpn-easy'
-LOCK_DIR='/tmp/nordvpn-easy.lock'
+SERVICE_BACKEND_PAYLOAD_SIGNATURE='render-contract-v2'
 EXTRA_COMMANDS='setup check rotate refresh_countries refresh_countries_force server_catalog public_ip public_country operation_status vpn_status status_json diagnostics_log install_hooks remove_hooks disable_runtime render_runtime_config'
 EXTRA_HELP='  setup                 Run setup immediately
   check                 Run one health check immediately
@@ -34,96 +32,65 @@ EXTRA_HELP='  setup                 Run setup immediately
   disable_runtime       Disable the VPN interface and remove hooks
   render_runtime_config Render the temporary shell config'
 
-SCHEMA_LIB_LOADED=0
-RUNTIME_LIB_LOADED=0
-SERVICE_CONFIG_LIB_LOADED=0
+CONFIG_CONTEXT_LIB_LOADED=0
 
-load_schema_library() {
-	[ "$SCHEMA_LIB_LOADED" -eq 1 ] && return 0
-	[ -r "$SCHEMA_LIB" ] || {
-		printf '%s\n' "nordvpn-easy: missing schema library $SCHEMA_LIB" >&2
+load_config_context_library() {
+	[ "$CONFIG_CONTEXT_LIB_LOADED" -eq 1 ] && return 0
+	[ -r "$CONFIG_CONTEXT_LIB" ] || {
+		printf '%s\n' "nordvpn-easy: missing config context library $CONFIG_CONTEXT_LIB" >&2
 		return 1
 	}
 
 	# shellcheck disable=SC1090
-	. "$SCHEMA_LIB" || return 1
-	SCHEMA_LIB_LOADED=1
-}
-
-load_runtime_library() {
-	[ "$RUNTIME_LIB_LOADED" -eq 1 ] && return 0
-	[ -r "$RUNTIME_LIB" ] || {
-		printf '%s\n' "nordvpn-easy: missing runtime library $RUNTIME_LIB" >&2
-		return 1
-	}
-
-	# shellcheck disable=SC1090
-	. "$RUNTIME_LIB" || return 1
-	RUNTIME_LIB_LOADED=1
-}
-
-load_service_config_library() {
-	[ "$SERVICE_CONFIG_LIB_LOADED" -eq 1 ] && return 0
-	[ -r "$SERVICE_CONFIG_LIB" ] || {
-		printf '%s\n' "nordvpn-easy: missing service config library $SERVICE_CONFIG_LIB" >&2
-		return 1
-	}
-
-	load_schema_library || return 1
-	# shellcheck disable=SC1090
-	. "$SERVICE_CONFIG_LIB" || return 1
-	SERVICE_CONFIG_LIB_LOADED=1
-}
-
-migrate_service_config() {
-	load_service_config_library || return 1
-	nordvpn_easy_migrate_service_config "$UCI_CONFIG" "$UCI_SECTION"
+	. "$CONFIG_CONTEXT_LIB" || return 1
+	CONFIG_CONTEXT_LIB_LOADED=1
 }
 
 load_service_config() {
-	local option default_value
-
-	load_schema_library || return 1
-	migrate_service_config || return 1
-	config_load "$UCI_CONFIG"
-
-	for option in $(nordvpn_easy_uci_options); do
-		[ "$option" = 'config_schema_version' ] && continue
-		default_value="$(nordvpn_easy_default "$option" 2>/dev/null || printf '%s' '')"
-
-		if nordvpn_easy_is_bool_option "$option"; then
-			config_get_bool "cfg_${option}" "$UCI_SECTION" "$option" "$default_value"
-		else
-			config_get "cfg_${option}" "$UCI_SECTION" "$option" "$default_value"
-		fi
-	done
+	load_config_context_library || return 1
+	nordvpn_easy_load_service_context 'cfg_' "$UCI_CONFIG" "$UCI_SECTION"
 }
 
-write_runtime_option() {
-	local key="$1"
-	local value="$2"
+nordvpn_easy_service_backend_payload_summary() {
+	local lib_payload='unavailable'
+	local payload_match='0'
 
-	printf "%s='%s'\n" "$key" "$(nordvpn_easy_shell_quote "$value")" >> "$RUNTIME_CONFIG"
+	lib_payload="$(nordvpn_easy_backend_payload_signature 2>/dev/null || printf '%s' 'unavailable')"
+	[ "$SERVICE_BACKEND_PAYLOAD_SIGNATURE" = "$lib_payload" ] && payload_match='1'
+
+	printf '%s' "service_payload=${SERVICE_BACKEND_PAYLOAD_SIGNATURE}, lib_payload=${lib_payload}, payload_match=${payload_match}"
 }
 
 render_runtime_config() {
-	local option env_name value
+	local target_config="${1:-$RUNTIME_CONFIG}"
+	local written_options=0
 
 	load_service_config || return 1
-	umask 077
-	mkdir -p /var/etc
-	: > "$RUNTIME_CONFIG" || return 1
-	log_service_info "rendering runtime config to $RUNTIME_CONFIG (enabled=$cfg_enabled, wan_if=$cfg_wan_if, vpn_if=$cfg_vpn_if, vpn_country=${cfg_vpn_country:-automatic})"
+	log_service_info "service: rendering runtime config to $target_config ($(nordvpn_easy_service_debug_summary 'cfg_'), $(nordvpn_easy_service_backend_payload_summary))"
 
-	for option in $(nordvpn_easy_runtime_options); do
-		env_name="$(nordvpn_easy_env_name "$option")"
-		eval "value=\${cfg_${option}}"
-		write_runtime_option "$env_name" "$value"
-	done
+	nordvpn_easy_render_runtime_config "$target_config" 'cfg_' written_options || {
+		log_service_error "service: failed to render runtime config into $target_config"
+		return 1
+	}
+
+	nordvpn_easy_validate_runtime_config "$target_config" 'cfg_' || {
+		log_service_error "service: rendered runtime config failed validation at $target_config ($(nordvpn_easy_runtime_file_debug_summary "$target_config"), $(nordvpn_easy_runtime_config_validation_summary), $(nordvpn_easy_service_backend_payload_summary))"
+		return 1
+	}
+
+	log_service_info "service: runtime config rendered at $target_config (written_options=$written_options, $(nordvpn_easy_runtime_file_debug_summary "$target_config"), $(nordvpn_easy_runtime_config_validation_summary), $(nordvpn_easy_service_backend_payload_summary))"
 }
 
 run_core_action() {
 	local action="$1"
+	local action_started_at=''
+	local action_finished_at=''
+	local action_duration='unknown'
+	local action_temp_dir=''
+	local action_config=''
+	local written_options=0
+	local failure_log_mode="${RUN_CORE_ACTION_FAILURE_LOG_MODE:-error}"
+	local rc=0
 	shift
 
 	[ -x "$CORE_SCRIPT" ] || {
@@ -131,9 +98,54 @@ run_core_action() {
 		return 1
 	}
 
-	log_service_info "running core action: $action"
-	render_runtime_config || return 1
-	"$CORE_SCRIPT" "$action" "$RUNTIME_CONFIG" "$@"
+	load_service_config || return 1
+	nordvpn_easy_mktemp_dir "core-${action}" action_temp_dir || {
+		log_service_error "apply: failed to create temporary config workspace for core action '$action'"
+		return 1
+	}
+	action_config="$(nordvpn_easy_temp_file_path "$action_temp_dir" "nordvpn-easy.${action}.conf")"
+	nordvpn_easy_render_runtime_config "$action_config" 'cfg_' written_options || {
+		rm -rf -- "$action_temp_dir"
+		log_service_error "apply: failed to render temporary config for core action '$action'"
+		return 1
+	}
+	nordvpn_easy_validate_runtime_config "$action_config" 'cfg_' || {
+		log_service_error "apply: rendered temporary config for '$action' failed validation at $action_config ($(nordvpn_easy_runtime_file_debug_summary "$action_config"), $(nordvpn_easy_runtime_config_validation_summary), $(nordvpn_easy_service_backend_payload_summary))"
+		rm -rf -- "$action_temp_dir"
+		return 1
+	}
+	action_started_at="$(date +%s 2>/dev/null || printf '%s' '0')"
+	log_service_info "apply: running core action '$action' (args=$(nordvpn_easy_debug_cli_args "$@"))"
+	log_service_info "apply: core action context for $action: $(nordvpn_easy_service_debug_summary 'cfg_')"
+	log_service_info "apply: rendered temporary config for '$action' at $action_config (written_options=$written_options, $(nordvpn_easy_runtime_file_debug_summary "$action_config"), $(nordvpn_easy_runtime_config_validation_summary), $(nordvpn_easy_service_backend_payload_summary))"
+	"$CORE_SCRIPT" "$action" --config "$action_config" "$@"
+	rc=$?
+	rm -rf -- "$action_temp_dir"
+	action_finished_at="$(date +%s 2>/dev/null || printf '%s' '0')"
+	case "$action_started_at" in
+		''|*[!0-9]*)
+			action_duration='unknown'
+			;;
+		*)
+			case "$action_finished_at" in
+				''|*[!0-9]*)
+					action_duration='unknown'
+					;;
+				*)
+					action_duration=$((action_finished_at - action_started_at))
+					;;
+			esac
+			;;
+	esac
+
+	if [ "$rc" -eq 0 ]; then
+		log_service_info "apply: core action '$action' completed successfully (duration=${action_duration}s)"
+	elif [ "$failure_log_mode" = 'info' ]; then
+		log_service_info "apply: core action '$action' failed but is deferred (duration=${action_duration}s, rc=$rc)"
+	else
+		log_service_error "apply: BLOCKER: core action '$action' failed (duration=${action_duration}s, rc=$rc)"
+	fi
+	return "$rc"
 }
 
 restart_cron_service() {
@@ -145,6 +157,14 @@ restart_cron_service() {
 log_service_error() {
 	local message="$1"
 
+	case "$message" in
+		service:*|apply:*|healthcheck:*|poll:*|runtime:*|diagnostics:*)
+			;;
+		*)
+			message="service: $message"
+			;;
+	esac
+
 	logger -t "$SERVICE_NAME" "$message"
 	echo "$SERVICE_NAME: $message" >&2
 }
@@ -152,109 +172,85 @@ log_service_error() {
 log_service_info() {
 	local message="$1"
 
-	logger -t "$SERVICE_NAME" "$message"
-}
-
-json_escape() {
-	printf '%s' "$1" | sed ':a;N;$!ba;s/\\/\\\\/g;s/"/\\"/g;s/\n/\\n/g;s/\r/\\r/g'
-}
-
-get_operation_status_value() {
-	local lock_pid_file="${LOCK_DIR}/pid"
-	local lock_action_file="${LOCK_DIR}/action"
-	local lock_pid lock_action
-
-	if [ ! -f "$lock_pid_file" ]; then
-		printf '%s\n' 'idle'
-		return 0
-	fi
-
-	lock_pid="$(cat "$lock_pid_file" 2>/dev/null)"
-
-	case "$lock_pid" in
-		''|*[!0-9]*)
-			printf '%s\n' 'idle'
-			return 0
+	case "$message" in
+		service:*|apply:*|healthcheck:*|poll:*|runtime:*|diagnostics:*)
+			;;
+		*)
+			message="service: $message"
 			;;
 	esac
 
-	if ! kill -0 "$lock_pid" 2>/dev/null; then
-		printf '%s\n' 'idle'
-		return 0
-	fi
-
-	lock_action="$(cat "$lock_action_file" 2>/dev/null)"
-
-	if [ -n "$lock_action" ]; then
-		printf 'busy:%s\n' "$lock_action"
-	else
-		printf '%s\n' 'busy'
-	fi
-}
-
-vpn_status_value() {
-	load_service_config
-
-	if [ "$cfg_enabled" -ne 1 ]; then
-		printf '%s\n' 'inactive'
-		return 0
-	fi
-
-	if [ "$(uci -q get "network.${cfg_vpn_if}.proto" 2>/dev/null)" != 'wireguard' ]; then
-		printf '%s\n' 'inactive'
-		return 0
-	fi
-
-	if [ "$(uci -q get "network.${cfg_vpn_if}.disabled" 2>/dev/null)" = '1' ]; then
-		printf '%s\n' 'inactive'
-		return 0
-	fi
-
-	if command -v ifstatus >/dev/null 2>&1; then
-		if ifstatus "$cfg_vpn_if" 2>/dev/null | jq -er '.up == true' >/dev/null 2>&1; then
-			printf '%s\n' 'active'
-			return 0
-		fi
-
-		printf '%s\n' 'inactive'
-		return 0
-	fi
-
-	if ip link show dev "$cfg_vpn_if" >/dev/null 2>&1; then
-		printf '%s\n' 'active'
-		return 0
-	fi
-
-	printf '%s\n' 'inactive'
-}
-
-peer_section_name() {
-	if uci -q get "network.${cfg_vpn_if}server.endpoint_host" >/dev/null 2>&1; then
-		printf '%s\n' "${cfg_vpn_if}server"
-		return 0
-	fi
-
-	uci show network 2>/dev/null | grep "^network\..*=wireguard_${cfg_vpn_if}$" | head -1 | cut -d. -f2 | cut -d= -f1
+	logger -t "$SERVICE_NAME" "$message"
 }
 
 validate_cron_schedule() {
 	local schedule="$1"
+	local validation_output=''
 
-	printf '%s' "$schedule" | awk '
-		BEGIN { valid = 1 }
-		NR > 1 { valid = 0 }
-		{
-			if ($0 !~ /^[0-9*\/,[:space:]-]+$/)
+	if validation_output="$(
+		printf '%s' "$schedule" | awk '
+		BEGIN {
+			valid = 1
+			error = ""
+			split("59 23 31 12 7", maxv, " ")
+			split("0 0 1 1 0", minv, " ")
+			split("minute hour day-of-month month day-of-week", field_name, " ")
+		}
+		function fail(msg) {
+			if (valid) {
 				valid = 0
-			if (NF != 5)
-				valid = 0
-			for (i = 1; i <= NF; i++) {
-				if ($i !~ /^[0-9*\/,-]+$/)
-					valid = 0
+				error = msg
 			}
 		}
-		END { exit(valid ? 0 : 1) }
+		NR > 1 { fail("schedule must be a single line"); exit }
+		{
+			if (NF != 5) { fail("expected exactly 5 cron fields"); exit }
+			for (i = 1; i <= NF; i++) {
+				f = $i
+				if (f == "*") continue
+				if (f ~ /^\*\/[0-9]+$/) {
+					step = substr(f, 3) + 0
+					if (step < 1 || step > maxv[i] + 0)
+						fail(sprintf("field %s has invalid step \"%s\"", field_name[i], f))
+					continue
+				}
+				n = split(f, parts, ",")
+				for (j = 1; j <= n; j++) {
+					p = parts[j]
+					if (p == "") {
+						fail(sprintf("field %s contains an empty token", field_name[i]))
+						continue
+					}
+					if (p ~ /^[0-9]+-[0-9]+$/) {
+						split(p, rng, "-")
+						if (rng[1]+0 < minv[i]+0 || rng[1]+0 > maxv[i]+0)
+							fail(sprintf("field %s has out-of-range token \"%s\"", field_name[i], p))
+						if (rng[2]+0 < minv[i]+0 || rng[2]+0 > maxv[i]+0)
+							fail(sprintf("field %s has out-of-range token \"%s\"", field_name[i], p))
+						if (rng[1]+0 > rng[2]+0)
+							fail(sprintf("field %s has inverted range \"%s\"", field_name[i], p))
+					} else if (p ~ /^[0-9]+$/) {
+						if (p+0 < minv[i]+0 || p+0 > maxv[i]+0)
+							fail(sprintf("field %s has out-of-range token \"%s\"", field_name[i], p))
+					} else {
+						fail(sprintf("field %s has invalid token \"%s\"", field_name[i], p))
+					}
+				}
+			}
+		}
+		END {
+			if (!valid)
+				printf "%s", error
+			exit(valid ? 0 : 1)
+		}
 	'
+	)"; then
+		CRON_VALIDATION_ERROR=''
+		return 0
+	fi
+
+	CRON_VALIDATION_ERROR="$validation_output"
+	return 1
 }
 
 install_cron_hook() {
@@ -264,7 +260,7 @@ install_cron_hook() {
 	if [ "$cfg_enabled" -eq 1 ] && [ -n "$cfg_check_cron_schedule" ]; then
 		if ! validate_cron_schedule "$cfg_check_cron_schedule"; then
 			rm -f "$CRON_PATH"
-			log_service_error "invalid cron schedule '$cfg_check_cron_schedule'; refusing to write $CRON_PATH"
+			log_service_error "invalid cron schedule '$cfg_check_cron_schedule' (${CRON_VALIDATION_ERROR:-unknown error}); refusing to write $CRON_PATH"
 			return 1
 		fi
 
@@ -310,6 +306,8 @@ EOF
 }
 
 install_hooks() {
+	load_service_config || return 1
+	log_service_info "install_hooks requested with $(nordvpn_easy_service_debug_summary 'cfg_')"
 	log_service_info 'installing runtime hooks'
 	install_cron_hook || return 1
 	install_hotplug_hook || return 1
@@ -325,7 +323,7 @@ remove_hooks() {
 
 disable_vpn_runtime() {
 	load_service_config
-	log_service_info "disabling VPN runtime for interface $cfg_vpn_if"
+	log_service_info "enabled flag is $(nordvpn_easy_enabled_flag_label "${cfg_enabled:-0}"); disabling VPN runtime with $(nordvpn_easy_service_debug_summary 'cfg_')"
 	remove_hooks
 
 	if [ "$(uci -q get "network.${cfg_vpn_if}.proto" 2>/dev/null)" != 'wireguard' ]; then
@@ -353,6 +351,8 @@ disable_vpn_runtime() {
 }
 
 start() {
+	local previous_failure_log_mode="${RUN_CORE_ACTION_FAILURE_LOG_MODE-}"
+
 	load_service_config
 	log_service_info 'service start requested'
 
@@ -364,9 +364,11 @@ start() {
 
 	install_hooks || return 1
 
+	RUN_CORE_ACTION_FAILURE_LOG_MODE='info'
 	if ! run_core_action check; then
-		echo "Initial check failed. Hooks are installed; future cron/hotplug runs will retry."
+		log_service_info 'service: initial check failed; hooks are installed and future cron/hotplug runs will retry'
 	fi
+	RUN_CORE_ACTION_FAILURE_LOG_MODE="$previous_failure_log_mode"
 }
 
 stop() {
@@ -386,7 +388,8 @@ reload() {
 }
 
 setup() {
-	log_service_info 'manual setup requested'
+	load_service_config || return 1
+	log_service_info "setup requested; enabled flag is $(nordvpn_easy_enabled_flag_label "${cfg_enabled:-0}"); $(nordvpn_easy_service_debug_summary 'cfg_')"
 	run_core_action setup
 }
 
@@ -419,126 +422,32 @@ server_catalog() {
 }
 
 public_ip() {
-	run_core_action public_ip
+	run_core_action public_ip "$@"
 }
 
 public_country() {
-	run_core_action public_country
+	run_core_action public_country "$@"
 }
 
 operation_status() {
-	get_operation_status_value
+	run_core_action operation_status
 }
 
 vpn_status() {
-	vpn_status_value
+	run_core_action vpn_status
 }
 
 status_json() {
-	local peer_section
-	local wg_dump
-	local vpn_state
-	local operation
-	local endpoint='N/A'
-	local latest_handshake='Never'
-	local latest_handshake_epoch='0'
-	local transfer_rx='0 B'
-	local transfer_rx_bytes='0'
-	local transfer_tx='0 B'
-	local transfer_tx_bytes='0'
-	local connected='false'
-	local current_hostname=''
-	local current_station=''
-	local current_city=''
-	local current_country=''
-	local current_load=''
-	local preferred_hostname=''
-	local preferred_station=''
-
-	load_service_config
-	load_runtime_library || return 1
-	peer_section="$(peer_section_name)"
-	vpn_state="$(vpn_status_value)"
-	operation="$(get_operation_status_value)"
-
-	if [ -n "$peer_section" ]; then
-		current_hostname="$(uci -q get "network.${peer_section}.nordvpn_hostname" 2>/dev/null)"
-		current_station="$(uci -q get "network.${peer_section}.nordvpn_station" 2>/dev/null)"
-		current_city="$(uci -q get "network.${peer_section}.nordvpn_city" 2>/dev/null)"
-		current_country="$(uci -q get "network.${peer_section}.nordvpn_country_code" 2>/dev/null)"
-		current_load="$(uci -q get "network.${peer_section}.nordvpn_load" 2>/dev/null)"
-
-		[ -n "$current_hostname" ] || current_hostname="$(uci -q get "network.${peer_section}.description" 2>/dev/null)"
-		[ -n "$current_station" ] || current_station="$(uci -q get "network.${peer_section}.endpoint_host" 2>/dev/null)"
-	fi
-
-	preferred_hostname="$cfg_preferred_server_hostname"
-	preferred_station="$cfg_preferred_server_station"
-
-	wg_dump="$(wg show "$cfg_vpn_if" dump 2>/dev/null)"
-
-	if [ -n "$wg_dump" ]; then
-		IFS="$(printf '\t')" read -r endpoint latest_handshake_epoch transfer_rx_bytes transfer_tx_bytes <<EOF
-$(nordvpn_easy_parse_wg_dump_peer "$wg_dump")
-EOF
-
-		latest_handshake="$(nordvpn_easy_humanize_handshake_age "$latest_handshake_epoch")"
-		transfer_rx="$(nordvpn_easy_format_human_bytes "$transfer_rx_bytes")"
-		transfer_tx="$(nordvpn_easy_format_human_bytes "$transfer_tx_bytes")"
-
-		if nordvpn_easy_handshake_epoch_indicates_connection "$latest_handshake_epoch"; then
-			connected='true'
-		fi
-	fi
-
-	cat <<EOF
-{
-  "enabled": $([ "$cfg_enabled" -eq 1 ] && printf '%s' 'true' || printf '%s' 'false'),
-  "server_selection_mode": "$(json_escape "$cfg_server_selection_mode")",
-  "selected_country": "$(json_escape "$cfg_vpn_country")",
-  "interface": "$(json_escape "$cfg_vpn_if")",
-  "vpn_status": "$(json_escape "$vpn_state")",
-  "operation_status": "$(json_escape "$operation")",
-  "connected": $connected,
-  "endpoint": "$(json_escape "$endpoint")",
-  "latest_handshake": "$(json_escape "$latest_handshake")",
-  "latest_handshake_epoch": $latest_handshake_epoch,
-  "transfer_rx": "$(json_escape "$transfer_rx")",
-  "transfer_rx_bytes": $transfer_rx_bytes,
-  "transfer_tx": "$(json_escape "$transfer_tx")",
-  "transfer_tx_bytes": $transfer_tx_bytes,
-  "current_server_hostname": "$(json_escape "$current_hostname")",
-  "current_server_station": "$(json_escape "$current_station")",
-  "current_server_city": "$(json_escape "$current_city")",
-  "current_server_country": "$(json_escape "$current_country")",
-  "current_server_load": "$(json_escape "$current_load")",
-  "preferred_server_hostname": "$(json_escape "$preferred_hostname")",
-  "preferred_server_station": "$(json_escape "$preferred_station")"
-}
-EOF
+	run_core_action status_json
 }
 
 diagnostics_log() {
-	local tmp_log
-
 	log_service_info 'diagnostics log export requested'
-	command -v logread >/dev/null 2>&1 || {
-		log_service_error "logread command not found"
-		return 1
-	}
-
-	tmp_log="/tmp/${SERVICE_NAME}.diagnostics.$$"
-
-	logread -e "$SERVICE_NAME" > "$tmp_log" || {
-		rm -f "$tmp_log"
-		return 1
-	}
-
-	tail -n 500 "$tmp_log"
-	rm -f "$tmp_log"
+	run_core_action diagnostics_log
 }
 
 disable_runtime() {
-	log_service_info 'manual disable_runtime requested'
+	load_service_config || return 1
+	log_service_info "disable_runtime requested; enabled flag is $(nordvpn_easy_enabled_flag_label "${cfg_enabled:-0}"); $(nordvpn_easy_service_debug_summary 'cfg_')"
 	disable_vpn_runtime
 }

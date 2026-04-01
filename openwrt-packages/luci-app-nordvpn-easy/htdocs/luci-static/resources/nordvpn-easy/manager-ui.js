@@ -158,8 +158,10 @@ function setVpnStatusIndicator(state, label) {
 
 	if (state === 'active')
 		color = '#2ea043';
-	else if (state === 'activating')
+	else if (state === 'activating' || state === 'starting' || state === 'stopping')
 		color = '#d29922';
+	else if (state === 'inactive')
+		color = '#8c959f';
 
 	setStatusIndicator(ids.VPN_STATUS_ID, color, label);
 }
@@ -191,8 +193,20 @@ function replaceStatusText(elementId, value) {
 		element.textContent = value;
 }
 
-function currentServerSummaryFromStatus(status) {
-	if (!status || !status.current_server_station)
+function isDisableRequested(state) {
+	const enabledCheckbox = getEnabledCheckboxElement();
+
+	return !!(state && state.pendingOperationLabel && enabledCheckbox && !enabledCheckbox.checked);
+}
+
+function currentServerSummaryFromStatus(status, state) {
+	if (!status)
+		return _('Not configured');
+
+	if (!status.desired_enabled || status.runtime_disabled || status.interface_disabled || isDisableRequested(state))
+		return _('Disabled');
+
+	if (!status.runtime_configured || !status.current_server_station)
 		return _('Not configured');
 
 	return managerFormat.formatServerSummary({
@@ -226,18 +240,19 @@ function updateCountryMatchStatus(state) {
 	const expectedCountry = managerData.normalizeCountryCode(state.appliedCountryCode);
 	const actualCountry = managerData.normalizeCountryCode(state.currentPublicCountry);
 
+	if (!state.appliedEnabled || state.currentLocalStatus.runtime_disabled || state.currentLocalStatus.interface_disabled || isDisableRequested(state))
+		return setCountryMatchIndicator('inactive', _('Inactive'));
+
 	if (state.currentOperationStatus.indexOf('busy:') === 0) {
 		busyAction = state.currentOperationStatus.substring(5);
 
-		if (busyAction !== 'refresh_countries' && busyAction !== 'server_catalog')
+		if (busyAction !== 'refresh_countries' && busyAction !== 'server_catalog' && !actualCountry)
 			return setCountryMatchIndicator('checking', _('Checking'));
 	}
 	else if (state.currentOperationStatus === 'busy') {
-		return setCountryMatchIndicator('checking', _('Checking'));
+		if (!actualCountry)
+			return setCountryMatchIndicator('checking', _('Checking'));
 	}
-
-	if (!state.appliedEnabled)
-		return setCountryMatchIndicator('inactive', _('Inactive'));
 
 	if (!expectedCountry)
 		return setCountryMatchIndicator('automatic', _('Automatic'));
@@ -291,6 +306,9 @@ function updateServerCatalogStatus(state) {
 	if (!country) {
 		text = _('Select a country to load the manual server catalog.');
 	}
+	else if (mode !== 'manual' && !state.currentServerCatalog.servers.length) {
+		text = _('Catalog loads on demand for manual mode or explicit refresh.');
+	}
 	else if (!state.currentServerCatalog.servers.length) {
 		text = _('No server catalog loaded for %s yet.').format(country);
 	}
@@ -325,7 +343,7 @@ function updateServerCatalogStatus(state) {
 function updateServerSelectionState(state) {
 	const mode = getSelectedMode();
 	const country = getSelectedCountry();
-	const busy = state.currentOperationStatus.indexOf('busy') === 0;
+	const busy = state.currentOperationStatus.indexOf('busy') === 0 || state.pendingOperationLabel !== '';
 	const selectEl = getSelectElement(ids.SERVER_FIELD_ID);
 	const refreshButton = getInputElement(ids.SERVER_REFRESH_BUTTON_ID, 'button');
 
@@ -429,6 +447,7 @@ return baseclass.extend({
 	setVpnStatusIndicator: setVpnStatusIndicator,
 	setCountryMatchIndicator: setCountryMatchIndicator,
 	replaceStatusText: replaceStatusText,
+	isDisableRequested: isDisableRequested,
 	currentServerSummaryFromStatus: currentServerSummaryFromStatus,
 	preferredServerSummaryFromStatus: preferredServerSummaryFromStatus,
 	updateCountryMatchStatus: updateCountryMatchStatus,

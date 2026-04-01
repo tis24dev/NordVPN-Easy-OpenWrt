@@ -1,18 +1,20 @@
 'use strict';
 'require form';
 'require fs';
+'require nordvpn-easy/manager-actions as managerActions';
 'require nordvpn-easy/manager-data as managerData';
 'require nordvpn-easy/manager-format as managerFormat';
-'require nordvpn-easy/manager-state as managerState';
+'require nordvpn-easy/manager-polling as managerPolling';
+'require nordvpn-easy/manager-store as managerStore';
 'require nordvpn-easy/manager-ui as managerUI';
 'require nordvpn-easy/service as service';
-'require poll';
 'require ui';
 'require uci';
 'require view';
 
 const COUNTRIES_CACHE_PATH = '/tmp/nordvpn-easy-countries.json';
-const state = managerState.createState();
+const TOKEN_MASK_DISPLAY = '********';
+const state = managerStore.createState();
 
 const CountrySelectValue = form.ListValue.extend({
 	refreshCountries: function(buttonEl, section_id) {
@@ -73,6 +75,86 @@ const CountrySelectValue = form.ListValue.extend({
 	}
 });
 
+const TokenValue = form.Value.extend({
+	storedValue: function(section_id) {
+		return uci.get(this.uciconfig || this.map.config, section_id, this.option) || '';
+	},
+
+	cfgvalue: function(section_id) {
+		return '';
+	},
+
+	formvalue: function(section_id) {
+		const inputEl = managerUI.getInputElement(this.cbid(section_id), 'input');
+		const enteredValue = String(this.super('formvalue', arguments) || '').trim();
+		const isMasked = !!(inputEl && inputEl.getAttribute('data-token-masked') === '1');
+
+		if (isMasked)
+			return this.storedValue(section_id);
+
+		return enteredValue || this.storedValue(section_id);
+	},
+
+	validate: function(section_id, value) {
+		const existingValue = this.storedValue(section_id);
+		const normalizedValue = String(value != null ? value : '').trim();
+
+		if (!normalizedValue && !existingValue)
+			return _('Required. NordVPN access token.');
+
+		return true;
+	},
+
+	renderWidget: function(section_id, option_index, cfgvalue) {
+		const storedValue = this.storedValue(section_id);
+		const widget = this.super('renderWidget', [ section_id, option_index, storedValue ? TOKEN_MASK_DISPLAY : cfgvalue ]);
+		const inputEl = widget && widget.querySelector ? widget.querySelector('input') : null;
+		const revealButtonEl = widget && widget.querySelector ? widget.querySelector('button') : null;
+
+		if (!storedValue || !inputEl)
+			return widget;
+
+		const setMaskedState = function(masked) {
+			if (masked) {
+				inputEl.value = TOKEN_MASK_DISPLAY;
+				inputEl.setAttribute('data-token-masked', '1');
+			}
+			else {
+				inputEl.removeAttribute('data-token-masked');
+			}
+		};
+
+		setMaskedState(true);
+		inputEl.addEventListener('focus', function() {
+			if (inputEl.getAttribute('data-token-masked') === '1') {
+				inputEl.value = '';
+				setMaskedState(false);
+			}
+		});
+		inputEl.addEventListener('blur', function() {
+			if (!String(inputEl.value || '').trim())
+				setMaskedState(true);
+		});
+		if (revealButtonEl) {
+			revealButtonEl.addEventListener('click', function() {
+				if (inputEl.getAttribute('data-token-masked') === '1') {
+					inputEl.value = storedValue;
+					setMaskedState(false);
+				}
+			});
+		}
+
+		return widget;
+	},
+
+	write: function(section_id, value) {
+		const existingValue = this.storedValue(section_id);
+		const normalizedValue = String(value != null ? value : '').trim();
+
+		return uci.set(this.uciconfig || this.map.config, section_id, this.option, normalizedValue || existingValue || '');
+	}
+});
+
 return view.extend({
 	load: function() {
 		const uciLoad = uci.load('nordvpn_easy');
@@ -86,8 +168,9 @@ return view.extend({
 			]);
 		}).then(function(results) {
 			const configuredCountry = managerData.normalizeCountryCode(uci.get('nordvpn_easy', 'main', 'vpn_country') || '');
+			const currentMode = String(uci.get('nordvpn_easy', 'main', 'server_selection_mode') || 'auto');
 			const statusPromise = L.resolveDefault(service.execService('status_json'), null);
-			const catalogPromise = configuredCountry
+			const catalogPromise = managerStore.shouldLoadCatalog(currentMode, configuredCountry)
 				? L.resolveDefault(service.execService('server_catalog', [ configuredCountry ]), null)
 				: Promise.resolve(null);
 
@@ -96,7 +179,7 @@ return view.extend({
 	},
 
 	handleRefreshServerCatalog: function(ev) {
-		return managerState.handleRefreshServerCatalog(state, ev);
+		return managerActions.handleRefreshServerCatalog(state, ev);
 	},
 
 	render: function(data) {
@@ -140,10 +223,11 @@ return view.extend({
 		o.default = '0';
 		o.rmempty = false;
 
-		o = s.option(form.Value, 'nordvpn_token', _('NordVPN Token'));
+		o = s.option(TokenValue, 'nordvpn_token', _('NordVPN Token'));
 		o.password = true;
 		o.rmempty = false;
-		o.description = _('Required. NordVPN access token.');
+		o.optional = true;
+		o.description = _('Required. NordVPN access token. If this password field submits empty, the saved token is preserved.');
 
 		o = s.option(CountrySelectValue, 'vpn_country', _('Server Country'));
 		o.value('', _('Automatic'));
@@ -199,40 +283,30 @@ return view.extend({
 			const modeSelect = managerUI.getSelectElement(managerUI.ids.MODE_FIELD_ID);
 
 			managerUI.renderServerChoices(managerUI.getSelectElement(managerUI.ids.SERVER_FIELD_ID), state.currentServerCatalog, currentPreferredStation);
-			managerState.updateLocalStatus(state);
-			managerState.updatePublicIp();
-			managerState.updatePublicCountry(state);
+			managerActions.updateLocalStatus(state, { force: true });
+			managerActions.updatePublicIp(state, { force: true });
+			managerActions.updatePublicCountry(state, { force: true });
 			managerUI.updateServerSelectionState(state);
 
 			if (countrySelect) {
 				countrySelect.addEventListener('change', function() {
-					managerState.onCountryChanged(state);
+					managerActions.onCountryChanged(state);
 				});
 			}
 
 			if (modeSelect) {
 				modeSelect.addEventListener('change', function() {
-					managerState.onModeChanged(state);
+					managerActions.onModeChanged(state);
 				});
 			}
 
-			poll.add(function() {
-				return managerState.updateLocalStatus(state);
-			}, 2);
-
-			poll.add(function() {
-				return managerState.updatePublicIp();
-			}, 10);
-
-			poll.add(function() {
-				return managerState.updatePublicCountry(state);
-			}, 30);
+			managerPolling.start(state);
 
 			return node;
 		}.bind(this));
 	},
 
 	handleSaveApply: function(ev, mode) {
-		return managerState.handleSaveApply(this, state, ev, mode);
+		return managerActions.handleSaveApply(this, state, ev, mode);
 	}
 });

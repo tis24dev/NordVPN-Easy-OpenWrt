@@ -1,6 +1,6 @@
 include $(TOPDIR)/rules.mk
 
-NORDVPN_EASY_DEFAULT_VERSION:=0.1.0
+NORDVPN_EASY_DEFAULT_VERSION:=0.1.3
 NORDVPN_EASY_DEFAULT_RELEASE:=1
 NORDVPN_EASY_PACKAGE_MAINTAINER?=tis24dev
 NORDVPN_EASY_PACKAGE_URL?=https://github.com/tis24dev/NordVPN-Easy-OpenWrt
@@ -8,7 +8,7 @@ NORDVPN_EASY_PACKAGE_URL?=https://github.com/tis24dev/NordVPN-Easy-OpenWrt
 PKG_NAME:=luci-app-nordvpn-easy
 PKG_VERSION:=$(if $(NORDVPN_EASY_VERSION),$(NORDVPN_EASY_VERSION),$(NORDVPN_EASY_DEFAULT_VERSION))
 PKG_RELEASE:=$(if $(NORDVPN_EASY_RELEASE),$(NORDVPN_EASY_RELEASE),$(NORDVPN_EASY_DEFAULT_RELEASE))
-PKG_LICENSE:=Unlicense
+PKG_LICENSE:=GPL-3.0-only
 PKG_MAINTAINER:=$(NORDVPN_EASY_PACKAGE_MAINTAINER)
 LUCI_TITLE:=LuCI support for NordVPN Easy
 LUCI_DESCRIPTION:=User-facing LuCI integration for NordVPN Easy on OpenWrt, bundled with the backend for manual upload installs
@@ -49,9 +49,9 @@ fi
 		SERVICE_STATUS=$$?
 		if [ "$$SERVICE_STATUS" -ne 0 ]; then
 			printf "%s\n" "nordvpn-easy: service start failed with exit code $$SERVICE_STATUS" >&2
+		fi
 		[ -n "$$SERVICE_OUTPUT" ] && printf "%s\n" "$$SERVICE_OUTPUT" >&2
 	fi
-fi
 
 exit 0
 endef
