@@ -140,46 +140,6 @@ function notifyDebugBlock(title, lines) {
 	}))), 'info');
 }
 
-function formatPlannerLogValue(value, fallback) {
-	const normalized = String(value != null ? value : '').trim();
-
-	return normalized || fallback || 'automatic';
-}
-
-function buildPlannerRequestLog(previousEnabled, currentEnabled, previousCountry, currentCountry, previousMode, currentMode, previousPreferredStation, preferredStation, runtimeStatus) {
-	const runtime = runtimeStatus || {};
-
-	return [
-		'luci: save_apply requested',
-		'enabled=' + (previousEnabled ? '1' : '0') + '->' + (currentEnabled ? '1' : '0'),
-		'country=' + formatPlannerLogValue(previousCountry) + '->' + formatPlannerLogValue(currentCountry),
-		'mode=' + formatPlannerLogValue(previousMode, 'auto') + '->' + formatPlannerLogValue(currentMode, 'auto'),
-		'preferred=' + formatPlannerLogValue(previousPreferredStation) + '->' + formatPlannerLogValue(preferredStation),
-		'runtime_disabled=' + (runtime.runtime_disabled ? '1' : '0'),
-		'interface_disabled=' + (runtime.interface_disabled ? '1' : '0'),
-		'runtime_configured=' + (runtime.runtime_configured === false ? '0' : '1'),
-		'operation_status=' + formatPlannerLogValue(runtime.operation_status, 'unknown')
-	].join(' | ');
-}
-
-function buildPlannerDecisionLog(enabled, country, mode, preferredStation, runtimePlan, runtimeStatus) {
-	const runtime = runtimeStatus || {};
-	const actions = (runtimePlan && runtimePlan.actions && runtimePlan.actions.length)
-		? runtimePlan.actions.join(',')
-		: 'none';
-
-	return [
-		'luci: runtime plan derived',
-		'enabled=' + (enabled ? '1' : '0'),
-		'country=' + formatPlannerLogValue(country),
-		'mode=' + formatPlannerLogValue(mode, 'auto'),
-		'preferred=' + formatPlannerLogValue(preferredStation),
-		'actions=' + actions,
-		'server_selection_changed=' + ((runtimePlan && runtimePlan.serverSelectionChanged) ? '1' : '0'),
-		'reconciliation_required=' + (runtimeNeedsReconciliation(runtime) ? '1' : '0')
-	].join(' | ');
-}
-
 function loadServerCatalog(state, country, forceRefresh) {
 	const requestId = ++state.latestServerCatalogRequestId;
 	const requestedCountry = managerData.normalizeCountryCode(country || '');
@@ -593,18 +553,6 @@ function handleSaveApply(viewState, state, ev, mode) {
 		if (!confirmed)
 			return;
 
-		service.logEvent(buildPlannerRequestLog(
-			previousEnabled,
-			currentEnabled,
-			previousCountry,
-			currentCountry,
-			previousMode,
-			currentMode,
-			previousPreferredStation,
-			preferredStation,
-			state.currentLocalStatus
-		));
-
 		notifyDebugBlock(_('Save & Apply requested'), debugLines.concat([
 			_('UCI changes are being committed before runtime actions start.')
 		]));
@@ -679,15 +627,6 @@ function handleSaveApply(viewState, state, ev, mode) {
 						);
 						const actions = runtimePlan.actions;
 						const successMessage = runtimePlan.successMessage;
-
-						service.logEvent(buildPlannerDecisionLog(
-							enabled,
-							country,
-							modeValue,
-							preferred,
-							runtimePlan,
-							state.currentLocalStatus
-						));
 
 						viewState.initialEnabled = enabled;
 						viewState.initialCountry = country;

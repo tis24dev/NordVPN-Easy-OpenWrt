@@ -140,13 +140,14 @@ nordvpn_easy_debug_value_or_default() {
 
 nordvpn_easy_service_debug_summary() {
 	local prefix="${1:-cfg_}"
-	local enabled mode country preferred_station preferred_hostname wan_if vpn_if token
+	local enabled mode country preferred_station preferred_hostname fallback_station wan_if vpn_if token
 
 	eval "enabled=\${${prefix}enabled-0}"
 	eval "mode=\${${prefix}server_selection_mode-}"
 	eval "country=\${${prefix}vpn_country-}"
 	eval "preferred_station=\${${prefix}preferred_server_station-}"
 	eval "preferred_hostname=\${${prefix}preferred_server_hostname-}"
+	eval "fallback_station=\${${prefix}fallback_server_station-}"
 	eval "wan_if=\${${prefix}wan_if-}"
 	eval "vpn_if=\${${prefix}vpn_if-}"
 	eval "token=\${${prefix}nordvpn_token-}"
@@ -156,6 +157,7 @@ nordvpn_easy_service_debug_summary() {
 	printf '%s' "country=$(nordvpn_easy_debug_value_or_default "${country:-}" 'automatic'), "
 	printf '%s' "preferred_station=$(nordvpn_easy_debug_value_or_default "${preferred_station:-}" 'automatic'), "
 	printf '%s' "preferred_hostname=$(nordvpn_easy_debug_value_or_default "${preferred_hostname:-}" 'automatic'), "
+	printf '%s' "fallback_station=$(nordvpn_easy_debug_value_or_default "${fallback_station:-}" 'disabled'), "
 	printf '%s' "wan_if=$(nordvpn_easy_debug_value_or_default "${wan_if:-}" 'unset'), "
 	printf '%s' "vpn_if=$(nordvpn_easy_debug_value_or_default "${vpn_if:-}" 'unset'), "
 	printf '%s' "token=$([ -n "${token:-}" ] && printf '%s' 'present' || printf '%s' 'missing')"
@@ -167,6 +169,7 @@ nordvpn_easy_runtime_env_debug_summary() {
 	printf '%s' "country=$(nordvpn_easy_debug_value_or_default "${VPN_COUNTRY:-}" 'automatic'), "
 	printf '%s' "preferred_station=$(nordvpn_easy_debug_value_or_default "${PREFERRED_SERVER_STATION:-}" 'automatic'), "
 	printf '%s' "preferred_hostname=$(nordvpn_easy_debug_value_or_default "${PREFERRED_SERVER_HOSTNAME:-}" 'automatic'), "
+	printf '%s' "fallback_station=$(nordvpn_easy_debug_value_or_default "${FALLBACK_SERVER_STATION:-}" 'disabled'), "
 	printf '%s' "wan_if=$(nordvpn_easy_debug_value_or_default "${WAN_IF:-}" 'unset'), "
 	printf '%s' "vpn_if=$(nordvpn_easy_debug_value_or_default "${VPN_IF:-}" 'unset'), "
 	printf '%s' "vpn_addr=$(nordvpn_easy_debug_value_or_default "${VPN_ADDR:-}" 'unset'), "

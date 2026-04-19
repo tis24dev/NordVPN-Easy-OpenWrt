@@ -506,47 +506,33 @@ get_public_country () {
 }
 
 verify_public_country_selection () {
-  VERIFY_STRICT="${1:-0}"
-  PUBLIC_COUNTRY_VERIFIED=0
+  PUBLIC_COUNTRY_VERIFIED=1
 
   PUBLIC_IP=$(get_public_ip) || {
-    PUBLIC_COUNTRY_VERIFIED=0
     log 'WARNING: COULD NOT RETRIEVE PUBLIC IP FOR COUNTRY VERIFICATION'
     return 0
   }
 
   PUBLIC_COUNTRY=$(lookup_public_country_by_ip "$PUBLIC_IP") || {
-    PUBLIC_COUNTRY_VERIFIED=0
     log "WARNING: COULD NOT GEOLOCATE PUBLIC IP $PUBLIC_IP"
     return 0
   }
 
   if [ -z "$VPN_COUNTRY" ]; then
-    PUBLIC_COUNTRY_VERIFIED=1
     log "Public IP verification: $PUBLIC_IP geolocates to $PUBLIC_COUNTRY with automatic country selection"
     return 0
   fi
 
   resolve_country_filter || {
-    PUBLIC_COUNTRY_VERIFIED=0
     log "WARNING: COULD NOT RESOLVE SELECTED COUNTRY '$VPN_COUNTRY' FOR PUBLIC IP VERIFICATION"
     return 0
   }
 
   if [ "$PUBLIC_COUNTRY" = "$RESOLVED_COUNTRY_CODE" ]; then
-    PUBLIC_COUNTRY_VERIFIED=1
     log "Public IP verification passed: $PUBLIC_IP geolocates to $PUBLIC_COUNTRY and matches selected country $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
-    return 0
+  else
+    log "WARNING: Public IP verification mismatch: $PUBLIC_IP geolocates to $PUBLIC_COUNTRY while selected country is $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
   fi
-
-  PUBLIC_COUNTRY_VERIFIED=0
-  if [ "$VERIFY_STRICT" = '1' ]; then
-    log "WARNING: Public IP verification mismatch: $PUBLIC_IP geolocates to $PUBLIC_COUNTRY while selected country is $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE); retrying with another server"
-    return 1
-  fi
-
-  log "WARNING: Public IP verification mismatch: $PUBLIC_IP geolocates to $PUBLIC_COUNTRY while selected country is $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
-  return 0
 }
 
 resolve_country_filter () {

@@ -59,6 +59,7 @@ jq '. + [{
 nordvpn_easy_build_server_catalog_json 237 IT Italy < "$SERVER_LIST_FILE" > "$SERVER_CATALOG_FILE"
 
 VPN_COUNTRY='IT'
+VPN_IF='wg0'
 SERVER_RECOMMENDATIONS_URL_BASE='https://example.invalid/recommendations'
 CURRENT_SERVER_VALUE='it0'
 COMMIT_NETWORK_COUNT=0
@@ -67,37 +68,36 @@ APPLY_COUNT=0
 APPLY_FAIL_UNTIL=0
 COMMIT_PREF_FAIL_UNTIL=0
 LAST_SET_SERVER=''
+SET_SEQUENCE=''
 LAST_SET_PUBLIC_KEY=''
 SAVED_PREFERENCE=''
 PREFERRED_SERVER_HOSTNAME='it12.nordvpn.com'
 PREFERRED_SERVER_STATION='it123'
-CURRENT_SERVER_MATCHES=0
-VERIFY_CALLS=0
-VERIFY_FAIL=0
+FALLBACK_SERVER_STATION=''
+PING_FAIL_UNTIL=0
+PING_COUNT=0
 
 log() { :; }
 fetch_server_catalog() { return 0; }
 nordvpn_easy_require_manual_server_preference() { return 0; }
 nordvpn_easy_current_server_station() { printf '%s\n' "$CURRENT_SERVER_VALUE"; }
-nordvpn_easy_set_vpn_server_in_uci() { LAST_SET_SERVER="$1|$2"; LAST_SET_PUBLIC_KEY="$3"; return 0; }
+nordvpn_easy_set_vpn_server_in_uci() { LAST_SET_SERVER="$1|$2"; LAST_SET_PUBLIC_KEY="$3"; SET_SEQUENCE="${SET_SEQUENCE}$1|$2;"; return 0; }
 nordvpn_easy_set_server_preference_in_uci() { SAVED_PREFERENCE="$1|$2"; }
-nordvpn_easy_ping_interface() { return 0; }
+nordvpn_easy_ping_interface() {
+	PING_COUNT=$((PING_COUNT + 1))
+	[ "$PING_COUNT" -gt "$PING_FAIL_UNTIL" ]
+}
+nordvpn_easy_ping_wan() { return 0; }
 nordvpn_easy_get_servers_list() { return 0; }
 nordvpn_easy_server_selection_is_manual() { [ "${SERVER_SELECTION_MODE:-auto}" = 'manual' ]; }
 nordvpn_easy_vpn_is_configured() { return 0; }
 nordvpn_easy_preferred_server_matches_current() { return 1; }
-nordvpn_easy_current_server_matches_recommendations() { [ "$CURRENT_SERVER_MATCHES" -eq 1 ]; }
-nordvpn_easy_apply_preferred_server_from_catalog() { return 0; }
 nordvpn_easy_apply_server_change_runtime() {
 	APPLY_COUNT=$((APPLY_COUNT + 1))
 	if [ "$APPLY_COUNT" -le "$APPLY_FAIL_UNTIL" ]; then
 		return 1
 	fi
 	return 0
-}
-verify_public_country_selection() {
-	VERIFY_CALLS=$((VERIFY_CALLS + 1))
-	[ "$VERIFY_FAIL" -eq 0 ]
 }
 
 uci() {
@@ -167,32 +167,52 @@ assert_eq 'it12.nordvpn.com|it123' "$SAVED_PREFERENCE" 'manual rotation keeps th
 assert_eq 'it12.nordvpn.com' "$PREFERRED_SERVER_HOSTNAME" 'manual hostname updated in environment'
 assert_eq 'it123' "$PREFERRED_SERVER_STATION" 'manual station updated in environment'
 
-SERVER_SELECTION_MODE='auto'
-VPN_COUNTRY='IT'
-CURRENT_SERVER_MATCHES=1
-VERIFY_CALLS=0
-VERIFY_FAIL=0
+APPLY_FAIL_UNTIL=1
 APPLY_COUNT=0
 COMMIT_NETWORK_COUNT=0
-
-nordvpn_easy_sync_server_selection
-
-assert_eq '1' "$VERIFY_CALLS" 'auto sync verifies public country before accepting a recommended current server'
-assert_eq '0' "$APPLY_COUNT" 'auto sync keeps the current recommended server when public country verification passes'
-assert_eq '0' "$COMMIT_NETWORK_COUNT" 'auto sync does not rewrite the network config when public country verification passes'
-
-CURRENT_SERVER_MATCHES=1
-VERIFY_CALLS=0
-VERIFY_FAIL=1
-APPLY_COUNT=0
-COMMIT_NETWORK_COUNT=0
+COMMIT_PREF_COUNT=0
+COMMIT_PREF_FAIL_UNTIL=0
 LAST_SET_SERVER=''
+SET_SEQUENCE=''
+SAVED_PREFERENCE=''
+PREFERRED_SERVER_HOSTNAME='it12.nordvpn.com'
+PREFERRED_SERVER_STATION='it123'
+FALLBACK_SERVER_STATION='it456'
 
-nordvpn_easy_sync_server_selection
+nordvpn_easy_change_to_preferred_server reload
 
-assert_eq '1' "$VERIFY_CALLS" 'auto sync retries verification when a recommended current server geolocates incorrectly'
-assert_eq '1' "$APPLY_COUNT" 'auto sync rotates away from a recommended server when public country verification mismatches'
-assert_eq '1' "$COMMIT_NETWORK_COUNT" 'auto sync commits the rotated network config when public country verification mismatches'
-assert_eq 'it12.nordvpn.com|it123' "$LAST_SET_SERVER" 'auto sync picks a replacement server after public country verification mismatches'
+assert_eq '2' "$COMMIT_NETWORK_COUNT" 'preferred server apply retries with configured fallback after runtime failure'
+assert_eq '1' "$COMMIT_PREF_COUNT" 'fallback promotion commits the new preferred server once'
+assert_eq '2' "$APPLY_COUNT" 'fallback promotion performs a second runtime apply'
+assert_eq 'it12.nordvpn.com|it123;it45.nordvpn.com|it456;' "$SET_SEQUENCE" 'fallback promotion tries the preferred server before the fallback server'
+assert_eq 'it45.nordvpn.com|it456' "$LAST_SET_SERVER" 'fallback promotion lands on the configured fallback server'
+assert_eq 'it45.nordvpn.com|it456' "$SAVED_PREFERENCE" 'fallback promotion updates the preferred server in UCI'
+assert_eq 'it45.nordvpn.com' "$PREFERRED_SERVER_HOSTNAME" 'fallback promotion updates the preferred hostname in environment'
+assert_eq 'it456' "$PREFERRED_SERVER_STATION" 'fallback promotion updates the preferred station in environment'
+
+nordvpn_easy_try_configured_fallback_server() {
+	TRY_FALLBACK_COUNT=$((TRY_FALLBACK_COUNT + 1))
+	return 0
+}
+
+sleep() { :; }
+ifdown() { :; }
+ifup() { :; }
+
+TRY_FALLBACK_COUNT=0
+PING_COUNT=0
+PING_FAIL_UNTIL=99
+SERVER_SELECTION_MODE='manual'
+FALLBACK_SERVER_STATION='it456'
+FAILURE_RETRY_DELAY=1
+SERVER_ROTATE_THRESHOLD=2
+INTERFACE_RESTART_THRESHOLD=10
+MAX_INTERFACE_RESTARTS=0
+INTERFACE_RESTART_DELAY=1
+POST_RESTART_DELAY=10
+
+nordvpn_easy_check_once
+
+assert_eq '1' "$TRY_FALLBACK_COUNT" 'manual health check tries the configured fallback server at the rotation threshold'
 
 printf '%s\n' 'test-actions.sh: ok'

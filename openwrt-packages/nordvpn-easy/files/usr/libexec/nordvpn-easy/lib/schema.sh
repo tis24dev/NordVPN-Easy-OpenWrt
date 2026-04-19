@@ -17,6 +17,7 @@ vpn_country
 server_selection_mode
 preferred_server_hostname
 preferred_server_station
+fallback_server_station
 server_cache_enabled
 server_cache_ttl
 vpn_port
@@ -48,6 +49,7 @@ vpn_country VPN_COUNTRY
 server_selection_mode SERVER_SELECTION_MODE
 preferred_server_hostname PREFERRED_SERVER_HOSTNAME
 preferred_server_station PREFERRED_SERVER_STATION
+fallback_server_station FALLBACK_SERVER_STATION
 server_cache_enabled SERVER_CACHE_ENABLED
 server_cache_ttl SERVER_CACHE_TTL
 vpn_port VPN_PORT
@@ -83,6 +85,7 @@ nordvpn_easy_default() {
 		server_selection_mode) printf '%s\n' 'auto' ;;
 		preferred_server_hostname) printf '%s\n' '' ;;
 		preferred_server_station) printf '%s\n' '' ;;
+		fallback_server_station) printf '%s\n' '' ;;
 		server_cache_enabled) printf '%s\n' '1' ;;
 		server_cache_ttl) printf '%s\n' '86400' ;;
 		vpn_port) printf '%s\n' '51820' ;;

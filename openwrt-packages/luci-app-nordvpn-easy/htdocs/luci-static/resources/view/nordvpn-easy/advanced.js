@@ -61,6 +61,15 @@ return view.extend({
 		o.placeholder = '103.86.96.96';
 		o.rmempty = true;
 
+		s = m.section(form.NamedSection, 'main', 'nordvpn_easy', _('Fallback Recovery'));
+		s.anonymous = true;
+		s.addremove = false;
+
+		o = s.option(form.Value, 'fallback_server_station', _('Fallback Server Station'));
+		o.placeholder = 'hk318';
+		o.rmempty = true;
+		o.description = _('Optional. If the selected server cannot be applied or repeated health checks cannot recover connectivity, this station is promoted as the new preferred server. The fallback station must belong to the currently selected country.');
+
 		s = m.section(form.NamedSection, 'main', 'nordvpn_easy', _('Health Checks & Recovery'));
 		s.anonymous = true;
 		s.addremove = false;

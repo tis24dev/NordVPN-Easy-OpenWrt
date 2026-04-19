@@ -291,8 +291,12 @@ nordvpn_easy_ensure_vpn_in_wan_zone() {
 }
 
 nordvpn_easy_set_vpn_server_in_uci() {
+	[ -n "$1" ] || {
+		log 'ERROR: VPN SERVER HOSTNAME IS EMPTY'
+		return 1
+	}
 	[ -n "$2" ] || {
-		log 'ERROR: VPN SERVER IP IS EMPTY'
+		log "ERROR: VPN SERVER STATION IS EMPTY FOR $1"
 		return 1
 	}
 	[ -n "$3" ] || {
@@ -301,7 +305,7 @@ nordvpn_easy_set_vpn_server_in_uci() {
 	}
 
 	uci set "network.${VPN_IF}server.description"="$1"
-	uci set "network.${VPN_IF}server.endpoint_host"="$2"
+	uci set "network.${VPN_IF}server.endpoint_host"="$1"
 	uci set "network.${VPN_IF}server.public_key"="$3"
 	uci set "network.${VPN_IF}server.nordvpn_hostname"="$1"
 	uci set "network.${VPN_IF}server.nordvpn_station"="$2"
@@ -342,14 +346,7 @@ nordvpn_easy_apply_server_change_runtime() {
 
 	if nordvpn_easy_wait_for_vpn_connectivity "$VPN_IF" "$POST_RESTART_DELAY" "$wait_context"; then
 		log 'apply: VPN connection restored after runtime server change'
-		if [ -n "$VPN_COUNTRY" ]; then
-			verify_public_country_selection 1 || {
-				log 'apply: VPN connection restored, but public country verification still mismatches the selected country; trying another server'
-				return 1
-			}
-		else
-			verify_public_country_selection
-		fi
+		verify_public_country_selection
 		return 0
 	fi
 

@@ -219,6 +219,10 @@ nordvpn_easy_set_server_preference_in_uci() {
 	uci set "nordvpn_easy.main.preferred_server_station"="$2"
 }
 
+nordvpn_easy_has_fallback_server_preference() {
+	[ -n "${FALLBACK_SERVER_STATION:-}" ]
+}
+
 nordvpn_easy_require_manual_server_preference() {
 	nordvpn_easy_server_selection_is_manual || return 0
 
