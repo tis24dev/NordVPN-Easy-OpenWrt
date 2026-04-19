@@ -107,6 +107,8 @@ wg() {
 	return 0
 }
 
+assert_eq 'wireguard' "$(uci get network.wg0.proto)" 'uci fixture exposes current vpn proto'
+
 STATUS_JSON="$(nordvpn_easy_emit_status_json)"
 
 assert_eq 'stale_recovered' "$(printf '%s' "$STATUS_JSON" | jq -r '.operation_lock_state')" 'status json exposes lock state'
@@ -150,6 +152,10 @@ uci_missing_station() {
 uci() {
 	uci_missing_station "$@"
 }
+
+MISSING_STATION_RC=0
+uci get network.wg0server.nordvpn_station >/dev/null 2>&1 || MISSING_STATION_RC=$?
+assert_eq '1' "$MISSING_STATION_RC" 'missing-station fixture omits station metadata'
 
 STATUS_JSON_MISSING_STATION="$(nordvpn_easy_emit_status_json)"
 
