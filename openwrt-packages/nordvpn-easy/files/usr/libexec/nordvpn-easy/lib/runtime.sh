@@ -336,14 +336,13 @@ nordvpn_easy_emit_status_json() {
 	fi
 
 	if [ -n "$peer_section" ]; then
-		current_hostname="$(uci -q get "network.${peer_section}.nordvpn_hostname" 2>/dev/null)"
-		current_station="$(uci -q get "network.${peer_section}.nordvpn_station" 2>/dev/null)"
-		current_city="$(uci -q get "network.${peer_section}.nordvpn_city" 2>/dev/null)"
-		current_country="$(uci -q get "network.${peer_section}.nordvpn_country_code" 2>/dev/null)"
-		current_load="$(uci -q get "network.${peer_section}.nordvpn_load" 2>/dev/null)"
+		current_hostname="$(uci -q get "network.${peer_section}.nordvpn_hostname" 2>/dev/null || true)"
+		current_station="$(uci -q get "network.${peer_section}.nordvpn_station" 2>/dev/null || true)"
+		current_city="$(uci -q get "network.${peer_section}.nordvpn_city" 2>/dev/null || true)"
+		current_country="$(uci -q get "network.${peer_section}.nordvpn_country_code" 2>/dev/null || true)"
+		current_load="$(uci -q get "network.${peer_section}.nordvpn_load" 2>/dev/null || true)"
 
-		[ -n "$current_hostname" ] || current_hostname="$(uci -q get "network.${peer_section}.description" 2>/dev/null)"
-		[ -n "$current_station" ] || current_station="$(uci -q get "network.${peer_section}.endpoint_host" 2>/dev/null)"
+		[ -n "$current_hostname" ] || current_hostname="$(uci -q get "network.${peer_section}.description" 2>/dev/null || true)"
 	fi
 
 	wg_dump="$(wg show "$VPN_IF" dump 2>/dev/null)"

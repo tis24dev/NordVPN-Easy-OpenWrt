@@ -116,4 +116,43 @@ assert_eq 'false' "$(printf '%s' "$STATUS_JSON" | jq -r '.runtime_disabled')" 's
 assert_eq 'active' "$(printf '%s' "$STATUS_JSON" | jq -r '.vpn_status')" 'status json falls back to ip link when ifstatus probe fails'
 assert_eq 'wg0server' "$(nordvpn_easy_peer_section_name 'wg0')" 'peer section lookup falls back to exact section match'
 
+uci_missing_station() {
+	case "$1" in
+		-q)
+			shift
+			uci_missing_station "$@"
+			return $?
+			;;
+		get)
+			case "$2" in
+				network.wg0.disabled) printf '%s\n' '0' ;;
+				network.wg0.proto) printf '%s\n' 'wireguard' ;;
+				network.wg0server.endpoint_host) printf '%s\n' 'es12.nordvpn.com' ;;
+				network.wg0server.nordvpn_hostname) printf '%s\n' 'es12.nordvpn.com' ;;
+				network.wg0server.nordvpn_station) return 1 ;;
+				network.wg0server.nordvpn_city) printf '%s\n' 'Madrid' ;;
+				network.wg0server.nordvpn_country_code) printf '%s\n' 'ES' ;;
+				network.wg0server.nordvpn_load) printf '%s\n' '42' ;;
+				*) return 1 ;;
+			esac
+			;;
+		show)
+			printf '%s\n' "network.wg0server=wireguard_wg0"
+			printf '%s\n' "network.wg0.proto='wireguard'"
+			return 0
+			;;
+		*)
+			return 1
+			;;
+	esac
+}
+
+uci() {
+	uci_missing_station "$@"
+}
+
+STATUS_JSON_MISSING_STATION="$(nordvpn_easy_emit_status_json)"
+
+assert_eq '' "$(printf '%s' "$STATUS_JSON_MISSING_STATION" | jq -r '.current_server_station')" 'status json does not expose endpoint hostname as station when station metadata is missing'
+
 printf '%s\n' 'test-runtime.sh: ok'

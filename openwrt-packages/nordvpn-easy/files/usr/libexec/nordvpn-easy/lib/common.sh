@@ -210,8 +210,7 @@ nordvpn_easy_server_cache_is_enabled() {
 }
 
 nordvpn_easy_current_server_station() {
-	uci -q get "network.${VPN_IF}server.nordvpn_station" 2>/dev/null || \
-	uci -q get "network.${VPN_IF}server.endpoint_host" 2>/dev/null
+	uci -q get "network.${VPN_IF}server.nordvpn_station" 2>/dev/null || true
 }
 
 nordvpn_easy_set_server_preference_in_uci() {

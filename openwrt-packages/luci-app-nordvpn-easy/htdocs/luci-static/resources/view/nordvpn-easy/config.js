@@ -184,7 +184,9 @@ return view.extend({
 
 	render: function(data) {
 		const countries = managerData.parseCountries(data[0]);
-		const initialStatus = managerData.parseLocalStatus(data[1] && data[1].code === 0 ? data[1].stdout || '{}' : '{}');
+		const initialStatusPayload = service.parseExecJsonResponse(data[1], null);
+		const initialStatusFresh = !!(initialStatusPayload && typeof initialStatusPayload === 'object' && !Array.isArray(initialStatusPayload));
+		const initialStatus = initialStatusFresh ? managerData.parseLocalStatus(JSON.stringify(initialStatusPayload)) : managerData.parseLocalStatus('{}');
 		const initialCatalog = managerData.parseServerCatalog(data[2] && data[2].code === 0 ? data[2].stdout || '{}' : '{}');
 		const currentCountry = managerData.normalizeCountryCode(uci.get('nordvpn_easy', 'main', 'vpn_country') || '');
 		const currentMode = String(uci.get('nordvpn_easy', 'main', 'server_selection_mode') || 'auto');
@@ -199,6 +201,8 @@ return view.extend({
 		state.appliedEnabled = this.initialEnabled;
 		state.appliedCountryCode = currentCountry;
 		state.currentLocalStatus = initialStatus;
+		state.currentLocalStatusFresh = initialStatusFresh;
+		state.currentLocalStatusLastUpdated = initialStatusFresh ? Date.now() : 0;
 		state.currentOperationStatus = String(initialStatus.operation_status || 'idle');
 		state.currentServerCatalog = initialCatalog;
 		state.serverCatalogIndex = managerData.buildServerCatalogIndex(state.currentServerCatalog);
