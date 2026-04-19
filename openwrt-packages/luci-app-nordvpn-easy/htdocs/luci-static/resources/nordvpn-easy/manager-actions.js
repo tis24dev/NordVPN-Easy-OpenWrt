@@ -77,7 +77,7 @@ function hasRuntimeInterfaceSnapshot(runtimeStatus) {
 
 function runtimeNeedsReconciliation(runtimeStatus) {
 	if (!hasRuntimeInterfaceSnapshot(runtimeStatus))
-		return false;
+		return true;
 
 	return !!(runtimeStatus.runtime_disabled || runtimeStatus.interface_disabled || runtimeStatus.runtime_configured === false);
 }

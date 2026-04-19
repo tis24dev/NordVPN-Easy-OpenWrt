@@ -112,6 +112,8 @@ const missingRuntime = {
 	runtime_configured: false
 };
 
+const unknownRuntime = {};
+
 assert.equal(typeof managerActions.hasServerSelectionChanged, 'function', 'hasServerSelectionChanged is exported');
 assert.equal(typeof managerActions.deriveRuntimeActionPlan, 'function', 'deriveRuntimeActionPlan is exported');
 
@@ -217,6 +219,16 @@ assert.deepEqual(
 		serverSelectionChanged: false
 	},
 	'missing runtime with unchanged config is reconciled'
+);
+
+assert.deepEqual(
+	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'UY', 'UY', 'auto', 'auto', '', '', unknownRuntime)),
+	{
+		actions: [ 'setup', 'install_hooks' ],
+		successMessage: 'NordVPN Easy runtime synchronized with the saved configuration.',
+		serverSelectionChanged: false
+	},
+	'unknown runtime snapshot with unchanged config is reconciled'
 );
 
 console.log('test-manager-actions.js: ok');
