@@ -64,7 +64,9 @@ define Build/Prepare/$(PKG_NAME)
 	$(INSTALL_DIR) $(PKG_BUILD_DIR)/root/usr/libexec/nordvpn-easy
 	$(INSTALL_BIN) $(CURDIR)/../nordvpn-easy/files/usr/libexec/nordvpn-easy/core.sh $(PKG_BUILD_DIR)/root/usr/libexec/nordvpn-easy/core.sh
 	$(INSTALL_DIR) $(PKG_BUILD_DIR)/root/usr/libexec/nordvpn-easy/lib
-	$(CP) $(CURDIR)/../nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/. $(PKG_BUILD_DIR)/root/usr/libexec/nordvpn-easy/lib/
+	for lib in $(CURDIR)/../nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/*.sh; do \
+		$(INSTALL_DATA) "$$lib" $(PKG_BUILD_DIR)/root/usr/libexec/nordvpn-easy/lib/; \
+	done
 endef
 
 include $(TOPDIR)/feeds/luci/luci.mk
