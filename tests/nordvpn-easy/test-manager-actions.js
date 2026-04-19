@@ -19,7 +19,7 @@ const managerActionsPath = path.join(
 	'manager-actions.js'
 );
 
-function loadManagerActionsModule() {
+function loadManagerActionsModule(overrides) {
 	const source = fs.readFileSync(managerActionsPath, 'utf8');
 	const context = {
 		baseclass: {
@@ -80,12 +80,33 @@ function loadManagerActionsModule() {
 		Promise: Promise
 	};
 
-	return vm.runInNewContext(`(function(){\n${source}\n})();`, context, {
-		filename: managerActionsPath
-	});
+	if (overrides) {
+		Object.keys(overrides).forEach(function(key) {
+			if (
+				context[key] &&
+				typeof context[key] === 'object' &&
+				!Array.isArray(context[key]) &&
+				overrides[key] &&
+				typeof overrides[key] === 'object' &&
+				!Array.isArray(overrides[key])
+			) {
+				context[key] = Object.assign({}, context[key], overrides[key]);
+				return;
+			}
+
+			context[key] = overrides[key];
+		});
+	}
+
+	return {
+		managerActions: vm.runInNewContext(`(function(){\n${source}\n})();`, context, {
+			filename: managerActionsPath
+		}),
+		context: context
+	};
 }
 
-const managerActions = loadManagerActionsModule();
+const managerActions = loadManagerActionsModule().managerActions;
 
 function normalizeValue(value) {
 	return JSON.parse(JSON.stringify(value));
@@ -111,6 +132,8 @@ const missingRuntime = {
 	interface_disabled: false,
 	runtime_configured: false
 };
+
+const unknownRuntime = {};
 
 assert.equal(typeof managerActions.hasServerSelectionChanged, 'function', 'hasServerSelectionChanged is exported');
 assert.equal(typeof managerActions.deriveRuntimeActionPlan, 'function', 'deriveRuntimeActionPlan is exported');
@@ -219,4 +242,123 @@ assert.deepEqual(
 	'missing runtime with unchanged config is reconciled'
 );
 
-console.log('test-manager-actions.js: ok');
+assert.deepEqual(
+	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'UY', 'UY', 'auto', 'auto', '', '', unknownRuntime)),
+	{
+		actions: [ 'setup', 'install_hooks' ],
+		successMessage: 'NordVPN Easy runtime synchronized with the saved configuration.',
+		serverSelectionChanged: false
+	},
+	'unknown runtime snapshot with unchanged config is reconciled'
+);
+
+assert.deepEqual(
+	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'UY', 'UY', 'auto', 'auto', '', '', null)),
+	{
+		actions: [ 'setup', 'install_hooks' ],
+		successMessage: 'NordVPN Easy runtime synchronized with the saved configuration.',
+		serverSelectionChanged: false
+	},
+	'null runtime snapshot with unchanged config is reconciled'
+);
+
+function buildUpdateLocalStatusHarness(serviceOverrides) {
+	return loadManagerActionsModule({
+		managerData: {
+			parseLocalStatus(raw) {
+				return JSON.parse(raw || '{}');
+			}
+		},
+		managerStore: {
+			PHASES: { RUNTIME_BUSY: 'runtime_busy' },
+			runExclusive(_state, _key, factory) {
+				return Promise.resolve().then(factory);
+			},
+			clearError() {},
+			setError() {},
+			syncPhase() {},
+			setPhase() {}
+		},
+		managerUI: {
+			ids: {
+				CURRENT_SERVER_STATUS_ID: 'current',
+				PREFERRED_SERVER_STATUS_ID: 'preferred',
+				ENDPOINT_STATUS_ID: 'endpoint',
+				HANDSHAKE_STATUS_ID: 'handshake',
+				TRANSFER_STATUS_ID: 'transfer',
+				OPERATION_STATUS_ID: 'operation'
+			},
+			replaceStatusText() {},
+			setManagerControlsDisabled() {},
+			setVpnStatusIndicator() {},
+			updateCountryMatchStatus() {},
+			updateServerSelectionState() {},
+			currentServerSummaryFromStatus() {
+				return '';
+			},
+			preferredServerSummaryFromStatus() {
+				return '';
+			},
+			isDisableRequested() {
+				return false;
+			}
+		},
+		service: Object.assign({
+			parseExecJsonResponse(res, fallback) {
+				if (!res || res.code !== 0)
+					return fallback;
+
+				return JSON.parse(res.stdout || '');
+			}
+		}, serviceOverrides || {})
+	}).managerActions;
+}
+
+function buildUpdateLocalStatusState() {
+	return {
+		pollingSuspended: false,
+		currentLocalStatus: Object.assign({}, healthyRuntime, { desired_enabled: true, operation_status: 'idle' }),
+		currentLocalStatusFresh: true,
+		currentLocalStatusLastUpdated: 1234,
+		pendingOperationLabel: '',
+		currentOperationStatus: 'idle',
+		appliedCountryCode: 'UY'
+	};
+}
+
+async function testUpdateLocalStatusMarksSnapshotsStaleOnFailedResponse() {
+	const actions = buildUpdateLocalStatusHarness({
+		execService() {
+			return Promise.resolve({ code: 1, stdout: '', stderr: 'status_json failed' });
+		}
+	});
+	const state = buildUpdateLocalStatusState();
+	const status = await actions.updateLocalStatus(state);
+
+	assert.deepEqual(normalizeValue(status), {}, 'failed status_json responses fall back to empty runtime status');
+	assert.equal(state.currentLocalStatusFresh, false, 'failed status_json responses mark runtime status as stale');
+	assert.equal(state.currentLocalStatusLastUpdated, 0, 'failed status_json responses clear the freshness timestamp');
+}
+
+async function testUpdateLocalStatusMarksSnapshotsStaleOnRejectedExec() {
+	const actions = buildUpdateLocalStatusHarness({
+		execService() {
+			return Promise.reject(new Error('rpcd unavailable'));
+		}
+	});
+	const state = buildUpdateLocalStatusState();
+	const status = await actions.updateLocalStatus(state);
+
+	assert.deepEqual(normalizeValue(status), normalizeValue(buildUpdateLocalStatusState().currentLocalStatus), 'rejected status_json keeps the last known runtime status for display');
+	assert.equal(state.currentLocalStatusFresh, false, 'rejected status_json marks runtime status as stale');
+	assert.equal(state.currentLocalStatusLastUpdated, 0, 'rejected status_json clears the freshness timestamp');
+}
+
+Promise.resolve().then(async function() {
+	await testUpdateLocalStatusMarksSnapshotsStaleOnFailedResponse();
+	await testUpdateLocalStatusMarksSnapshotsStaleOnRejectedExec();
+	console.log('test-manager-actions.js: ok');
+}).catch(function(err) {
+	console.error(err);
+	process.exit(1);
+});

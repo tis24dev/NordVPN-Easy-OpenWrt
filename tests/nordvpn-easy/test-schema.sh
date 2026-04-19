@@ -22,6 +22,7 @@ assert_eq() {
 }
 
 assert_eq 'auto' "$(nordvpn_easy_default server_selection_mode)" 'default server selection mode'
+assert_eq '' "$(nordvpn_easy_default fallback_server_station)" 'default fallback server station'
 assert_eq '86400' "$(nordvpn_easy_default server_cache_ttl)" 'default server cache ttl'
 assert_eq '1' "$(nordvpn_easy_normalize_value enabled yes)" 'boolean normalization for yes'
 assert_eq '1' "$(nordvpn_easy_normalize_value enabled true)" 'boolean normalization for true'
@@ -31,6 +32,7 @@ assert_eq '86400' "$(nordvpn_easy_normalize_value server_cache_ttl not-a-number)
 assert_eq "$NORDVPN_EASY_SCHEMA_VERSION" "$(nordvpn_easy_normalize_value config_schema_version 0)" 'schema version normalization'
 assert_eq 'NORDVPN_TOKEN' "$(nordvpn_easy_env_name nordvpn_token)" 'runtime binding maps token env name'
 assert_eq 'VPN_IF' "$(nordvpn_easy_env_name vpn_if)" 'runtime binding maps vpn_if env name'
+assert_eq 'FALLBACK_SERVER_STATION' "$(nordvpn_easy_env_name fallback_server_station)" 'runtime binding maps fallback station env name'
 assert_eq "$NORDVPN_EASY_BACKEND_PAYLOAD_SIGNATURE" "$(nordvpn_easy_backend_payload_signature)" 'backend payload signature helper'
 
 unset NORDVPN_TOKEN

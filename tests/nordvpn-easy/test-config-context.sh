@@ -86,6 +86,7 @@ set_uci_value 'nordvpn_easy.main.vpn_addr' ''
 set_uci_value 'nordvpn_easy.main.server_selection_mode' 'manual'
 set_uci_value 'nordvpn_easy.main.preferred_server_station' 'es123'
 set_uci_value 'nordvpn_easy.main.preferred_server_hostname' 'es12.nordvpn.com'
+set_uci_value 'nordvpn_easy.main.fallback_server_station' 'es456'
 
 # shellcheck disable=SC1090
 . "$CONFIG_CONTEXT_LIB"
@@ -102,6 +103,7 @@ nordvpn_easy_export_runtime_context_from_service 'cfg_'
 assert_eq '1' "$DESIRED_ENABLED" 'runtime context exports desired_enabled'
 assert_eq 'wg0' "$VPN_IF" 'runtime context exports vpn_if'
 assert_eq '10.5.0.2/32' "$VPN_ADDR" 'runtime context exports vpn_addr'
+assert_eq 'es456' "$FALLBACK_SERVER_STATION" 'runtime context exports fallback station'
 
 RUNTIME_FILE="$TMP_DIR/runtime.conf"
 umask 0022
@@ -130,11 +132,13 @@ assert_eq 'present' "$(nordvpn_easy_runtime_file_key_state "$RUNTIME_FILE" 'WAN_
 assert_eq 'present' "$(nordvpn_easy_runtime_file_key_state "$RUNTIME_FILE" 'VPN_IF')" 'runtime file writes vpn_if'
 assert_eq 'present' "$(nordvpn_easy_runtime_file_key_state "$RUNTIME_FILE" 'VPN_ADDR')" 'runtime file writes vpn_addr'
 assert_eq 'present' "$(nordvpn_easy_runtime_file_key_state "$RUNTIME_FILE" 'VPN_PORT')" 'runtime file writes vpn_port'
+assert_eq 'present' "$(nordvpn_easy_runtime_file_key_state "$RUNTIME_FILE" 'FALLBACK_SERVER_STATION')" 'runtime file writes fallback station'
 assert_file_has_line "NORDVPN_TOKEN='abc123'" "$RUNTIME_FILE" 'runtime file contains exact token key'
 assert_file_has_line "WAN_IF='wan'" "$RUNTIME_FILE" 'runtime file contains exact wan_if key'
 assert_file_has_line "VPN_IF='wg0'" "$RUNTIME_FILE" 'runtime file contains exact vpn_if key'
 assert_file_has_line "VPN_ADDR='10.5.0.2/32'" "$RUNTIME_FILE" 'runtime file contains exact vpn_addr key'
 assert_file_has_line "VPN_PORT='51820'" "$RUNTIME_FILE" 'runtime file contains exact vpn_port key'
+assert_file_has_line "FALLBACK_SERVER_STATION='es456'" "$RUNTIME_FILE" 'runtime file contains exact fallback station key'
 
 RUNTIME_TOKEN="$(
 	(
@@ -171,12 +175,20 @@ RUNTIME_VPN_PORT="$(
 		printf '%s' "$VPN_PORT"
 	)
 )"
+RUNTIME_FALLBACK_SERVER_STATION="$(
+	(
+		# shellcheck disable=SC1090
+		. "$RUNTIME_FILE"
+		printf '%s' "$FALLBACK_SERVER_STATION"
+	)
+)"
 
 assert_eq 'abc123' "$RUNTIME_TOKEN" 'runtime file round-trips token'
 assert_eq 'wan' "$RUNTIME_WAN_IF" 'runtime file round-trips wan_if'
 assert_eq 'wg0' "$RUNTIME_VPN_IF" 'runtime file round-trips vpn_if'
 assert_eq '10.5.0.2/32' "$RUNTIME_VPN_ADDR" 'runtime file round-trips vpn_addr'
 assert_eq '51820' "$RUNTIME_VPN_PORT" 'runtime file round-trips vpn_port'
+assert_eq 'es456' "$RUNTIME_FALLBACK_SERVER_STATION" 'runtime file round-trips fallback station'
 
 nordvpn_easy_validate_runtime_config "$RUNTIME_FILE" 'cfg_'
 assert_eq 'ok' "$NORDVPN_EASY_RUNTIME_CONFIG_VALIDATION_STATUS" 'runtime config validation succeeds'

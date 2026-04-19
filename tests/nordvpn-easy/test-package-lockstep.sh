@@ -35,7 +35,11 @@ backend_release="$(extract_make_var 'NORDVPN_EASY_DEFAULT_RELEASE' "$BACKEND_MAK
 luci_release="$(extract_make_var 'NORDVPN_EASY_DEFAULT_RELEASE' "$LUCI_MAKEFILE")"
 luci_init_source="\$(CURDIR)/../nordvpn-easy/files/etc/init.d/nordvpn-easy"
 luci_core_source="\$(CURDIR)/../nordvpn-easy/files/usr/libexec/nordvpn-easy/core.sh"
-luci_lib_source="\$(CURDIR)/../nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/."
+luci_lib_glob_source="\$(CURDIR)/../nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/*.sh"
+luci_lib_install_pattern="$(cat <<'EOF'
+$(INSTALL_DATA) "$$lib" $(PKG_BUILD_DIR)/root/usr/libexec/nordvpn-easy/lib/
+EOF
+)"
 
 assert_eq "$backend_version" "$luci_version" 'backend and LuCI packages share default version'
 assert_eq "$backend_release" "$luci_release" 'backend and LuCI packages share default release'
@@ -50,8 +54,13 @@ grep -F "$luci_core_source" "$LUCI_MAKEFILE" >/dev/null 2>&1 || {
 	exit 1
 }
 
-grep -F "$luci_lib_source" "$LUCI_MAKEFILE" >/dev/null 2>&1 || {
-	printf '%s\n' 'FAIL: LuCI package must copy backend library directory from backend package source' >&2
+grep -F "$luci_lib_glob_source" "$LUCI_MAKEFILE" >/dev/null 2>&1 || {
+	printf '%s\n' 'FAIL: LuCI package must install backend library files from backend package source' >&2
+	exit 1
+}
+
+grep -F "$luci_lib_install_pattern" "$LUCI_MAKEFILE" >/dev/null 2>&1 || {
+	printf '%s\n' 'FAIL: LuCI package must stage backend library files explicitly into /usr/libexec/nordvpn-easy/lib' >&2
 	exit 1
 }
 

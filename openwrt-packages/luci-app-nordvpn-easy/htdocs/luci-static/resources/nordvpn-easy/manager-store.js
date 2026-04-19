@@ -22,6 +22,8 @@ function createState() {
 		appliedEnabled: false,
 		appliedCountryCode: '',
 		currentLocalStatus: managerData.parseLocalStatus('{}'),
+		currentLocalStatusFresh: false,
+		currentLocalStatusLastUpdated: 0,
 		currentServerCatalog: managerData.emptyServerCatalog(),
 		serverCatalogIndex: {},
 		latestServerCatalogRequestId: 0,

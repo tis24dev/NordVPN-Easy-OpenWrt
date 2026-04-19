@@ -16,19 +16,23 @@ nordvpn_easy_require_core_action_helpers() {
 	done
 }
 
-nordvpn_easy_find_preferred_server_in_catalog() {
-	nordvpn_easy_require_core_action_helpers fetch_server_catalog || return 1
-	nordvpn_easy_require_manual_server_preference || return 1
-	log "apply: resolving preferred server from catalog for country ${VPN_COUNTRY:-unset}"
-	fetch_server_catalog 0 "$VPN_COUNTRY" || return 1
+nordvpn_easy_find_server_in_catalog() {
+	local target_hostname="${1:-}"
+	local target_station="${2:-}"
+	local selection_label="${3:-selected}"
 
-	PREFERRED_SERVER_LINE=$(jq -er \
-		--arg hostname "$PREFERRED_SERVER_HOSTNAME" \
-		--arg station "$PREFERRED_SERVER_STATION" '
+	[ -n "$target_station" ] || {
+		log "ERROR: ${selection_label} server station is missing"
+		return 1
+	}
+
+	CATALOG_MATCHED_SERVER_LINE="$(jq -er \
+		--arg hostname "$target_hostname" \
+		--arg station "$target_station" '
 			[
 				.servers[] | select(
-					(.station == $station) and
-					(($hostname == "") or (.hostname == $hostname))
+					((.station // "" | ascii_downcase) == ($station | ascii_downcase)) and
+					(($hostname == "") or ((.hostname // "" | ascii_downcase) == ($hostname | ascii_downcase)))
 				)
 			][0] | [
 				.hostname,
@@ -38,10 +42,58 @@ nordvpn_easy_find_preferred_server_in_catalog() {
 				.city,
 				((.load // 0) | tostring)
 			] | @tsv
-		' "$SERVER_CATALOG_FILE" 2>/dev/null) || {
-			log "ERROR: PREFERRED SERVER $PREFERRED_SERVER_HOSTNAME ($PREFERRED_SERVER_STATION) IS NOT AVAILABLE IN $VPN_COUNTRY"
+		' "$SERVER_CATALOG_FILE" 2>/dev/null)" || {
+			if [ -n "$target_hostname" ]; then
+				log "ERROR: ${selection_label} server $target_hostname ($target_station) is not available in $VPN_COUNTRY"
+			else
+				log "ERROR: ${selection_label} server $target_station is not available in $VPN_COUNTRY"
+			fi
 			return 1
 		}
+}
+
+nordvpn_easy_apply_catalog_server_line_to_uci() {
+	local server_line="$1"
+	local selection_label="${2:-selected}"
+
+	MATCHED_SERVER_HOSTNAME=''
+	MATCHED_SERVER_STATION=''
+	MATCHED_SERVER_PUBLIC_KEY=''
+	MATCHED_SERVER_COUNTRY_CODE=''
+	MATCHED_SERVER_CITY_NAME=''
+	MATCHED_SERVER_LOAD=''
+
+	IFS="$(printf '\t')" read -r \
+		MATCHED_SERVER_HOSTNAME \
+		MATCHED_SERVER_STATION \
+		MATCHED_SERVER_PUBLIC_KEY \
+		MATCHED_SERVER_COUNTRY_CODE \
+		MATCHED_SERVER_CITY_NAME \
+		MATCHED_SERVER_LOAD <<EOF
+$server_line
+EOF
+
+	[ -n "$MATCHED_SERVER_HOSTNAME" ] || {
+		log "ERROR: ${selection_label} server match is missing a hostname"
+		return 1
+	}
+
+	log "Applying ${selection_label} VPN server $MATCHED_SERVER_HOSTNAME ($MATCHED_SERVER_STATION) for ${MATCHED_SERVER_COUNTRY_CODE:-unknown country}"
+	nordvpn_easy_set_vpn_server_in_uci \
+		"$MATCHED_SERVER_HOSTNAME" \
+		"$MATCHED_SERVER_STATION" \
+		"$MATCHED_SERVER_PUBLIC_KEY" \
+		"$MATCHED_SERVER_COUNTRY_CODE" \
+		"$MATCHED_SERVER_CITY_NAME" \
+		"$MATCHED_SERVER_LOAD"
+}
+
+nordvpn_easy_find_preferred_server_in_catalog() {
+	nordvpn_easy_require_core_action_helpers fetch_server_catalog || return 1
+	nordvpn_easy_require_manual_server_preference || return 1
+	log "apply: resolving preferred server from catalog for country ${VPN_COUNTRY:-unset}"
+	fetch_server_catalog 0 "$VPN_COUNTRY" || return 1
+	nordvpn_easy_find_server_in_catalog "$PREFERRED_SERVER_HOSTNAME" "$PREFERRED_SERVER_STATION" 'preferred'
 }
 
 nordvpn_easy_preferred_server_matches_current() {
@@ -51,13 +103,58 @@ nordvpn_easy_preferred_server_matches_current() {
 
 nordvpn_easy_apply_preferred_server_from_catalog() {
 	nordvpn_easy_find_preferred_server_in_catalog || return 1
+	nordvpn_easy_apply_catalog_server_line_to_uci "$CATALOG_MATCHED_SERVER_LINE" 'preferred'
+}
 
-	IFS="$(printf '\t')" read -r HOST_NAME SERVER_IP PUBLIC_KEY COUNTRY_CODE CITY_NAME SERVER_LOAD <<EOF
-$PREFERRED_SERVER_LINE
-EOF
+nordvpn_easy_apply_fallback_server_from_catalog() {
+	nordvpn_easy_require_core_action_helpers fetch_server_catalog || return 1
+	nordvpn_easy_has_fallback_server_preference || return 1
+	log "apply: resolving fallback server from catalog for country ${VPN_COUNTRY:-unset}"
+	fetch_server_catalog 0 "$VPN_COUNTRY" || return 1
+	nordvpn_easy_find_server_in_catalog '' "$FALLBACK_SERVER_STATION" 'fallback' || return 1
+	nordvpn_easy_apply_catalog_server_line_to_uci "$CATALOG_MATCHED_SERVER_LINE" 'fallback'
+}
 
-	log "Applying preferred VPN server $HOST_NAME ($SERVER_IP) for $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
-	nordvpn_easy_set_vpn_server_in_uci "$HOST_NAME" "$SERVER_IP" "$PUBLIC_KEY" "$COUNTRY_CODE" "$CITY_NAME" "$SERVER_LOAD"
+nordvpn_easy_try_configured_fallback_server() {
+	local runtime_action="${1:-reload}"
+	local recovery_reason="${2:-the configured server could not be applied}"
+	local current_station=''
+
+	nordvpn_easy_has_fallback_server_preference || return 1
+
+	if [ "${FALLBACK_SERVER_STATION:-}" = "${PREFERRED_SERVER_STATION:-}" ]; then
+		log "apply: configured fallback server ${FALLBACK_SERVER_STATION:-unset} matches the preferred server; skipping fallback recovery"
+		return 1
+	fi
+
+	current_station="$(nordvpn_easy_current_server_station)"
+	if [ -n "$current_station" ] && [ "$current_station" = "${FALLBACK_SERVER_STATION:-}" ]; then
+		log "apply: configured fallback server ${FALLBACK_SERVER_STATION:-unset} is already active; skipping fallback recovery"
+		return 1
+	fi
+
+	log "apply: attempting configured fallback server ${FALLBACK_SERVER_STATION:-unset} because $recovery_reason"
+	nordvpn_easy_apply_fallback_server_from_catalog || return 1
+
+	uci commit network || {
+		nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" 'could not commit network configuration while applying the configured fallback server'
+		return 1
+	}
+
+	if ! nordvpn_easy_apply_server_change_runtime "$runtime_action"; then
+		log "apply: configured fallback server ${MATCHED_SERVER_HOSTNAME:-unknown} (${MATCHED_SERVER_STATION:-unknown}) did not restore VPN connectivity"
+		return 1
+	fi
+
+	nordvpn_easy_set_server_preference_in_uci "$MATCHED_SERVER_HOSTNAME" "$MATCHED_SERVER_STATION"
+	if ! uci commit nordvpn_easy; then
+		log 'WARNING: COULD NOT COMMIT FALLBACK SERVER PROMOTION; KEEPING WORKING RUNTIME SERVER'
+	fi
+
+	PREFERRED_SERVER_HOSTNAME="$MATCHED_SERVER_HOSTNAME"
+	PREFERRED_SERVER_STATION="$MATCHED_SERVER_STATION"
+	log "apply: promoted fallback server to preferred server $MATCHED_SERVER_HOSTNAME ($MATCHED_SERVER_STATION)"
+	return 0
 }
 
 nordvpn_easy_build_server_recommendations_url() {
@@ -135,16 +232,21 @@ nordvpn_easy_set_first_server_from_list() {
 		return 1
 	}
 
-	IFS="$(printf '\t')" read -r HOST_NAME SERVER_IP PUBLIC_KEY COUNTRY_CODE CITY_NAME SERVER_LOAD <<EOF
+	IFS="$(printf '\t')" read -r HOST_NAME SERVER_STATION PUBLIC_KEY COUNTRY_CODE CITY_NAME SERVER_LOAD <<EOF
 $FIRST_SERVER
 EOF
 
-	log "Selected first recommended VPN server $HOST_NAME ($SERVER_IP)"
-	nordvpn_easy_set_vpn_server_in_uci "$HOST_NAME" "$SERVER_IP" "$PUBLIC_KEY" "$COUNTRY_CODE" "$CITY_NAME" "$SERVER_LOAD"
+	log "Selected first recommended VPN server $HOST_NAME ($SERVER_STATION)"
+	nordvpn_easy_set_vpn_server_in_uci "$HOST_NAME" "$SERVER_STATION" "$PUBLIC_KEY" "$COUNTRY_CODE" "$CITY_NAME" "$SERVER_LOAD"
 }
 
 nordvpn_easy_change_to_preferred_server() {
-	nordvpn_easy_apply_preferred_server_from_catalog || return 1
+	local runtime_action="${1:-reload}"
+
+	nordvpn_easy_apply_preferred_server_from_catalog || {
+		nordvpn_easy_try_configured_fallback_server "$runtime_action" 'the preferred server could not be resolved from the catalog'
+		return $?
+	}
 
 	uci commit network || {
 		nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" 'could not commit network configuration while applying preferred server'
@@ -152,7 +254,9 @@ nordvpn_easy_change_to_preferred_server() {
 	}
 
 	log "VPN server changed to preferred server $PREFERRED_SERVER_HOSTNAME ($PREFERRED_SERVER_STATION)"
-	nordvpn_easy_apply_server_change_runtime "${1:-reload}"
+	nordvpn_easy_apply_server_change_runtime "$runtime_action" && return 0
+
+	nordvpn_easy_try_configured_fallback_server "$runtime_action" "preferred server $PREFERRED_SERVER_HOSTNAME ($PREFERRED_SERVER_STATION) did not restore VPN connectivity"
 }
 
 nordvpn_easy_sync_server_selection() {
@@ -204,28 +308,28 @@ nordvpn_easy_change_vpn_server() {
 	candidate_count="$(wc -l < "$SERVER_CANDIDATES_FILE" 2>/dev/null || printf '%s' '0')"
 	log "apply: loaded $candidate_count recommended server candidates for rotation"
 
-	while IFS="$(printf '\t')" read -r HOST_NAME SERVER_IP PUBLIC_KEY COUNTRY_CODE CITY_NAME SERVER_LOAD; do
-		[ -n "$SERVER_IP" ] || continue
-		[ "$CURRENT_SERVER" = "$SERVER_IP" ] && continue
+	while IFS="$(printf '\t')" read -r HOST_NAME SERVER_STATION PUBLIC_KEY COUNTRY_CODE CITY_NAME SERVER_LOAD; do
+		[ -n "$SERVER_STATION" ] || continue
+		[ "$CURRENT_SERVER" = "$SERVER_STATION" ] && continue
 		candidate_index=$((candidate_index + 1))
 
-		log "apply: trying recommended candidate ${candidate_index}/${candidate_count}: $HOST_NAME ($SERVER_IP)"
+		log "apply: trying recommended candidate ${candidate_index}/${candidate_count}: $HOST_NAME ($SERVER_STATION)"
 
-		nordvpn_easy_set_vpn_server_in_uci "$HOST_NAME" "$SERVER_IP" "$PUBLIC_KEY" "$COUNTRY_CODE" "$CITY_NAME" "$SERVER_LOAD" || continue
+		nordvpn_easy_set_vpn_server_in_uci "$HOST_NAME" "$SERVER_STATION" "$PUBLIC_KEY" "$COUNTRY_CODE" "$CITY_NAME" "$SERVER_LOAD" || continue
 		uci commit network || {
 			nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" 'could not commit network configuration during recommended server rotation'
 			commit_failed=1
 			break
 		}
 
-		log "VPN server changed to $HOST_NAME ( $SERVER_IP )"
+		log "VPN server changed to $HOST_NAME ($SERVER_STATION)"
 
 		if nordvpn_easy_apply_server_change_runtime "$1"; then
 			server_changed=1
 			break
 		fi
 
-		log "apply: candidate $HOST_NAME ($SERVER_IP) did not restore VPN connectivity, moving to the next candidate"
+		log "apply: candidate $HOST_NAME ($SERVER_STATION) did not restore VPN connectivity, moving to the next candidate"
 	done < "$SERVER_CANDIDATES_FILE"
 
 	rm -rf -- "$temp_dir"
@@ -235,6 +339,10 @@ nordvpn_easy_change_vpn_server() {
 	fi
 
 	if [ "$server_changed" -eq 1 ]; then
+		return 0
+	fi
+
+	if nordvpn_easy_try_configured_fallback_server "$1" 'recommended server rotation exhausted the current candidate list'; then
 		return 0
 	fi
 
@@ -267,33 +375,33 @@ nordvpn_easy_change_manual_server() {
 	candidate_count="$(wc -l < "$SERVER_CANDIDATES_FILE" 2>/dev/null || printf '%s' '0')"
 	log "apply: loaded $candidate_count manual server candidates for rotation"
 
-	while IFS="$(printf '\t')" read -r HOST_NAME SERVER_IP PUBLIC_KEY COUNTRY_CODE CITY_NAME SERVER_LOAD; do
-		[ -n "$SERVER_IP" ] || continue
-		[ "$CURRENT_SERVER" = "$SERVER_IP" ] && continue
+	while IFS="$(printf '\t')" read -r HOST_NAME SERVER_STATION PUBLIC_KEY COUNTRY_CODE CITY_NAME SERVER_LOAD; do
+		[ -n "$SERVER_STATION" ] || continue
+		[ "$CURRENT_SERVER" = "$SERVER_STATION" ] && continue
 		candidate_index=$((candidate_index + 1))
 
-		log "apply: trying manual candidate ${candidate_index}/${candidate_count}: $HOST_NAME ($SERVER_IP)"
+		log "apply: trying manual candidate ${candidate_index}/${candidate_count}: $HOST_NAME ($SERVER_STATION)"
 
-		nordvpn_easy_set_vpn_server_in_uci "$HOST_NAME" "$SERVER_IP" "$PUBLIC_KEY" "$COUNTRY_CODE" "$CITY_NAME" "$SERVER_LOAD" || continue
+		nordvpn_easy_set_vpn_server_in_uci "$HOST_NAME" "$SERVER_STATION" "$PUBLIC_KEY" "$COUNTRY_CODE" "$CITY_NAME" "$SERVER_LOAD" || continue
 		uci commit network || {
 			nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" 'could not commit network configuration during manual server rotation'
 			commit_failed=1
 			break
 		}
 		if nordvpn_easy_apply_server_change_runtime "$1"; then
-			nordvpn_easy_set_server_preference_in_uci "$HOST_NAME" "$SERVER_IP"
+			nordvpn_easy_set_server_preference_in_uci "$HOST_NAME" "$SERVER_STATION"
 			if ! uci commit nordvpn_easy; then
 				log 'WARNING: COULD NOT COMMIT MANUAL SERVER PREFERENCE; KEEPING WORKING RUNTIME SERVER'
 			fi
 
 			PREFERRED_SERVER_HOSTNAME="$HOST_NAME"
-			PREFERRED_SERVER_STATION="$SERVER_IP"
-			log "Manual preferred VPN server updated to $HOST_NAME ($SERVER_IP)"
+			PREFERRED_SERVER_STATION="$SERVER_STATION"
+			log "Manual preferred VPN server updated to $HOST_NAME ($SERVER_STATION)"
 			server_changed=1
 			break
 		fi
 
-		log "apply: manual candidate $HOST_NAME ($SERVER_IP) did not restore VPN connectivity, moving to the next candidate"
+		log "apply: manual candidate $HOST_NAME ($SERVER_STATION) did not restore VPN connectivity, moving to the next candidate"
 	done < "$SERVER_CANDIDATES_FILE"
 
 	rm -rf -- "$temp_dir"
@@ -456,7 +564,15 @@ nordvpn_easy_check_once() {
 				log "healthcheck: ping failed $failed_pings times; evaluating server rotation"
 
 				if nordvpn_easy_server_selection_is_manual; then
-					log 'healthcheck: manual server selection is enabled; skipping automatic server rotation'
+					if nordvpn_easy_try_configured_fallback_server restart 'manual server recovery threshold reached'; then
+						return 0
+					fi
+
+					if nordvpn_easy_has_fallback_server_preference; then
+						log 'healthcheck: manual server selection is enabled, but the configured fallback server did not restore connectivity'
+					else
+						log 'healthcheck: manual server selection is enabled and no fallback server is configured; skipping automatic server rotation'
+					fi
 				else
 					if nordvpn_easy_get_servers_list; then
 						log 'healthcheck: changing VPN server after repeated failures'

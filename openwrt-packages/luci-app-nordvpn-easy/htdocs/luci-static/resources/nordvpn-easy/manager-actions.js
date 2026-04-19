@@ -77,9 +77,23 @@ function hasRuntimeInterfaceSnapshot(runtimeStatus) {
 
 function runtimeNeedsReconciliation(runtimeStatus) {
 	if (!hasRuntimeInterfaceSnapshot(runtimeStatus))
-		return false;
+		return true;
 
 	return !!(runtimeStatus.runtime_disabled || runtimeStatus.interface_disabled || runtimeStatus.runtime_configured === false);
+}
+
+function isLocalStatusPayload(value) {
+	return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function buildLocalStatusSnapshot(res) {
+	const rawStatus = service.parseExecJsonResponse(res, null);
+	const fresh = !!(res && res.code === 0 && isLocalStatusPayload(rawStatus));
+
+	return {
+		status: fresh ? managerData.parseLocalStatus(JSON.stringify(rawStatus)) : managerData.parseLocalStatus('{}'),
+		fresh: fresh
+	};
 }
 
 function deriveRuntimeActionPlan(previousEnabled, enabled, previousCountry, country, previousMode, mode, previousPreferredStation, preferredStation, runtimeStatus) {
@@ -286,11 +300,14 @@ function updateLocalStatus(state, options) {
 	return managerStore.runExclusive(state, 'status', function() {
 		return service.execService('status_json').then(function(res) {
 			let busyAction;
-			const status = service.parseExecJsonResponse(res, managerData.parseLocalStatus('{}'));
+			const localStatusSnapshot = buildLocalStatusSnapshot(res);
+			const status = localStatusSnapshot.status;
 			const desiredEnabled = !!status.desired_enabled;
 
 			managerStore.clearError(state);
 			state.currentLocalStatus = status;
+			state.currentLocalStatusFresh = localStatusSnapshot.fresh;
+			state.currentLocalStatusLastUpdated = localStatusSnapshot.fresh ? Date.now() : 0;
 			state.currentOperationStatus = String(status.operation_status || 'idle');
 			state.appliedEnabled = desiredEnabled;
 			state.appliedCountryCode = managerData.normalizeCountryCode(status.selected_country || state.appliedCountryCode);
@@ -368,6 +385,8 @@ function updateLocalStatus(state, options) {
 			managerUI.updateServerSelectionState(state);
 			return status;
 		}).catch(function(err) {
+			state.currentLocalStatusFresh = false;
+			state.currentLocalStatusLastUpdated = 0;
 			state.currentOperationStatus = state.pendingOperationLabel ? ('busy:' + state.pendingOperationLabel) : 'unknown';
 
 			if (!state.pendingOperationLabel)
@@ -614,6 +633,7 @@ function handleSaveApply(viewState, state, ev, mode) {
 						const country = managerData.normalizeCountryCode(uci.get('nordvpn_easy', 'main', 'vpn_country') || '');
 						const modeValue = String(uci.get('nordvpn_easy', 'main', 'server_selection_mode') || 'auto');
 						const preferred = String(uci.get('nordvpn_easy', 'main', 'preferred_server_station') || '');
+						const localStatus = state.currentLocalStatusFresh ? state.currentLocalStatus : null;
 						const runtimePlan = deriveRuntimeActionPlan(
 							previousEnabled,
 							enabled,
@@ -623,7 +643,7 @@ function handleSaveApply(viewState, state, ev, mode) {
 							modeValue,
 							previousPreferredStation,
 							preferred,
-							state.currentLocalStatus
+							localStatus
 						);
 						const actions = runtimePlan.actions;
 						const successMessage = runtimePlan.successMessage;

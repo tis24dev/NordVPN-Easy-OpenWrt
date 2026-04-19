@@ -33,6 +33,43 @@ assert_eq() {
 
 log() { :; }
 
+UCI_ENDPOINT_HOST=''
+UCI_STATION=''
+UCI_HOSTNAME=''
+
+uci() {
+	case "$1" in
+		-q)
+			shift
+			uci "$@"
+			return $?
+			;;
+		get)
+			case "$2" in
+				network.wg0server.endpoint_host) printf '%s\n' "$UCI_ENDPOINT_HOST" ;;
+				network.wg0server.nordvpn_station)
+					[ -n "$UCI_STATION" ] || return 1
+					printf '%s\n' "$UCI_STATION"
+					;;
+				network.wg0server.nordvpn_hostname) printf '%s\n' "$UCI_HOSTNAME" ;;
+				*) return 1 ;;
+			esac
+			return 0
+			;;
+		set)
+			case "${2%%=*}" in
+				network.wg0server.endpoint_host) UCI_ENDPOINT_HOST="${2#*=}" ;;
+				network.wg0server.nordvpn_station) UCI_STATION="${2#*=}" ;;
+				network.wg0server.nordvpn_hostname) UCI_HOSTNAME="${2#*=}" ;;
+			esac
+			return 0
+			;;
+		*)
+			return 1
+			;;
+	esac
+}
+
 FAKE_NOW_FILE="$TMP_DIR/fake-now"
 SLEEP_CALLS=''
 PING_ATTEMPTS=0
@@ -81,5 +118,15 @@ nordvpn_easy_wait_for_vpn_connectivity "$VPN_IF" '3' 'timeout-test' || WAIT_RC=$
 
 assert_eq '1' "$WAIT_RC" 'wait helper fails when connectivity never returns'
 assert_eq '1,1,' "$SLEEP_CALLS" 'wait helper retries until the timeout window is exhausted'
+
+nordvpn_easy_set_vpn_server_in_uci 'it12.nordvpn.com' 'it123' 'PUBKEY-123' 'IT' 'Milan' '12'
+
+assert_eq 'it12.nordvpn.com' "$UCI_ENDPOINT_HOST" 'wireguard peer endpoint host uses hostname'
+assert_eq 'it12.nordvpn.com' "$UCI_HOSTNAME" 'wireguard peer stores NordVPN hostname separately'
+assert_eq 'it123' "$UCI_STATION" 'wireguard peer stores NordVPN station separately'
+assert_eq 'it123' "$(nordvpn_easy_current_server_station)" 'current server station reads the stored station id'
+
+UCI_STATION=''
+assert_eq '' "$(nordvpn_easy_current_server_station || true)" 'current server station does not fall back to endpoint host when station metadata is missing'
 
 printf '%s\n' 'test-wireguard.sh: ok'

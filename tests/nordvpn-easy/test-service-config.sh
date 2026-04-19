@@ -82,6 +82,7 @@ nordvpn_easy_migrate_service_config nordvpn_easy main
 
 assert_eq '1' "$(cat "$(uci_path 'nordvpn_easy.main.enabled')")" 'enabled normalized'
 assert_eq '86400' "$(cat "$(uci_path 'nordvpn_easy.main.server_cache_ttl')")" 'ttl backfilled'
+assert_eq '' "$(cat "$(uci_path 'nordvpn_easy.main.fallback_server_station')")" 'fallback station backfilled'
 assert_eq "$NORDVPN_EASY_SCHEMA_VERSION" "$(cat "$(uci_path 'nordvpn_easy.main.config_schema_version')")" 'schema version set'
 [ ! -f "$(uci_path 'nordvpn_easy.main.nordvpn_basic_token')" ] || {
 	printf '%s\n' 'FAIL: legacy token key was not removed' >&2
