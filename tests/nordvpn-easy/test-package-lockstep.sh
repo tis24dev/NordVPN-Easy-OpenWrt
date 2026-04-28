@@ -35,12 +35,8 @@ backend_release="$(extract_make_var 'NORDVPN_EASY_DEFAULT_RELEASE' "$BACKEND_MAK
 luci_release="$(extract_make_var 'NORDVPN_EASY_DEFAULT_RELEASE' "$LUCI_MAKEFILE")"
 luci_init_source="\$(CURDIR)/../nordvpn-easy/files/etc/init.d/nordvpn-easy"
 luci_core_source="\$(CURDIR)/../nordvpn-easy/files/usr/libexec/nordvpn-easy/core.sh"
-luci_lib_glob_source="\$(CURDIR)/../nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/*.sh"
+luci_lib_source="\$(CURDIR)/../nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/."
 luci_rpcd_source="\$(CURDIR)/../nordvpn-easy/files/usr/libexec/rpcd/nordvpn.easy"
-luci_lib_install_pattern="$(cat <<'EOF'
-$(INSTALL_DATA) "$$$$lib" $(PKG_BUILD_DIR)/root/usr/libexec/nordvpn-easy/lib/
-EOF
-)"
 
 assert_eq "$backend_version" "$luci_version" 'backend and LuCI packages share default version'
 assert_eq "$backend_release" "$luci_release" 'backend and LuCI packages share default release'
@@ -55,13 +51,13 @@ grep -F "$luci_core_source" "$LUCI_MAKEFILE" >/dev/null 2>&1 || {
 	exit 1
 }
 
-grep -F "$luci_lib_glob_source" "$LUCI_MAKEFILE" >/dev/null 2>&1 || {
-	printf '%s\n' 'FAIL: LuCI package must install backend library files from backend package source' >&2
+grep -F "$luci_lib_source" "$LUCI_MAKEFILE" >/dev/null 2>&1 || {
+	printf '%s\n' 'FAIL: LuCI package must copy backend library directory from backend package source' >&2
 	exit 1
 }
 
-grep -F "$luci_lib_install_pattern" "$LUCI_MAKEFILE" >/dev/null 2>&1 || {
-	printf '%s\n' 'FAIL: LuCI package must stage backend library files explicitly into /usr/libexec/nordvpn-easy/lib' >&2
+grep -F "\$\$\$\$lib" "$LUCI_MAKEFILE" >/dev/null 2>&1 && {
+	printf '%s\n' 'FAIL: LuCI package must not use shell-variable library install loops; OpenWrt expands them differently across build phases' >&2
 	exit 1
 }
 
@@ -69,34 +65,6 @@ grep -F "$luci_rpcd_source" "$LUCI_MAKEFILE" >/dev/null 2>&1 || {
 	printf '%s\n' 'FAIL: LuCI package must install rpcd plugin from backend package source' >&2
 	exit 1
 }
-
-expanded_luci_lib_install_recipe="$(
-	tmp_makefile="$(mktemp)"
-	cat > "$tmp_makefile" <<'EOF'
-PKG_NAME:=demo
-INSTALL_DATA:=install -m0644
-CURDIR:=/src
-PKG_BUILD_DIR:=/build
-
-define Build/Prepare/$(PKG_NAME)
-	for lib in $(CURDIR)/lib/*.sh; do \
-		$(INSTALL_DATA) "$$$$lib" $(PKG_BUILD_DIR)/root/usr/libexec/nordvpn-easy/lib/; \
-	done
-endef
-
-print:
-	@printf '%s\n' '$(Build/Prepare/$(PKG_NAME))'
-EOF
-	make -f "$tmp_makefile" print | sed 's/^[[:space:]]*//'
-	rm -f "$tmp_makefile"
-)"
-
-expected_expanded_luci_lib_install_recipe="$(cat <<'EOF'
-for lib in /src/lib/*.sh; do install -m0644 "$$lib" /build/root/usr/libexec/nordvpn-easy/lib/; done
-EOF
-)"
-
-assert_eq "$expected_expanded_luci_lib_install_recipe" "$expanded_luci_lib_install_recipe" 'LuCI package install loop survives make double expansion'
 
 schema_payload="$(sed -n "s/^NORDVPN_EASY_BACKEND_PAYLOAD_SIGNATURE=\"\${NORDVPN_EASY_BACKEND_PAYLOAD_SIGNATURE:-\\(.*\\)}\"/\\1/p" "$SCHEMA_LIB" | head -n 1)"
 core_payload="$(sed -n "s/^CORE_BACKEND_PAYLOAD_SIGNATURE='\\(.*\\)'/\\1/p" "$CORE_SCRIPT" | head -n 1)"
