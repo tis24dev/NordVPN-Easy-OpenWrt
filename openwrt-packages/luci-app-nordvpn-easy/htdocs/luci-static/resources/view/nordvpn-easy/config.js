@@ -287,9 +287,16 @@ return view.extend({
 			const modeSelect = managerUI.getSelectElement(managerUI.ids.MODE_FIELD_ID);
 
 			managerUI.renderServerChoices(managerUI.getSelectElement(managerUI.ids.SERVER_FIELD_ID), state.currentServerCatalog, currentPreferredStation);
-			managerActions.updateLocalStatus(state, { force: true });
-			managerActions.updatePublicIp(state, { force: true });
-			managerActions.updatePublicCountry(state, { force: true });
+			if (!state.currentLocalStatusFresh)
+				managerActions.updateLocalStatus(state, { force: true });
+
+			if (state.appliedEnabled) {
+				managerActions.updatePublicIp(state, { force: true });
+			}
+			else {
+				managerUI.replaceStatusText(managerUI.ids.PUBLIC_IP_STATUS_ID, _('Unavailable'));
+				managerUI.replaceStatusText(managerUI.ids.PUBLIC_COUNTRY_STATUS_ID, _('Unavailable'));
+			}
 			managerUI.updateServerSelectionState(state);
 
 			if (countrySelect) {

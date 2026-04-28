@@ -59,6 +59,7 @@ assert_eq 'busy:check' "$(nordvpn_easy_operation_status_from_loaded_lock)" 'oper
 DESIRED_ENABLED=1
 VPN_IF='wg0'
 SERVER_SELECTION_MODE='auto'
+KILL_SWITCH_ENABLED='1'
 VPN_COUNTRY='ES'
 PREFERRED_SERVER_HOSTNAME=''
 PREFERRED_SERVER_STATION=''
@@ -114,6 +115,8 @@ STATUS_JSON="$(nordvpn_easy_emit_status_json)"
 assert_eq 'stale_recovered' "$(printf '%s' "$STATUS_JSON" | jq -r '.operation_lock_state')" 'status json exposes lock state'
 assert_eq "$$" "$(printf '%s' "$STATUS_JSON" | jq -r '.operation_lock_pid')" 'status json exposes lock pid'
 assert_eq 'check' "$(printf '%s' "$STATUS_JSON" | jq -r '.operation_lock_action')" 'status json exposes lock action'
+assert_eq 'recovering' "$(printf '%s' "$STATUS_JSON" | jq -r '.state')" 'status json derives enterprise state from busy check'
+assert_eq 'true' "$(printf '%s' "$STATUS_JSON" | jq -r '.kill_switch_enabled')" 'status json exposes kill switch flag'
 assert_eq 'false' "$(printf '%s' "$STATUS_JSON" | jq -r '.runtime_disabled')" 'status json keeps runtime disabled false'
 assert_eq 'active' "$(printf '%s' "$STATUS_JSON" | jq -r '.vpn_status')" 'status json falls back to ip link when ifstatus probe fails'
 assert_eq 'wg0server' "$(nordvpn_easy_peer_section_name 'wg0')" 'peer section lookup falls back to exact section match'

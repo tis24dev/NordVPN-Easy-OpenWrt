@@ -22,6 +22,7 @@ JS_FILES=(
 
 SH_FILES=(
 	"$ROOT_DIR/openwrt-packages/nordvpn-easy/files/etc/init.d/nordvpn-easy"
+	"$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/rpcd/nordvpn.easy"
 	"$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/core.sh"
 	"$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/schema.sh"
 	"$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/config-context.sh"
@@ -39,6 +40,7 @@ SH_FILES=(
 	"$ROOT_DIR/tests/nordvpn-easy/test-init-cron.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-init-run-core.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-init-start-soft-fail.sh"
+	"$ROOT_DIR/tests/nordvpn-easy/test-rpcd.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-package-lockstep.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-runtime.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-wireguard.sh"
@@ -66,6 +68,7 @@ sh "$ROOT_DIR/tests/nordvpn-easy/test-common-temp.sh"
 sh "$ROOT_DIR/tests/nordvpn-easy/test-init-cron.sh"
 sh "$ROOT_DIR/tests/nordvpn-easy/test-init-run-core.sh"
 sh "$ROOT_DIR/tests/nordvpn-easy/test-init-start-soft-fail.sh"
+sh "$ROOT_DIR/tests/nordvpn-easy/test-rpcd.sh"
 sh "$ROOT_DIR/tests/nordvpn-easy/test-package-lockstep.sh"
 sh "$ROOT_DIR/tests/nordvpn-easy/test-runtime.sh"
 sh "$ROOT_DIR/tests/nordvpn-easy/test-wireguard.sh"

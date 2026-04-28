@@ -161,15 +161,16 @@ nordvpn_easy_lock_contention_is_nonfatal() {
 
 nordvpn_easy_require_commands() {
 	local cmd
+	local log_mode="${NORDVPN_EASY_REQUIRE_COMMANDS_LOG_MODE:-verbose}"
 
-	nordvpn_easy_log 'Validating required system commands'
+	[ "$log_mode" = 'quiet' ] || nordvpn_easy_log 'Validating required system commands'
 	for cmd in awk curl ifdown ifup ip jq mktemp ping uci; do
 		command -v "$cmd" >/dev/null 2>&1 || {
 			nordvpn_easy_log_blocker 'runtime' "required command '$cmd' is missing"
 			return 1
 		}
 	done
-	nordvpn_easy_log 'Required system commands are available'
+	[ "$log_mode" = 'quiet' ] || nordvpn_easy_log 'Required system commands are available'
 }
 
 nordvpn_easy_lock_age_seconds() {

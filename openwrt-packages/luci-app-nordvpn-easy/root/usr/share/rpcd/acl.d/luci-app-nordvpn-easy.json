@@ -17,6 +17,21 @@
 				],
 				"/tmp/nordvpn-easy-servers.json": [
 					"read"
+				],
+				"/tmp/run/nordvpn-easy/status.json": [
+					"read"
+				]
+			},
+			"ubus": {
+				"nordvpn.easy": [
+					"status",
+					"diagnostics",
+					"diagnostics_log",
+					"public_ip",
+					"public_country",
+					"refresh_countries",
+					"refresh_servers",
+					"server_catalog"
 				]
 			}
 		},
@@ -24,9 +39,24 @@
 			"uci": [
 				"nordvpn_easy"
 			],
-			"file": {
-				"/etc/init.d/nordvpn-easy": [
-					"exec"
+			"ubus": {
+				"nordvpn.easy": [
+					"connect",
+					"disconnect",
+					"reconnect",
+					"rotate",
+					"setup",
+					"check",
+					"install_hooks",
+					"remove_hooks",
+					"disable_runtime",
+					"refresh_countries",
+					"refresh_servers",
+					"server_catalog",
+					"public_ip",
+					"public_country",
+					"diagnostics",
+					"diagnostics_log"
 				]
 			}
 		}

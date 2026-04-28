@@ -1,5 +1,11 @@
 #!/bin/sh
 
+NORDVPN_EASY_RUN_DIR="${NORDVPN_EASY_RUN_DIR:-/tmp/run/nordvpn-easy}"
+NORDVPN_EASY_STATUS_CACHE="${NORDVPN_EASY_STATUS_CACHE:-$NORDVPN_EASY_RUN_DIR/status.json}"
+NORDVPN_EASY_PUBLIC_IP_CACHE="${NORDVPN_EASY_PUBLIC_IP_CACHE:-$NORDVPN_EASY_RUN_DIR/public_ip}"
+NORDVPN_EASY_PUBLIC_COUNTRY_CACHE="${NORDVPN_EASY_PUBLIC_COUNTRY_CACHE:-$NORDVPN_EASY_RUN_DIR/public_country}"
+NORDVPN_EASY_LAST_ERROR_CACHE="${NORDVPN_EASY_LAST_ERROR_CACHE:-$NORDVPN_EASY_RUN_DIR/last_error}"
+
 nordvpn_easy_pluralize_time_unit() {
 	local value="$1"
 	local singular="$2"
@@ -292,8 +298,10 @@ nordvpn_easy_vpn_status_value() {
 
 nordvpn_easy_emit_status_json() {
 	local desired_enabled="${DESIRED_ENABLED:-0}"
+	local updated_at='0'
 	local operation=''
 	local vpn_state=''
+	local enterprise_state=''
 	local interface_disabled='false'
 	local runtime_configured='false'
 	local operation_lock_state='none'
@@ -317,6 +325,9 @@ nordvpn_easy_emit_status_json() {
 	local current_load=''
 	local preferred_hostname="${PREFERRED_SERVER_HOSTNAME:-}"
 	local preferred_station="${PREFERRED_SERVER_STATION:-}"
+	local public_ip_cached=''
+	local public_country_cached=''
+	local last_error=''
 
 	nordvpn_easy_load_lock_metadata "${LOCK_DIR:-/tmp/nordvpn-easy.lock}"
 	operation="$(nordvpn_easy_operation_status_from_loaded_lock)"
@@ -345,6 +356,7 @@ nordvpn_easy_emit_status_json() {
 		[ -n "$current_hostname" ] || current_hostname="$(uci -q get "network.${peer_section}.description" 2>/dev/null || true)"
 	fi
 
+	updated_at="$(date +%s 2>/dev/null || printf '%s' '0')"
 	wg_dump="$(wg show "$VPN_IF" dump 2>/dev/null)"
 
 	if [ -n "$wg_dump" ]; then
@@ -361,14 +373,46 @@ EOF
 		fi
 	fi
 
+	if [ "$desired_enabled" != '1' ] || [ "$interface_disabled" = 'true' ]; then
+		enterprise_state='disabled'
+	elif [ "$operation" = 'idle' ] && [ "$connected" = 'true' ]; then
+		enterprise_state='connected'
+	elif [ "$operation" = 'idle' ] && [ "$runtime_configured" = 'true' ]; then
+		enterprise_state='degraded'
+	elif [ "$operation" = 'idle' ]; then
+		enterprise_state='idle'
+	else
+		case "$operation" in
+			busy:check)
+				enterprise_state='recovering'
+				;;
+			busy:setup|busy:rotate)
+				enterprise_state='connecting'
+				;;
+			busy:disable_runtime)
+				enterprise_state='disabled'
+				;;
+			*)
+				enterprise_state='recovering'
+				;;
+		esac
+	fi
+
+	[ -r "$NORDVPN_EASY_PUBLIC_IP_CACHE" ] && public_ip_cached="$(sed -n '1p' "$NORDVPN_EASY_PUBLIC_IP_CACHE" 2>/dev/null)"
+	[ -r "$NORDVPN_EASY_PUBLIC_COUNTRY_CACHE" ] && public_country_cached="$(sed -n '1p' "$NORDVPN_EASY_PUBLIC_COUNTRY_CACHE" 2>/dev/null)"
+	[ -r "$NORDVPN_EASY_LAST_ERROR_CACHE" ] && last_error="$(sed -n '1p' "$NORDVPN_EASY_LAST_ERROR_CACHE" 2>/dev/null)"
+
 	cat <<EOF
 {
+  "updated_at": $updated_at,
+  "state": "$(nordvpn_easy_json_escape "$enterprise_state")",
   "desired_enabled": $([ "$desired_enabled" = '1' ] && printf '%s' 'true' || printf '%s' 'false'),
   "enabled": $([ "$desired_enabled" = '1' ] && printf '%s' 'true' || printf '%s' 'false'),
   "runtime_disabled": $interface_disabled,
   "interface_disabled": $interface_disabled,
   "runtime_configured": $runtime_configured,
   "server_selection_mode": "$(nordvpn_easy_json_escape "${SERVER_SELECTION_MODE:-auto}")",
+  "kill_switch_enabled": $([ "${KILL_SWITCH_ENABLED:-0}" = '1' ] && printf '%s' 'true' || printf '%s' 'false'),
   "selected_country": "$(nordvpn_easy_json_escape "${VPN_COUNTRY:-}")",
   "interface": "$(nordvpn_easy_json_escape "${VPN_IF:-}")",
   "vpn_status": "$(nordvpn_easy_json_escape "$vpn_state")",
@@ -385,6 +429,9 @@ EOF
   "transfer_rx_bytes": $transfer_rx_bytes,
   "transfer_tx": "$(nordvpn_easy_json_escape "$transfer_tx")",
   "transfer_tx_bytes": $transfer_tx_bytes,
+  "public_ip_cached": "$(nordvpn_easy_json_escape "$public_ip_cached")",
+  "public_country_cached": "$(nordvpn_easy_json_escape "$public_country_cached")",
+  "last_error": "$(nordvpn_easy_json_escape "$last_error")",
   "current_server_hostname": "$(nordvpn_easy_json_escape "$current_hostname")",
   "current_server_station": "$(nordvpn_easy_json_escape "$current_station")",
   "current_server_city": "$(nordvpn_easy_json_escape "$current_city")",
@@ -394,4 +441,31 @@ EOF
   "preferred_server_station": "$(nordvpn_easy_json_escape "$preferred_station")"
 }
 EOF
+}
+
+nordvpn_easy_write_status_cache() {
+	local cache_file="${1:-$NORDVPN_EASY_STATUS_CACHE}"
+	local cache_dir cache_tmp
+
+	cache_dir="$(dirname "$cache_file")"
+	mkdir -p "$cache_dir" || return 1
+	cache_tmp="${cache_file}.$$"
+
+	nordvpn_easy_emit_status_json > "$cache_tmp" || {
+		rm -f "$cache_tmp"
+		return 1
+	}
+
+	mv "$cache_tmp" "$cache_file"
+}
+
+nordvpn_easy_emit_cached_status_json() {
+	local cache_file="${1:-$NORDVPN_EASY_STATUS_CACHE}"
+
+	if [ -s "$cache_file" ]; then
+		cat "$cache_file"
+		return 0
+	fi
+
+	nordvpn_easy_emit_status_json
 }

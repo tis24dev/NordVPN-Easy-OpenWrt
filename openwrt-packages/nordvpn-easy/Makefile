@@ -19,7 +19,7 @@ define Package/nordvpn-easy
   CATEGORY:=Network
   SUBMENU:=VPN
   TITLE:=NordVPN Easy backend service for OpenWrt
-  DEPENDS:=+ca-certificates +curl +jq +kmod-wireguard +wireguard-tools
+  DEPENDS:=+ca-certificates +curl +jq +kmod-wireguard +wireguard-tools +rpcd
   PKGARCH:=all
   URL:=$(NORDVPN_EASY_PACKAGE_URL)
   MAINTAINER:=$(NORDVPN_EASY_PACKAGE_MAINTAINER)
@@ -42,6 +42,8 @@ define Package/nordvpn-easy/install
 	$(INSTALL_BIN) ./files/usr/libexec/nordvpn-easy/core.sh $(1)/usr/libexec/nordvpn-easy/core.sh
 	$(INSTALL_DIR) $(1)/usr/libexec/nordvpn-easy/lib
 	$(CP) ./files/usr/libexec/nordvpn-easy/lib/. $(1)/usr/libexec/nordvpn-easy/lib/
+	$(INSTALL_DIR) $(1)/usr/libexec/rpcd
+	$(INSTALL_BIN) ./files/usr/libexec/rpcd/nordvpn.easy $(1)/usr/libexec/rpcd/nordvpn.easy
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_CONF) ./files/etc/config/nordvpn_easy $(1)/etc/config/nordvpn_easy
 	$(INSTALL_DIR) $(1)/etc/init.d

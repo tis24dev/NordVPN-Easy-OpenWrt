@@ -75,13 +75,24 @@ return view.extend({
 		s.addremove = false;
 
 		o = s.option(form.Value, 'check_cron_schedule', _('Cron Schedule'));
-		o.placeholder = '* * * * *';
+		o.placeholder = '*/10 * * * *';
 		o.rmempty = true;
-		o.description = _('Leave empty to disable cron-based checks.');
+		o.description = _('Leave empty to disable cron-based checks. Recommended values are 5 minutes or slower.');
 
 		o = s.option(form.Flag, 'enable_hotplug', _('Enable Hotplug Checks'));
 		o.default = '1';
 		o.rmempty = false;
+
+		o = s.option(form.Value, 'hotplug_debounce_seconds', _('Hotplug Debounce'));
+		o.placeholder = '30';
+		o.datatype = 'uinteger';
+		o.rmempty = false;
+		o.description = _('Minimum seconds between hotplug-triggered health checks.');
+
+		o = s.option(form.Flag, 'kill_switch_enabled', _('Enable Kill Switch'));
+		o.default = '0';
+		o.rmempty = false;
+		o.description = _('Advanced guardrail for future routing/firewall policy enforcement. Default is off.');
 
 		o = s.option(form.Value, 'failure_retry_delay', _('Failure Retry Delay'));
 		o.placeholder = '6';

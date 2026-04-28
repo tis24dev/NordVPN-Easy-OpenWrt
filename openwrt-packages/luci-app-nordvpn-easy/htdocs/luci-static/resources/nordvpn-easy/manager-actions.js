@@ -320,6 +320,18 @@ function updateLocalStatus(state, options) {
 				managerUI.ids.TRANSFER_STATUS_ID,
 				_('%s / %s').format(status.transfer_rx || '0 B', status.transfer_tx || '0 B')
 			);
+			managerUI.replaceStatusText(managerUI.ids.LAST_ERROR_STATUS_ID, status.last_error || _('None'));
+
+			if (status.public_ip_cached) {
+				state.currentPublicIp = status.public_ip_cached;
+				managerUI.replaceStatusText(managerUI.ids.PUBLIC_IP_STATUS_ID, status.public_ip_cached);
+			}
+
+			if (status.public_country_cached) {
+				state.currentPublicCountry = status.public_country_cached;
+				state.currentPublicCountryIp = status.public_ip_cached || state.currentPublicIp || '';
+				managerUI.replaceStatusText(managerUI.ids.PUBLIC_COUNTRY_STATUS_ID, status.public_country_cached);
+			}
 
 			if (state.currentOperationStatus.indexOf('busy:') === 0) {
 				busyAction = state.currentOperationStatus.substring(5);
