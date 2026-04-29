@@ -5,6 +5,18 @@ function normalizeCountryCode(value) {
 	return String(value || '').trim().toUpperCase();
 }
 
+function parseEnabledFlag(value) {
+	switch (String(value != null ? value : '0').trim().toLowerCase()) {
+	case '1':
+	case 'true':
+	case 'yes':
+	case 'on':
+		return true;
+	default:
+		return false;
+	}
+}
+
 function emptyServerCatalog() {
 	return {
 		country_id: '',
@@ -112,6 +124,7 @@ function buildServerCatalogIndex(catalog) {
 
 return baseclass.extend({
 	normalizeCountryCode: normalizeCountryCode,
+	parseEnabledFlag: parseEnabledFlag,
 	emptyServerCatalog: emptyServerCatalog,
 	parseJson: parseJson,
 	parseCountries: parseCountries,

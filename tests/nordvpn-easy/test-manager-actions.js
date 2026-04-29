@@ -18,6 +18,16 @@ const managerActionsPath = path.join(
 	'nordvpn-easy',
 	'manager-actions.js'
 );
+const managerDataPath = path.join(
+	rootDir,
+	'openwrt-packages',
+	'luci-app-nordvpn-easy',
+	'htdocs',
+	'luci-static',
+	'resources',
+	'nordvpn-easy',
+	'manager-data.js'
+);
 
 if (!String.prototype.format) {
 	Object.defineProperty(String.prototype, 'format', {
@@ -114,14 +124,45 @@ function loadManagerActionsModule(overrides) {
 	}
 
 	return {
-		managerActions: vm.runInNewContext(`(function(){\n${source}\n})();`, context, {
+		managerActions: vm.runInNewContext(`
+			if (!String.prototype.format) {
+				Object.defineProperty(String.prototype, 'format', {
+					value: function() {
+						let index = 0;
+						const args = arguments;
+
+						return String(this).replace(/%[sd]/g, function() {
+							const value = args[index++];
+							return String(value);
+						});
+					},
+					configurable: true
+				});
+			}
+			(function(){\n${source}\n})();
+		`, context, {
 			filename: managerActionsPath
 		}),
 		context: context
 	};
 }
 
+function loadManagerDataModule() {
+	const source = fs.readFileSync(managerDataPath, 'utf8');
+
+	return vm.runInNewContext(`(function(){\n${source}\n})();`, {
+		baseclass: {
+			extend(api) {
+				return api;
+			}
+		}
+	}, {
+		filename: managerDataPath
+	});
+}
+
 const managerActions = loadManagerActionsModule().managerActions;
+const managerData = loadManagerDataModule();
 
 function normalizeValue(value) {
 	return JSON.parse(JSON.stringify(value));
@@ -152,6 +193,10 @@ const unknownRuntime = {};
 
 assert.equal(typeof managerActions.hasServerSelectionChanged, 'function', 'hasServerSelectionChanged is exported');
 assert.equal(typeof managerActions.deriveRuntimeActionPlan, 'function', 'deriveRuntimeActionPlan is exported');
+assert.equal(typeof managerActions.renderLocalStatusSnapshot, 'function', 'renderLocalStatusSnapshot is exported');
+assert.equal(managerData.parseEnabledFlag(undefined), false, 'missing enabled option is treated as disabled');
+assert.equal(managerData.parseEnabledFlag('0'), false, 'explicit disabled value is treated as disabled');
+assert.equal(managerData.parseEnabledFlag('1'), true, 'explicit enabled value is treated as enabled');
 
 assert.equal(
 	managerActions.hasServerSelectionChanged('AT', 'UY', 'auto', 'auto', '', ''),
@@ -301,7 +346,10 @@ function buildUpdateLocalStatusHarness(serviceOverrides) {
 				ENDPOINT_STATUS_ID: 'endpoint',
 				HANDSHAKE_STATUS_ID: 'handshake',
 				TRANSFER_STATUS_ID: 'transfer',
-				OPERATION_STATUS_ID: 'operation'
+				OPERATION_STATUS_ID: 'operation',
+				LAST_ERROR_STATUS_ID: 'last_error',
+				PUBLIC_IP_STATUS_ID: 'public_ip',
+				PUBLIC_COUNTRY_STATUS_ID: 'public_country'
 			},
 			replaceStatusText() {},
 			setManagerControlsDisabled() {},
@@ -337,6 +385,7 @@ function buildUpdateLocalStatusState() {
 		currentLocalStatusLastUpdated: 1234,
 		pendingOperationLabel: '',
 		currentOperationStatus: 'idle',
+		appliedEnabled: true,
 		currentPublicIp: '',
 		currentPublicCountry: '',
 		currentPublicCountryIp: '',
@@ -483,10 +532,116 @@ async function testUpdateLocalStatusDoesNotClobberLivePublicLookupWithCache() {
 	assert.equal(replacements.public_country, 'IT', 'public country display prefers live value over cached status');
 }
 
+function testRenderLocalStatusSnapshotClearsDisabledPlaceholders() {
+	const replacements = {};
+	const indicators = {};
+	const controls = [];
+	const actions = loadManagerActionsModule({
+		managerData: {
+			normalizeCountryCode(value) {
+				return String(value || '').trim().toUpperCase();
+			},
+			parseLocalStatus(raw) {
+				return JSON.parse(raw || '{}');
+			}
+		},
+		managerStore: {
+			PHASES: { RUNTIME_BUSY: 'runtime_busy' },
+			syncPhase(state) {
+				state.phase = 'synced';
+			},
+			setPhase(state, phase) {
+				state.phase = phase;
+			}
+		},
+		managerUI: {
+			ids: {
+				CURRENT_SERVER_STATUS_ID: 'current',
+				PREFERRED_SERVER_STATUS_ID: 'preferred',
+				ENDPOINT_STATUS_ID: 'endpoint',
+				HANDSHAKE_STATUS_ID: 'handshake',
+				TRANSFER_STATUS_ID: 'transfer',
+				OPERATION_STATUS_ID: 'operation',
+				LAST_ERROR_STATUS_ID: 'last_error',
+				PUBLIC_IP_STATUS_ID: 'public_ip',
+				PUBLIC_COUNTRY_STATUS_ID: 'public_country'
+			},
+			replaceStatusText(id, value) {
+				replacements[id] = String(value);
+			},
+			setManagerControlsDisabled(disabled) {
+				controls.push(!!disabled);
+			},
+			setVpnStatusIndicator(state, label) {
+				indicators.vpn = { state: state, label: String(label) };
+			},
+			updateCountryMatchStatus() {},
+			updateServerSelectionState() {},
+			currentServerSummaryFromStatus(status) {
+				return status.desired_enabled ? 'Configured' : 'Disabled';
+			},
+			preferredServerSummaryFromStatus() {
+				return 'Automatic / Best recommended';
+			},
+			isDisableRequested() {
+				return false;
+			}
+		}
+	}).managerActions;
+	const status = {
+		desired_enabled: false,
+		runtime_disabled: true,
+		interface_disabled: true,
+		runtime_configured: false,
+		server_selection_mode: 'auto',
+		vpn_status: 'inactive',
+		operation_status: 'idle',
+		endpoint: 'N/A',
+		latest_handshake: 'Never',
+		transfer_rx: '0 B',
+		transfer_tx: '0 B',
+		public_ip_cached: '198.51.100.10',
+		public_country_cached: 'US',
+		last_error: ''
+	};
+	const state = {
+		appliedEnabled: false,
+		appliedCountryCode: '',
+		currentLocalStatus: status,
+		currentOperationStatus: 'idle',
+		pendingOperationLabel: '',
+		currentPublicIp: '203.0.113.20',
+		currentPublicCountry: 'IT',
+		currentPublicCountryIp: '203.0.113.20',
+		cachedPublicIp: '',
+		cachedPublicCountry: '',
+		cachedPublicCountryIp: ''
+	};
+
+	actions.renderLocalStatusSnapshot(state, status);
+
+	assert.equal(replacements.current, 'Disabled', 'disabled status replaces the current-server placeholder');
+	assert.equal(replacements.preferred, 'Automatic / Best recommended', 'disabled status replaces the preferred-server placeholder');
+	assert.equal(replacements.endpoint, 'N/A', 'disabled status renders a deterministic endpoint value');
+	assert.equal(replacements.handshake, 'Never', 'disabled status renders a deterministic handshake value');
+	assert.equal(replacements.transfer, '0 B / 0 B', 'disabled status renders deterministic transfer counters');
+	assert.equal(replacements.operation, 'Idle', 'disabled status renders a deterministic operation value');
+	assert.equal(replacements.last_error, 'None', 'disabled status renders an empty error as none');
+	assert.equal(replacements.public_ip, 'Unavailable', 'disabled status does not expose stale public IP data');
+	assert.equal(replacements.public_country, 'Unavailable', 'disabled status does not expose stale public country data');
+	assert.equal(state.currentPublicIp, '', 'disabled rendering clears live public IP state');
+	assert.equal(state.currentPublicCountry, '', 'disabled rendering clears live public country state');
+	assert.equal(state.cachedPublicIp, '198.51.100.10', 'cached public IP is retained separately for later enabled states');
+	assert.equal(state.cachedPublicCountry, 'US', 'cached public country is retained separately for later enabled states');
+	assert.deepEqual(indicators.vpn, { state: 'inactive', label: 'Disabled' }, 'disabled status renders the VPN indicator as disabled');
+	assert.deepEqual(controls, [ false ], 'disabled idle status leaves manager controls enabled');
+}
+
 Promise.resolve().then(async function() {
 	await testUpdateLocalStatusMarksSnapshotsStaleOnFailedResponse();
 	await testUpdateLocalStatusMarksSnapshotsStaleOnRejectedExec();
 	await testUpdateLocalStatusDoesNotClobberLivePublicLookupWithCache();
+	testRenderLocalStatusSnapshotClearsDisabledPlaceholders();
 	console.log('test-manager-actions.js: ok');
 }).catch(function(err) {
 	console.error(err);

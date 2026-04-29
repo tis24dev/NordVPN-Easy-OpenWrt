@@ -193,7 +193,7 @@ return view.extend({
 		const currentPreferredStation = String(uci.get('nordvpn_easy', 'main', 'preferred_server_station') || '');
 		let m, s, o;
 
-		this.initialEnabled = (uci.get('nordvpn_easy', 'main', 'enabled') !== '0');
+		this.initialEnabled = managerData.parseEnabledFlag(uci.get('nordvpn_easy', 'main', 'enabled'));
 		this.initialCountry = currentCountry;
 		this.initialMode = currentMode;
 		this.initialPreferredStation = currentPreferredStation;
@@ -287,6 +287,7 @@ return view.extend({
 			const modeSelect = managerUI.getSelectElement(managerUI.ids.MODE_FIELD_ID);
 
 			managerUI.renderServerChoices(managerUI.getSelectElement(managerUI.ids.SERVER_FIELD_ID), state.currentServerCatalog, currentPreferredStation);
+			managerActions.renderLocalStatusSnapshot(state, state.currentLocalStatus);
 			if (!state.currentLocalStatusFresh)
 				managerActions.updateLocalStatus(state, { force: true });
 

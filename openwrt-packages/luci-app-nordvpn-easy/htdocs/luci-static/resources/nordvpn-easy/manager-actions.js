@@ -206,12 +206,158 @@ function normalizePublicIpValue(value) {
 	return publicIp;
 }
 
+function publicLookupsAllowed(state, status) {
+	const runtimeStatus = status || state.currentLocalStatus || {};
+
+	return !!state.appliedEnabled &&
+		!!runtimeStatus.desired_enabled &&
+		!runtimeStatus.runtime_disabled &&
+		!runtimeStatus.interface_disabled &&
+		!managerUI.isDisableRequested(state);
+}
+
+function clearPublicLookupDisplay(state) {
+	state.currentPublicIp = '';
+	state.currentPublicCountry = '';
+	state.currentPublicCountryIp = '';
+	managerUI.replaceStatusText(managerUI.ids.PUBLIC_IP_STATUS_ID, _('Unavailable'));
+	managerUI.replaceStatusText(managerUI.ids.PUBLIC_COUNTRY_STATUS_ID, _('Unavailable'));
+}
+
+function updateCachedPublicLookupState(state, status) {
+	const cachedPublicIp = normalizePublicIpValue(status.public_ip_cached);
+	const cachedPublicCountry = managerData.normalizeCountryCode(status.public_country_cached || '');
+
+	if (cachedPublicIp)
+		state.cachedPublicIp = cachedPublicIp;
+
+	if (cachedPublicCountry) {
+		state.cachedPublicCountry = cachedPublicCountry;
+		state.cachedPublicCountryIp = cachedPublicIp || state.cachedPublicCountryIp || '';
+	}
+}
+
+function renderPublicLookupStatus(state, status) {
+	if (!publicLookupsAllowed(state, status)) {
+		clearPublicLookupDisplay(state);
+		return;
+	}
+
+	managerUI.replaceStatusText(
+		managerUI.ids.PUBLIC_IP_STATUS_ID,
+		state.currentPublicIp || state.cachedPublicIp || _('Unavailable')
+	);
+	managerUI.replaceStatusText(
+		managerUI.ids.PUBLIC_COUNTRY_STATUS_ID,
+		state.currentPublicCountry || state.cachedPublicCountry || _('Unavailable')
+	);
+}
+
+function renderLocalStatusDetails(state, status) {
+	const runtimeStatus = status || managerData.parseLocalStatus('{}');
+
+	updateCachedPublicLookupState(state, runtimeStatus);
+	managerUI.replaceStatusText(managerUI.ids.CURRENT_SERVER_STATUS_ID, managerUI.currentServerSummaryFromStatus(runtimeStatus, state));
+	managerUI.replaceStatusText(managerUI.ids.PREFERRED_SERVER_STATUS_ID, managerUI.preferredServerSummaryFromStatus(runtimeStatus));
+	managerUI.replaceStatusText(managerUI.ids.ENDPOINT_STATUS_ID, runtimeStatus.endpoint || _('Unavailable'));
+	managerUI.replaceStatusText(managerUI.ids.HANDSHAKE_STATUS_ID, runtimeStatus.latest_handshake || _('Never'));
+	managerUI.replaceStatusText(
+		managerUI.ids.TRANSFER_STATUS_ID,
+		_('%s / %s').format(runtimeStatus.transfer_rx || '0 B', runtimeStatus.transfer_tx || '0 B')
+	);
+	managerUI.replaceStatusText(managerUI.ids.LAST_ERROR_STATUS_ID, runtimeStatus.last_error || _('None'));
+	renderPublicLookupStatus(state, runtimeStatus);
+}
+
+function renderLocalStatusSnapshot(state, status) {
+	let busyAction;
+	const runtimeStatus = status || managerData.parseLocalStatus('{}');
+	const desiredEnabled = !!runtimeStatus.desired_enabled;
+	const operationStatus = String(state.currentOperationStatus || 'idle');
+
+	state.currentLocalStatus = runtimeStatus;
+	renderLocalStatusDetails(state, runtimeStatus);
+
+	if (operationStatus.indexOf('busy:') === 0) {
+		busyAction = operationStatus.substring(5);
+		managerUI.replaceStatusText(managerUI.ids.OPERATION_STATUS_ID, _('Applying (%s)...').format(managerFormat.humanizeAction(busyAction)));
+		managerUI.setManagerControlsDisabled(true);
+
+		if (busyAction !== 'refresh_countries' && busyAction !== 'server_catalog') {
+			managerStore.setPhase(state, managerStore.PHASES.RUNTIME_BUSY);
+			managerUI.setVpnStatusIndicator(
+				managerUI.isDisableRequested(state) ? 'stopping' : 'starting',
+				managerUI.isDisableRequested(state) ? _('Disabling') : _('Activating')
+			);
+			managerUI.updateCountryMatchStatus(state);
+			managerUI.updateServerSelectionState(state);
+			return runtimeStatus;
+		}
+	}
+	else if (operationStatus === 'busy') {
+		managerUI.replaceStatusText(managerUI.ids.OPERATION_STATUS_ID, _('Applying...'));
+		managerUI.setVpnStatusIndicator(
+			managerUI.isDisableRequested(state) ? 'stopping' : 'starting',
+			managerUI.isDisableRequested(state) ? _('Disabling') : _('Activating')
+		);
+		managerUI.setManagerControlsDisabled(true);
+		managerStore.setPhase(state, managerStore.PHASES.RUNTIME_BUSY);
+		managerUI.updateCountryMatchStatus(state);
+		managerUI.updateServerSelectionState(state);
+		return runtimeStatus;
+	}
+
+	if (state.pendingOperationLabel) {
+		managerUI.replaceStatusText(
+			managerUI.ids.OPERATION_STATUS_ID,
+			_('Applying (%s)...').format(managerFormat.humanizeAction(state.pendingOperationLabel))
+		);
+		managerUI.setVpnStatusIndicator(
+			managerUI.isDisableRequested(state) ? 'stopping' : 'starting',
+			managerUI.isDisableRequested(state) ? _('Disabling') : _('Activating')
+		);
+		managerUI.setManagerControlsDisabled(true);
+		managerStore.setPhase(state, managerStore.PHASES.RUNTIME_BUSY);
+	}
+	else {
+		managerUI.replaceStatusText(
+			managerUI.ids.OPERATION_STATUS_ID,
+			operationStatus === 'unknown' ? _('Unknown') : _('Idle')
+		);
+		managerUI.setManagerControlsDisabled(false);
+		managerStore.syncPhase(state);
+	}
+
+	if (!desiredEnabled || runtimeStatus.runtime_disabled || runtimeStatus.interface_disabled || managerUI.isDisableRequested(state))
+		managerUI.setVpnStatusIndicator('inactive', _('Disabled'));
+	else if (runtimeStatus.vpn_status === 'active' || runtimeStatus.connected)
+		managerUI.setVpnStatusIndicator('active', _('Connected'));
+	else if (runtimeStatus.vpn_status === 'starting')
+		managerUI.setVpnStatusIndicator('starting', _('Starting'));
+	else if (runtimeStatus.vpn_status === 'stopping')
+		managerUI.setVpnStatusIndicator('stopping', _('Stopping'));
+	else if (runtimeStatus.vpn_status === 'error')
+		managerUI.setVpnStatusIndicator('error', _('Error'));
+	else
+		managerUI.setVpnStatusIndicator('inactive', _('Disconnected'));
+
+	managerUI.updateCountryMatchStatus(state);
+	managerUI.updateServerSelectionState(state);
+	return runtimeStatus;
+}
+
 function updatePublicIp(state, options) {
 	const opts = options || {};
 	const extraArgs = opts.quiet ? [ 'quiet' ] : [];
 
 	if (state.pollingSuspended && !opts.force)
 		return Promise.resolve();
+
+	if (!publicLookupsAllowed(state, state.currentLocalStatus)) {
+		clearPublicLookupDisplay(state);
+		managerUI.updateCountryMatchStatus(state);
+		return Promise.resolve();
+	}
 
 	return managerStore.runExclusive(state, 'publicIp', function() {
 		return service.execService('public_ip', extraArgs).then(function(res) {
@@ -267,6 +413,12 @@ function updatePublicCountry(state, options) {
 		return Promise.resolve();
 
 	return managerStore.runExclusive(state, 'publicCountry', function() {
+		if (!publicLookupsAllowed(state, state.currentLocalStatus)) {
+			clearPublicLookupDisplay(state);
+			managerUI.updateCountryMatchStatus(state);
+			return;
+		}
+
 		if (!expectedPublicIp) {
 			state.currentPublicCountry = '';
 			state.currentPublicCountryIp = '';
@@ -299,12 +451,9 @@ function updateLocalStatus(state, options) {
 
 	return managerStore.runExclusive(state, 'status', function() {
 		return service.execService('status_json').then(function(res) {
-			let busyAction;
 			const localStatusSnapshot = buildLocalStatusSnapshot(res);
 			const status = localStatusSnapshot.status;
 			const desiredEnabled = !!status.desired_enabled;
-			const cachedPublicIp = normalizePublicIpValue(status.public_ip_cached);
-			const cachedPublicCountry = managerData.normalizeCountryCode(status.public_country_cached || '');
 
 			managerStore.clearError(state);
 			state.currentLocalStatus = status;
@@ -313,97 +462,7 @@ function updateLocalStatus(state, options) {
 			state.currentOperationStatus = String(status.operation_status || 'idle');
 			state.appliedEnabled = desiredEnabled;
 			state.appliedCountryCode = managerData.normalizeCountryCode(status.selected_country || state.appliedCountryCode);
-
-			managerUI.replaceStatusText(managerUI.ids.CURRENT_SERVER_STATUS_ID, managerUI.currentServerSummaryFromStatus(status, state));
-			managerUI.replaceStatusText(managerUI.ids.PREFERRED_SERVER_STATUS_ID, managerUI.preferredServerSummaryFromStatus(status));
-			managerUI.replaceStatusText(managerUI.ids.ENDPOINT_STATUS_ID, status.endpoint || _('Unavailable'));
-			managerUI.replaceStatusText(managerUI.ids.HANDSHAKE_STATUS_ID, status.latest_handshake || _('Never'));
-			managerUI.replaceStatusText(
-				managerUI.ids.TRANSFER_STATUS_ID,
-				_('%s / %s').format(status.transfer_rx || '0 B', status.transfer_tx || '0 B')
-			);
-			managerUI.replaceStatusText(managerUI.ids.LAST_ERROR_STATUS_ID, status.last_error || _('None'));
-
-			if (cachedPublicIp)
-				state.cachedPublicIp = cachedPublicIp;
-
-			if (cachedPublicCountry) {
-				state.cachedPublicCountry = cachedPublicCountry;
-				state.cachedPublicCountryIp = cachedPublicIp || state.cachedPublicCountryIp || '';
-			}
-
-			managerUI.replaceStatusText(
-				managerUI.ids.PUBLIC_IP_STATUS_ID,
-				state.currentPublicIp || state.cachedPublicIp || _('Unavailable')
-			);
-			managerUI.replaceStatusText(
-				managerUI.ids.PUBLIC_COUNTRY_STATUS_ID,
-				state.currentPublicCountry || state.cachedPublicCountry || _('Unavailable')
-			);
-
-			if (state.currentOperationStatus.indexOf('busy:') === 0) {
-				busyAction = state.currentOperationStatus.substring(5);
-				managerUI.replaceStatusText(managerUI.ids.OPERATION_STATUS_ID, _('Applying (%s)...').format(managerFormat.humanizeAction(busyAction)));
-				managerUI.setManagerControlsDisabled(true);
-
-				if (busyAction !== 'refresh_countries' && busyAction !== 'server_catalog') {
-					managerStore.setPhase(state, managerStore.PHASES.RUNTIME_BUSY);
-					managerUI.setVpnStatusIndicator(
-						managerUI.isDisableRequested(state) ? 'stopping' : 'starting',
-						managerUI.isDisableRequested(state) ? _('Disabling') : _('Activating')
-					);
-					managerUI.updateCountryMatchStatus(state);
-					managerUI.updateServerSelectionState(state);
-					return status;
-				}
-			}
-			else if (state.currentOperationStatus === 'busy') {
-				managerUI.replaceStatusText(managerUI.ids.OPERATION_STATUS_ID, _('Applying...'));
-				managerUI.setVpnStatusIndicator(
-					managerUI.isDisableRequested(state) ? 'stopping' : 'starting',
-					managerUI.isDisableRequested(state) ? _('Disabling') : _('Activating')
-				);
-				managerUI.setManagerControlsDisabled(true);
-				managerStore.setPhase(state, managerStore.PHASES.RUNTIME_BUSY);
-				managerUI.updateCountryMatchStatus(state);
-				managerUI.updateServerSelectionState(state);
-				return status;
-			}
-
-			if (state.pendingOperationLabel) {
-				managerUI.replaceStatusText(
-					managerUI.ids.OPERATION_STATUS_ID,
-					_('Applying (%s)...').format(managerFormat.humanizeAction(state.pendingOperationLabel))
-				);
-				managerUI.setVpnStatusIndicator(
-					managerUI.isDisableRequested(state) ? 'stopping' : 'starting',
-					managerUI.isDisableRequested(state) ? _('Disabling') : _('Activating')
-				);
-				managerUI.setManagerControlsDisabled(true);
-				managerStore.setPhase(state, managerStore.PHASES.RUNTIME_BUSY);
-			}
-			else {
-				managerUI.replaceStatusText(managerUI.ids.OPERATION_STATUS_ID, _('Idle'));
-				managerUI.setManagerControlsDisabled(false);
-				managerStore.syncPhase(state);
-			}
-
-			if (!desiredEnabled || status.runtime_disabled || status.interface_disabled || managerUI.isDisableRequested(state))
-				managerUI.setVpnStatusIndicator('inactive', _('Disabled'));
-			else if (status.vpn_status === 'active' || status.connected)
-				managerUI.setVpnStatusIndicator('active', _('Connected'));
-			else if (status.vpn_status === 'starting')
-				managerUI.setVpnStatusIndicator('starting', _('Starting'));
-			else if (status.vpn_status === 'stopping')
-				managerUI.setVpnStatusIndicator('stopping', _('Stopping'));
-			else if (status.vpn_status === 'error')
-				managerUI.setVpnStatusIndicator('error', _('Error'));
-			else
-				managerUI.setVpnStatusIndicator('inactive', _('Disconnected'));
-
-			managerUI.updateCountryMatchStatus(state);
-			managerUI.updateServerSelectionState(state);
-			return status;
+			return renderLocalStatusSnapshot(state, status);
 		}).catch(function(err) {
 			state.currentLocalStatusFresh = false;
 			state.currentLocalStatusLastUpdated = 0;
@@ -411,20 +470,7 @@ function updateLocalStatus(state, options) {
 
 			if (!state.pendingOperationLabel)
 				managerStore.setError(state, err);
-
-			managerUI.replaceStatusText(
-				managerUI.ids.OPERATION_STATUS_ID,
-				state.pendingOperationLabel ? _('Applying (%s)...').format(managerFormat.humanizeAction(state.pendingOperationLabel)) : _('Unknown')
-			);
-			managerUI.setVpnStatusIndicator(
-				state.pendingOperationLabel ? 'starting' : 'inactive',
-				state.pendingOperationLabel ? _('Activating') : _('Disconnected')
-			);
-			if (!state.pendingOperationLabel)
-				managerUI.setManagerControlsDisabled(false);
-			managerUI.updateCountryMatchStatus(state);
-			managerUI.updateServerSelectionState(state);
-			return state.currentLocalStatus;
+			return renderLocalStatusSnapshot(state, state.currentLocalStatus || managerData.parseLocalStatus('{}'));
 		});
 	});
 }
@@ -649,7 +695,7 @@ function handleSaveApply(viewState, state, ev, mode) {
 						uci.unload('nordvpn_easy');
 						return uci.load('nordvpn_easy');
 					}).then(function() {
-						const enabled = (uci.get('nordvpn_easy', 'main', 'enabled') !== '0');
+						const enabled = managerData.parseEnabledFlag(uci.get('nordvpn_easy', 'main', 'enabled'));
 						const country = managerData.normalizeCountryCode(uci.get('nordvpn_easy', 'main', 'vpn_country') || '');
 						const modeValue = String(uci.get('nordvpn_easy', 'main', 'server_selection_mode') || 'auto');
 						const preferred = String(uci.get('nordvpn_easy', 'main', 'preferred_server_station') || '');
@@ -753,6 +799,7 @@ return baseclass.extend({
 	hasServerSelectionChanged: hasServerSelectionChanged,
 	deriveRuntimeActionPlan: deriveRuntimeActionPlan,
 	loadServerCatalog: loadServerCatalog,
+	renderLocalStatusSnapshot: renderLocalStatusSnapshot,
 	updatePublicIp: updatePublicIp,
 	updatePublicCountry: updatePublicCountry,
 	updateLocalStatus: updateLocalStatus,
