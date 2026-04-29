@@ -56,7 +56,8 @@ grep -F "$luci_lib_source" "$LUCI_MAKEFILE" >/dev/null 2>&1 || {
 	exit 1
 }
 
-grep -F "\$\$\$\$lib" "$LUCI_MAKEFILE" >/dev/null 2>&1 && {
+dollar_pattern='[$]'
+grep -E "${dollar_pattern}${dollar_pattern}+lib" "$LUCI_MAKEFILE" >/dev/null 2>&1 && {
 	printf '%s\n' 'FAIL: LuCI package must not use shell-variable library install loops; OpenWrt expands them differently across build phases' >&2
 	exit 1
 }

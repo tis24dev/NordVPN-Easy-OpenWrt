@@ -41,6 +41,12 @@ const callServerCatalog = rpc.declare({
 	params: [ 'country', 'force' ]
 });
 
+const callRefreshServers = rpc.declare({
+	object: 'nordvpn.easy',
+	method: 'refresh_servers',
+	params: [ 'country', 'force' ]
+});
+
 function parseJson(raw, fallback) {
 	try {
 		return JSON.parse(raw || '');
@@ -124,6 +130,9 @@ function execService(action, extraArgs) {
 		break;
 	case 'refresh_countries_force':
 		request = callRefreshCountries(true);
+		break;
+	case 'refresh_servers':
+		request = callRefreshServers(args[0] || '', args[1] === '1' || args[1] === true);
 		break;
 	case 'server_catalog':
 		request = callServerCatalog(args[0] || '', args[1] === '1' || args[1] === true);

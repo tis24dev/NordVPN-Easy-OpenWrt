@@ -889,6 +889,7 @@ if [ "$ACTION" = 'public_ip' ]; then
   ACTION_RC=$?
   if [ "$ACTION_RC" -eq 0 ]; then
     nordvpn_easy_write_runtime_cache_value "$NORDVPN_EASY_PUBLIC_IP_CACHE" "${PUBLIC_IP:-}" >/dev/null 2>&1 || true
+    nordvpn_easy_write_runtime_cache_value "$NORDVPN_EASY_LAST_ERROR_CACHE" '' >/dev/null 2>&1 || true
     public_lookup_log 'public_ip request completed successfully'
   else
     nordvpn_easy_record_last_error "public_ip failed (rc=$ACTION_RC)"
@@ -907,6 +908,7 @@ if [ "$ACTION" = 'public_country' ]; then
   if [ "$ACTION_RC" -eq 0 ]; then
     nordvpn_easy_write_runtime_cache_value "$NORDVPN_EASY_PUBLIC_IP_CACHE" "${PUBLIC_IP:-}" >/dev/null 2>&1 || true
     nordvpn_easy_write_runtime_cache_value "$NORDVPN_EASY_PUBLIC_COUNTRY_CACHE" "${PUBLIC_COUNTRY:-}" >/dev/null 2>&1 || true
+    nordvpn_easy_write_runtime_cache_value "$NORDVPN_EASY_LAST_ERROR_CACHE" '' >/dev/null 2>&1 || true
     public_lookup_log 'public_country request completed successfully'
   else
     nordvpn_easy_record_last_error "public_country failed (rc=$ACTION_RC)"

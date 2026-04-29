@@ -1,7 +1,7 @@
 #!/bin/sh
 
 SERVICE_NAME='nordvpn-easy'
-INIT_SCRIPT='/etc/init.d/nordvpn-easy'
+INIT_SCRIPT="${NORDVPN_EASY_INIT_SCRIPT:-/etc/init.d/nordvpn-easy}"
 UCI_CONFIG='nordvpn_easy'
 UCI_SECTION='main'
 LIB_DIR="${NORDVPN_EASY_LIB_DIR:-/usr/libexec/nordvpn-easy/lib}"
@@ -31,6 +31,7 @@ rpc_input_bool() {
 rpc_command_result() {
 	local action="$1"
 	local tmp_dir out_file err_file rc stdout_json stderr_json
+	local cached_error message_json
 	shift
 
 	tmp_dir="$(mktemp -d /tmp/nordvpn-easy.rpc.XXXXXX 2>/dev/null)" || {
@@ -43,8 +44,18 @@ rpc_command_result() {
 	"$@" > "$out_file" 2> "$err_file"
 	rc=$?
 
+	if [ "$rc" -ne 0 ] && [ ! -s "$out_file" ] && [ ! -s "$err_file" ]; then
+		cached_error="$(sed -n '1p' "$NORDVPN_EASY_LAST_ERROR_CACHE" 2>/dev/null || true)"
+		printf '%s' "${cached_error:-${action} failed without output}" > "$err_file"
+	fi
+
 	stdout_json="$(jq -Rs . < "$out_file")"
 	stderr_json="$(jq -Rs . < "$err_file")"
+	if [ "$rc" -eq 0 ]; then
+		message_json="$stdout_json"
+	else
+		message_json="$stderr_json"
+	fi
 	rm -rf -- "$tmp_dir"
 
 	printf '{"action":%s,"code":%s,"success":%s,"stdout":%s,"stderr":%s,"message":%s}\n' \
@@ -53,7 +64,7 @@ rpc_command_result() {
 		"$([ "$rc" -eq 0 ] && printf '%s' 'true' || printf '%s' 'false')" \
 		"$stdout_json" \
 		"$stderr_json" \
-		"$([ "$rc" -eq 0 ] && printf '%s' "$stdout_json" || printf '%s' "$stderr_json")"
+		"$message_json"
 }
 
 rpc_load_runtime_context_readonly() {
@@ -83,7 +94,7 @@ rpc_status() {
 		return 0
 	fi
 
-	printf '{"updated_at":%s,"state":"failed","enabled":false,"desired_enabled":false,"runtime_disabled":true,"interface_disabled":true,"runtime_configured":false,"vpn_status":"error","operation_status":"idle","connected":false,"endpoint":"N/A","latest_handshake":"Never","latest_handshake_epoch":0,"transfer_rx":"0 B","transfer_rx_bytes":0,"transfer_tx":"0 B","transfer_tx_bytes":0,"public_ip_cached":"","public_country_cached":"","last_error":"failed to load runtime context from UCI"}\n' \
+	printf '{"updated_at":%s,"state":"failed","desired_enabled":false,"enabled":false,"runtime_disabled":true,"interface_disabled":true,"runtime_configured":false,"server_selection_mode":"auto","kill_switch_enabled":false,"selected_country":"","interface":"","vpn_status":"error","operation_status":"idle","operation_lock_state":"none","operation_lock_pid":"","operation_lock_action":"","operation_lock_age_seconds":0,"connected":false,"endpoint":"N/A","latest_handshake":"Never","latest_handshake_epoch":0,"transfer_rx":"0 B","transfer_rx_bytes":0,"transfer_tx":"0 B","transfer_tx_bytes":0,"public_ip_cached":"","public_country_cached":"","last_error":"failed to load runtime context from UCI","current_server_hostname":"","current_server_station":"","current_server_city":"","current_server_country":"","current_server_load":"","preferred_server_hostname":"","preferred_server_station":""}\n' \
 		"$(date +%s 2>/dev/null || printf '%s' '0')"
 }
 
