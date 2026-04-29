@@ -1,4 +1,5 @@
 'use strict';
+/* global baseclass, managerData, managerFormat, managerStore, managerUI, service, ui, uci, E, _ */
 'require baseclass';
 'require nordvpn-easy/manager-data as managerData';
 'require nordvpn-easy/manager-format as managerFormat';
@@ -360,6 +361,12 @@ function updatePublicIp(state, options) {
 	}
 
 	return managerStore.runExclusive(state, 'publicIp', function() {
+		if (!publicLookupsAllowed(state, state.currentLocalStatus)) {
+			clearPublicLookupDisplay(state);
+			managerUI.updateCountryMatchStatus(state);
+			return;
+		}
+
 		return service.execService('public_ip', extraArgs).then(function(res) {
 			const publicIp = (res.code === 0) ? normalizePublicIpValue(res.stdout) : '';
 			const previousPublicIp = state.currentPublicIp;
@@ -411,6 +418,12 @@ function updatePublicCountry(state, options) {
 
 	if (state.pollingSuspended && !opts.force)
 		return Promise.resolve();
+
+	if (!publicLookupsAllowed(state, state.currentLocalStatus)) {
+		clearPublicLookupDisplay(state);
+		managerUI.updateCountryMatchStatus(state);
+		return Promise.resolve();
+	}
 
 	return managerStore.runExclusive(state, 'publicCountry', function() {
 		if (!publicLookupsAllowed(state, state.currentLocalStatus)) {
