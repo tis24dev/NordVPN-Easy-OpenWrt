@@ -301,10 +301,13 @@ install_hotplug_hook() {
 		return 0
 	fi
 
-	cat > "$HOTPLUG_PATH" <<EOF
+cat > "$HOTPLUG_PATH" <<EOF
 #!/bin/sh
 WAN_IF='$(nordvpn_easy_shell_quote "$cfg_wan_if")'
 VPN_IF='$(nordvpn_easy_shell_quote "$cfg_vpn_if")'
+DEBOUNCE_SECONDS='$(nordvpn_easy_shell_quote "$cfg_hotplug_debounce_seconds")'
+RUN_DIR='/tmp/run/nordvpn-easy'
+STAMP_FILE="\$RUN_DIR/hotplug.last"
 
 case "\$ACTION" in
 	ifup|ifupdate|ifdown) ;;
@@ -312,6 +315,28 @@ case "\$ACTION" in
 esac
 
 [ "\$INTERFACE" = "\$WAN_IF" ] || [ "\$INTERFACE" = "\$VPN_IF" ] || exit 0
+
+case "\$DEBOUNCE_SECONDS" in
+	''|*[!0-9]*)
+		DEBOUNCE_SECONDS='30'
+		;;
+esac
+
+mkdir -p "\$RUN_DIR" 2>/dev/null || true
+NOW_TS="\$(date +%s 2>/dev/null || printf '%s' '0')"
+LAST_TS="\$(cat "\$STAMP_FILE" 2>/dev/null || printf '%s' '0')"
+case "\$NOW_TS:\$LAST_TS" in
+	*[!0-9:]*|0:*)
+		LAST_TS='0'
+		;;
+esac
+
+if [ "\$LAST_TS" -gt 0 ] && [ \$((NOW_TS - LAST_TS)) -lt "\$DEBOUNCE_SECONDS" ]; then
+	logger -t $SERVICE_NAME-hotplug "debounced \$ACTION for \$INTERFACE (last=\${LAST_TS}, debounce=\${DEBOUNCE_SECONDS}s)"
+	exit 0
+fi
+
+printf '%s\n' "\$NOW_TS" > "\$STAMP_FILE" 2>/dev/null || true
 
 /etc/init.d/$SERVICE_NAME check 2>&1 | logger -t $SERVICE_NAME-hotplug
 EOF

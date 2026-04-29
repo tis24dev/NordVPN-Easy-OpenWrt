@@ -1,0 +1,251 @@
+#!/bin/sh
+
+SERVICE_NAME='nordvpn-easy'
+INIT_SCRIPT="${NORDVPN_EASY_INIT_SCRIPT:-/etc/init.d/nordvpn-easy}"
+UCI_CONFIG='nordvpn_easy'
+UCI_SECTION='main'
+LIB_DIR="${NORDVPN_EASY_LIB_DIR:-/usr/libexec/nordvpn-easy/lib}"
+
+# shellcheck disable=SC1090
+. "${LIB_DIR}/config-context.sh" || exit 1
+# shellcheck disable=SC1090
+. "${LIB_DIR}/runtime.sh" || exit 1
+
+rpc_json_string() {
+	printf '%s' "$1" | jq -Rs .
+}
+
+rpc_read_input() {
+	RPC_INPUT="$(cat 2>/dev/null || printf '%s' '{}')"
+	[ -n "$RPC_INPUT" ] || RPC_INPUT='{}'
+}
+
+rpc_input_value() {
+	printf '%s' "$RPC_INPUT" | jq -er "$1 // empty" 2>/dev/null || true
+}
+
+rpc_input_bool() {
+	printf '%s' "$RPC_INPUT" | jq -er "if ($1 == true or $1 == \"1\" or $1 == 1) then \"1\" else \"0\" end" 2>/dev/null || printf '%s\n' '0'
+}
+
+rpc_command_result() {
+	local action="$1"
+	local tmp_dir out_file err_file rc stdout_json stderr_json
+	local cached_error message_json
+	shift
+
+	tmp_dir="$(mktemp -d /tmp/nordvpn-easy.rpc.XXXXXX 2>/dev/null)" || {
+		printf '{"action":%s,"code":1,"success":false,"stdout":"","stderr":"could not create rpc temp directory","message":"could not create rpc temp directory"}\n' "$(rpc_json_string "$action")"
+		return 0
+	}
+	out_file="${tmp_dir}/stdout"
+	err_file="${tmp_dir}/stderr"
+
+	"$@" > "$out_file" 2> "$err_file"
+	rc=$?
+
+	if [ "$rc" -ne 0 ] && [ ! -s "$out_file" ] && [ ! -s "$err_file" ]; then
+		cached_error="$(sed -n '1p' "$NORDVPN_EASY_LAST_ERROR_CACHE" 2>/dev/null || true)"
+		printf '%s' "${cached_error:-${action} failed without output}" > "$err_file"
+	fi
+
+	stdout_json="$(jq -Rs . < "$out_file")"
+	stderr_json="$(jq -Rs . < "$err_file")"
+	if [ "$rc" -eq 0 ]; then
+		message_json="$stdout_json"
+	else
+		message_json="$stderr_json"
+	fi
+	rm -rf -- "$tmp_dir"
+
+	printf '{"action":%s,"code":%s,"success":%s,"stdout":%s,"stderr":%s,"message":%s}\n' \
+		"$(rpc_json_string "$action")" \
+		"$rc" \
+		"$([ "$rc" -eq 0 ] && printf '%s' 'true' || printf '%s' 'false')" \
+		"$stdout_json" \
+		"$stderr_json" \
+		"$message_json"
+}
+
+rpc_load_runtime_context_readonly() {
+	local option raw_value normalized_value env_name desired_enabled
+
+	for option in $(nordvpn_easy_runtime_options); do
+		raw_value="$(nordvpn_easy_read_uci_option "$UCI_CONFIG" "$UCI_SECTION" "$option")"
+		normalized_value="$(nordvpn_easy_normalize_value "$option" "$raw_value")"
+		env_name="$(nordvpn_easy_env_name "$option")"
+		nordvpn_easy_assign_shell_var "$env_name" "$normalized_value"
+	done
+
+	raw_value="$(nordvpn_easy_read_uci_option "$UCI_CONFIG" "$UCI_SECTION" 'enabled')"
+	desired_enabled="$(nordvpn_easy_normalize_value 'enabled' "$raw_value")"
+	nordvpn_easy_assign_shell_var 'DESIRED_ENABLED' "$desired_enabled"
+	nordvpn_easy_assign_shell_var 'ENABLED' "$desired_enabled"
+	CONFIG_CONTEXT_SOURCE="uci:${UCI_CONFIG}.${UCI_SECTION}:readonly"
+}
+
+rpc_status() {
+	if rpc_load_runtime_context_readonly >/dev/null 2>&1; then
+		if nordvpn_easy_write_status_cache >/dev/null 2>&1; then
+			nordvpn_easy_emit_cached_status_json
+		else
+			nordvpn_easy_emit_status_json
+		fi
+		return 0
+	fi
+
+	printf '{"updated_at":%s,"state":"failed","desired_enabled":false,"enabled":false,"runtime_disabled":true,"interface_disabled":true,"runtime_configured":false,"server_selection_mode":"auto","kill_switch_enabled":false,"selected_country":"","interface":"","vpn_status":"error","operation_status":"idle","operation_lock_state":"none","operation_lock_pid":"","operation_lock_action":"","operation_lock_age_seconds":0,"connected":false,"endpoint":"N/A","latest_handshake":"Never","latest_handshake_epoch":0,"transfer_rx":"0 B","transfer_rx_bytes":0,"transfer_tx":"0 B","transfer_tx_bytes":0,"public_ip_cached":"","public_country_cached":"","last_error":"failed to load runtime context from UCI","current_server_hostname":"","current_server_station":"","current_server_city":"","current_server_country":"","current_server_load":"","preferred_server_hostname":"","preferred_server_station":""}\n' \
+		"$(date +%s 2>/dev/null || printf '%s' '0')"
+}
+
+rpc_refresh_countries() {
+	local force action
+
+	force="$(rpc_input_bool '.force')"
+	if [ "$force" = '1' ]; then
+		action='refresh_countries_force'
+	else
+		action='refresh_countries'
+	fi
+
+	rpc_command_result "$action" "$INIT_SCRIPT" "$action"
+}
+
+rpc_refresh_servers() {
+	local country force
+
+	country="$(rpc_input_value '.country')"
+	force="$(rpc_input_bool '.force')"
+	rpc_command_result 'server_catalog' "$INIT_SCRIPT" server_catalog "$country" "$force"
+}
+
+rpc_connect() {
+	rpc_command_result 'connect' sh -c "uci set ${UCI_CONFIG}.${UCI_SECTION}.enabled='1' && uci commit ${UCI_CONFIG} && ${INIT_SCRIPT} setup && ${INIT_SCRIPT} install_hooks"
+}
+
+rpc_disconnect() {
+	rpc_command_result 'disconnect' sh -c "uci set ${UCI_CONFIG}.${UCI_SECTION}.enabled='0' && uci commit ${UCI_CONFIG} && ${INIT_SCRIPT} disable_runtime"
+}
+
+rpc_reconnect() {
+	rpc_command_result 'reconnect' sh -c "${INIT_SCRIPT} setup && ${INIT_SCRIPT} install_hooks"
+}
+
+rpc_diagnostics() {
+	local tmp_dir log_file stderr_file rc log_json stderr_json message_json
+
+	tmp_dir="$(mktemp -d /tmp/nordvpn-easy.diag.XXXXXX 2>/dev/null)" || {
+		printf '{"code":1,"success":false,"log":"","message":"could not create diagnostics temp directory"}\n'
+		return 0
+	}
+	log_file="${tmp_dir}/diagnostics.log"
+	stderr_file="${tmp_dir}/diagnostics.stderr"
+	"$INIT_SCRIPT" diagnostics_log > "$log_file" 2> "$stderr_file"
+	rc=$?
+	log_json="$(jq -Rs . < "$log_file")"
+	stderr_json="$(jq -Rs . < "$stderr_file")"
+	if [ "$rc" -eq 0 ]; then
+		message_json="$log_json"
+	elif [ -s "$stderr_file" ]; then
+		message_json="$({ printf '%s' 'diagnostics export failed: '; cat "$stderr_file"; } | jq -Rs .)"
+	else
+		message_json="$(rpc_json_string 'diagnostics export failed')"
+	fi
+	rm -rf -- "$tmp_dir"
+	printf '{"code":%s,"success":%s,"log":%s,"stdout":%s,"stderr":%s,"message":%s}\n' \
+		"$rc" \
+		"$([ "$rc" -eq 0 ] && printf '%s' 'true' || printf '%s' 'false')" \
+		"$log_json" \
+		"$log_json" \
+		"$stderr_json" \
+		"$message_json"
+}
+
+rpc_call() {
+	local method="$1"
+
+	rpc_read_input
+
+	case "$method" in
+		status)
+			rpc_status
+			;;
+		connect)
+			rpc_connect
+			;;
+		disconnect)
+			rpc_disconnect
+			;;
+		reconnect)
+			rpc_reconnect
+			;;
+		rotate)
+			rpc_command_result 'rotate' "$INIT_SCRIPT" rotate
+			;;
+		setup)
+			rpc_command_result 'setup' "$INIT_SCRIPT" setup
+			;;
+		check)
+			rpc_command_result 'check' "$INIT_SCRIPT" check
+			;;
+		install_hooks)
+			rpc_command_result 'install_hooks' "$INIT_SCRIPT" install_hooks
+			;;
+		remove_hooks)
+			rpc_command_result 'remove_hooks' "$INIT_SCRIPT" remove_hooks
+			;;
+		disable_runtime)
+			rpc_command_result 'disable_runtime' "$INIT_SCRIPT" disable_runtime
+			;;
+		refresh_countries)
+			rpc_refresh_countries
+			;;
+		refresh_servers|server_catalog)
+			rpc_refresh_servers
+			;;
+		public_ip)
+			rpc_command_result 'public_ip' "$INIT_SCRIPT" public_ip quiet
+			;;
+		public_country)
+			rpc_command_result 'public_country' "$INIT_SCRIPT" public_country quiet
+			;;
+		diagnostics|diagnostics_log)
+			rpc_diagnostics
+			;;
+		*)
+			printf '{"code":1,"success":false,"message":%s}\n' "$(rpc_json_string "unknown method: $method")"
+			;;
+	esac
+}
+
+case "$1" in
+	list)
+		cat <<'EOF'
+{
+  "status": {},
+  "connect": {},
+  "disconnect": {},
+  "reconnect": {},
+  "rotate": {},
+  "setup": {},
+  "check": {},
+  "install_hooks": {},
+  "remove_hooks": {},
+  "disable_runtime": {},
+  "refresh_countries": { "force": "Boolean" },
+  "refresh_servers": { "country": "String", "force": "Boolean" },
+  "server_catalog": { "country": "String", "force": "Boolean" },
+  "public_ip": {},
+  "public_country": {},
+  "diagnostics": {},
+  "diagnostics_log": {}
+}
+EOF
+		;;
+	call)
+		rpc_call "$2"
+		;;
+	*)
+		exit 1
+		;;
+esac

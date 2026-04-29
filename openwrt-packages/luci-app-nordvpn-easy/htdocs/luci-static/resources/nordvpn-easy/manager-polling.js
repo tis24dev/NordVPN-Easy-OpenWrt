@@ -4,9 +4,14 @@
 'require nordvpn-easy/manager-store as managerStore';
 'require poll';
 
+function documentIsHidden() {
+	return (typeof document !== 'undefined') && !!document.hidden;
+}
+
 function shouldSkipBackgroundPoll(state) {
 	return state.pollingSuspended ||
-		state.phase === managerStore.PHASES.SAVING;
+		state.phase === managerStore.PHASES.SAVING ||
+		documentIsHidden();
 }
 
 function start(state) {
@@ -16,18 +21,18 @@ function start(state) {
 	state.pollersStarted = true;
 
 	poll.add(function() {
-		if (state.pollingSuspended)
+		if (state.pollingSuspended || documentIsHidden())
 			return Promise.resolve();
 
 		return managerActions.updateLocalStatus(state);
-	}, 2);
+	}, 10);
 
 	poll.add(function() {
-		if (shouldSkipBackgroundPoll(state))
+		if (shouldSkipBackgroundPoll(state) || !state.appliedEnabled)
 			return Promise.resolve();
 
 		return managerActions.updatePublicIp(state, { quiet: true });
-	}, 5);
+	}, 60);
 }
 
 return baseclass.extend({

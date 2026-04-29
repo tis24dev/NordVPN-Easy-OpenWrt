@@ -26,6 +26,8 @@ vpn_dns1
 vpn_dns2
 check_cron_schedule
 enable_hotplug
+hotplug_debounce_seconds
+kill_switch_enabled
 failure_retry_delay
 server_rotate_threshold
 interface_restart_threshold
@@ -58,6 +60,8 @@ vpn_dns1 VPN_DNS1
 vpn_dns2 VPN_DNS2
 check_cron_schedule CHECK_CRON_SCHEDULE
 enable_hotplug ENABLE_HOTPLUG
+hotplug_debounce_seconds HOTPLUG_DEBOUNCE_SECONDS
+kill_switch_enabled KILL_SWITCH_ENABLED
 failure_retry_delay FAILURE_RETRY_DELAY
 server_rotate_threshold SERVER_ROTATE_THRESHOLD
 interface_restart_threshold INTERFACE_RESTART_THRESHOLD
@@ -92,8 +96,10 @@ nordvpn_easy_default() {
 		vpn_addr) printf '%s\n' '10.5.0.2/32' ;;
 		vpn_dns1) printf '%s\n' '103.86.99.99' ;;
 		vpn_dns2) printf '%s\n' '103.86.96.96' ;;
-		check_cron_schedule) printf '%s\n' '* * * * *' ;;
+		check_cron_schedule) printf '%s\n' '' ;;
 		enable_hotplug) printf '%s\n' '1' ;;
+		hotplug_debounce_seconds) printf '%s\n' '30' ;;
+		kill_switch_enabled) printf '%s\n' '0' ;;
 		failure_retry_delay) printf '%s\n' '6' ;;
 		server_rotate_threshold) printf '%s\n' '5' ;;
 		interface_restart_threshold) printf '%s\n' '10' ;;
@@ -109,7 +115,7 @@ nordvpn_easy_default() {
 
 nordvpn_easy_is_bool_option() {
 	case "$1" in
-		enabled|server_cache_enabled|enable_hotplug)
+		enabled|server_cache_enabled|enable_hotplug|kill_switch_enabled)
 			return 0
 			;;
 		*)
@@ -120,7 +126,7 @@ nordvpn_easy_is_bool_option() {
 
 nordvpn_easy_is_uint_option() {
 	case "$1" in
-		server_cache_ttl|vpn_port|failure_retry_delay|server_rotate_threshold|interface_restart_threshold|max_interface_restarts|interface_restart_delay|post_restart_delay)
+		server_cache_ttl|vpn_port|hotplug_debounce_seconds|failure_retry_delay|server_rotate_threshold|interface_restart_threshold|max_interface_restarts|interface_restart_delay|post_restart_delay)
 			return 0
 			;;
 		*)

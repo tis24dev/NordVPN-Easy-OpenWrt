@@ -58,6 +58,7 @@ PUBLIC_COUNTRY_VERIFIED=0
 SERVER_CATALOG_QUERY=''
 SERVER_CATALOG_FORCE='0'
 PUBLIC_LOOKUP_LOG_MODE='verbose'
+CORE_QUIET_ACTION=0
 CORE_BACKEND_PAYLOAD_SIGNATURE='render-contract-v2'
 
 # List of IPs to randomly ping
@@ -160,7 +161,7 @@ load_config () {
       nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "failed to source runtime configuration from $CONFIG_PATH ($(backend_payload_summary))"
       return 1
     }
-    log "Loaded runtime configuration from $CONFIG_PATH ($(nordvpn_easy_runtime_env_debug_summary); $(nordvpn_easy_runtime_file_debug_summary "$CONFIG_PATH"); $(backend_payload_summary))"
+    [ "$CORE_QUIET_ACTION" -eq 1 ] || log "Loaded runtime configuration from $CONFIG_PATH ($(nordvpn_easy_runtime_env_debug_summary); $(nordvpn_easy_runtime_file_debug_summary "$CONFIG_PATH"); $(backend_payload_summary))"
   elif [ "$CONFIG_PATH_REQUIRED" -eq 1 ]; then
     nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "required config file $CONFIG_PATH was not found ($(backend_payload_summary))"
     return 1
@@ -169,12 +170,17 @@ load_config () {
       nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "failed to load runtime configuration from UCI ($(backend_payload_summary))"
       return 1
     }
-    log "Loaded runtime configuration from ${CONFIG_CONTEXT_SOURCE:-uci} ($(nordvpn_easy_runtime_env_debug_summary); $(backend_payload_summary))"
+    [ "$CORE_QUIET_ACTION" -eq 1 ] || log "Loaded runtime configuration from ${CONFIG_CONTEXT_SOURCE:-uci} ($(nordvpn_easy_runtime_env_debug_summary); $(backend_payload_summary))"
   fi
 }
 
 require_commands () {
+  local previous_log_mode="${NORDVPN_EASY_REQUIRE_COMMANDS_LOG_MODE:-verbose}"
+  [ "${CORE_QUIET_ACTION:-0}" -eq 1 ] && NORDVPN_EASY_REQUIRE_COMMANDS_LOG_MODE='quiet'
   nordvpn_easy_require_commands "$@"
+  local rc=$?
+  NORDVPN_EASY_REQUIRE_COMMANDS_LOG_MODE="$previous_log_mode"
+  return "$rc"
 }
 
 server_selection_is_manual () {
@@ -383,6 +389,25 @@ public_lookup_log () {
   [ "${PUBLIC_LOOKUP_LOG_MODE:-verbose}" = 'quiet' ] || log "$@"
 }
 
+nordvpn_easy_write_runtime_cache_value () {
+  local cache_file="$1"
+  local cache_value="$2"
+  local cache_dir
+
+  [ -n "$cache_file" ] || return 1
+  cache_dir="$(dirname "$cache_file")"
+  mkdir -p "$cache_dir" || return 1
+  printf '%s\n' "$cache_value" > "${cache_file}.$$" || {
+    rm -f "${cache_file}.$$"
+    return 1
+  }
+  mv "${cache_file}.$$" "$cache_file"
+}
+
+nordvpn_easy_record_last_error () {
+  nordvpn_easy_write_runtime_cache_value "${NORDVPN_EASY_LAST_ERROR_CACHE:-/tmp/run/nordvpn-easy/last_error}" "$*" >/dev/null 2>&1 || true
+}
+
 get_public_ip () {
   local curl_out curl_rc
 
@@ -399,17 +424,17 @@ get_public_ip () {
     curl_rc=$?
 
     if [ "$curl_rc" -ne 0 ]; then
-      log "get_public_ip: curl failed for $PUBLIC_IP_URL (curl_rc=$curl_rc: $(curl_rc_meaning "$curl_rc"))"
+      public_lookup_log "get_public_ip: curl failed for $PUBLIC_IP_URL (curl_rc=$curl_rc: $(curl_rc_meaning "$curl_rc"))"
       continue
     fi
 
     if [ -z "$curl_out" ]; then
-      log "get_public_ip: curl succeeded (rc=0) but response body is empty for $PUBLIC_IP_URL — possible VPN transparent proxy interference"
+      public_lookup_log "get_public_ip: curl succeeded (rc=0) but response body is empty for $PUBLIC_IP_URL — possible VPN transparent proxy interference"
       continue
     fi
 
     if ! valid_public_ip "$curl_out"; then
-      log "get_public_ip: response from $PUBLIC_IP_URL is not a valid IP address (got '${curl_out}')"
+      public_lookup_log "get_public_ip: response from $PUBLIC_IP_URL is not a valid IP address (got '${curl_out}')"
       continue
     fi
 
@@ -419,7 +444,7 @@ get_public_ip () {
       return 0
   done
 
-  log 'ERROR: COULD NOT RETRIEVE PUBLIC IP — all endpoints failed'
+  public_lookup_log 'ERROR: COULD NOT RETRIEVE PUBLIC IP — all endpoints failed'
   return 1
 }
 
@@ -428,7 +453,7 @@ lookup_public_country_by_ip () {
   local curl_raw curl_rc country_raw
 
   [ -n "$LOOKUP_IP" ] || {
-    log 'ERROR: PUBLIC IP IS EMPTY - CANNOT LOOK UP COUNTRY'
+    public_lookup_log 'ERROR: PUBLIC IP IS EMPTY - CANNOT LOOK UP COUNTRY'
     return 1
   }
 
@@ -464,30 +489,30 @@ lookup_public_country_by_ip () {
   curl_rc=$?
 
   if [ "$curl_rc" -ne 0 ]; then
-    log "ERROR: COULD NOT LOOK UP COUNTRY FOR PUBLIC IP $LOOKUP_IP — curl failed (curl_rc=$curl_rc: $(curl_rc_meaning "$curl_rc")$([ -z "$resolved_ip" ] && printf '; system DNS was used, Quad9 bypass had failed'))"
+    public_lookup_log "ERROR: COULD NOT LOOK UP COUNTRY FOR PUBLIC IP $LOOKUP_IP — curl failed (curl_rc=$curl_rc: $(curl_rc_meaning "$curl_rc")$([ -z "$resolved_ip" ] && printf '; system DNS was used, Quad9 bypass had failed'))"
     return 1
   fi
 
   if [ -z "$curl_raw" ]; then
-    log "ERROR: COULD NOT LOOK UP COUNTRY FOR PUBLIC IP $LOOKUP_IP — curl succeeded (rc=0) but response body is empty"
+    public_lookup_log "ERROR: COULD NOT LOOK UP COUNTRY FOR PUBLIC IP $LOOKUP_IP — curl succeeded (rc=0) but response body is empty"
     return 1
   fi
 
   public_lookup_log "lookup_public_country_by_ip: raw response for $LOOKUP_IP: $curl_raw"
 
   if ! country_raw=$(printf '%s' "$curl_raw" | jq -er '.country // empty' 2>/dev/null); then
-    log "ERROR: COULD NOT PARSE COUNTRY FROM RESPONSE FOR $LOOKUP_IP (raw='$curl_raw')"
+    public_lookup_log "ERROR: COULD NOT PARSE COUNTRY FROM RESPONSE FOR $LOOKUP_IP (raw='$curl_raw')"
     return 1
   fi
 
   if [ -z "$country_raw" ]; then
-    log "ERROR: COULD NOT PARSE COUNTRY FROM RESPONSE FOR $LOOKUP_IP (raw='$curl_raw')"
+    public_lookup_log "ERROR: COULD NOT PARSE COUNTRY FROM RESPONSE FOR $LOOKUP_IP (raw='$curl_raw')"
     return 1
   fi
 
   PUBLIC_COUNTRY=$(printf '%s' "$country_raw" | tr '[:lower:]' '[:upper:]')
   valid_country_code "$PUBLIC_COUNTRY" || {
-    log "ERROR: INVALID COUNTRY LOOKUP RESPONSE FOR PUBLIC IP $LOOKUP_IP (parsed='$PUBLIC_COUNTRY', raw='$curl_raw')"
+    public_lookup_log "ERROR: INVALID COUNTRY LOOKUP RESPONSE FOR PUBLIC IP $LOOKUP_IP (parsed='$PUBLIC_COUNTRY', raw='$curl_raw')"
     return 1
   }
 
@@ -498,7 +523,7 @@ lookup_public_country_by_ip () {
 get_public_country () {
   public_lookup_log 'get_public_country: starting public IP and country lookup'
   PUBLIC_IP=$(get_public_ip) || {
-    log 'get_public_country: public IP lookup failed — cannot determine country'
+    public_lookup_log 'get_public_country: public IP lookup failed — cannot determine country'
     return 1
   }
   public_lookup_log "get_public_country: public IP is $PUBLIC_IP — proceeding to country lookup"
@@ -836,6 +861,12 @@ if [ -z "$CONFIG_PATH" ] && [ -n "${NORDVPN_CONFIG_FILE:-}" ]; then
   CONFIG_PATH_REQUIRED=1
 fi
 
+case "$ACTION:${1:-}" in
+  status_json:*|operation_status:*|vpn_status:*|diagnostics_log:*|public_ip:quiet|public_country:quiet)
+    CORE_QUIET_ACTION=1
+    ;;
+esac
+
 case "$ACTION" in
   help)
     usage
@@ -857,9 +888,12 @@ if [ "$ACTION" = 'public_ip' ]; then
   get_public_ip
   ACTION_RC=$?
   if [ "$ACTION_RC" -eq 0 ]; then
+    nordvpn_easy_write_runtime_cache_value "$NORDVPN_EASY_PUBLIC_IP_CACHE" "${PUBLIC_IP:-}" >/dev/null 2>&1 || true
+    nordvpn_easy_write_runtime_cache_value "$NORDVPN_EASY_LAST_ERROR_CACHE" '' >/dev/null 2>&1 || true
     public_lookup_log 'public_ip request completed successfully'
   else
-    nordvpn_easy_log_blocker "$LOG_PHASE" "public_ip request failed (rc=$ACTION_RC)"
+    nordvpn_easy_record_last_error "public_ip failed (rc=$ACTION_RC)"
+    public_lookup_log "ERROR: public_ip request failed (rc=$ACTION_RC)"
   fi
   exit "$ACTION_RC"
 fi
@@ -872,9 +906,13 @@ if [ "$ACTION" = 'public_country' ]; then
   get_public_country
   ACTION_RC=$?
   if [ "$ACTION_RC" -eq 0 ]; then
+    nordvpn_easy_write_runtime_cache_value "$NORDVPN_EASY_PUBLIC_IP_CACHE" "${PUBLIC_IP:-}" >/dev/null 2>&1 || true
+    nordvpn_easy_write_runtime_cache_value "$NORDVPN_EASY_PUBLIC_COUNTRY_CACHE" "${PUBLIC_COUNTRY:-}" >/dev/null 2>&1 || true
+    nordvpn_easy_write_runtime_cache_value "$NORDVPN_EASY_LAST_ERROR_CACHE" '' >/dev/null 2>&1 || true
     public_lookup_log 'public_country request completed successfully'
   else
-    nordvpn_easy_log_blocker "$LOG_PHASE" "public_country request failed (rc=$ACTION_RC)"
+    nordvpn_easy_record_last_error "public_country failed (rc=$ACTION_RC)"
+    public_lookup_log "ERROR: public_country request failed (rc=$ACTION_RC)"
   fi
   exit "$ACTION_RC"
 fi
@@ -893,13 +931,17 @@ fi
 
 if [ "$ACTION" = 'status_json' ]; then
   LOG_PHASE='runtime'
-  nordvpn_easy_emit_status_json
+  if nordvpn_easy_write_status_cache >/dev/null 2>&1; then
+    nordvpn_easy_emit_cached_status_json
+  else
+    nordvpn_easy_emit_status_json
+  fi
   exit $?
 fi
 
 if [ "$ACTION" = 'diagnostics_log' ]; then
   LOG_PHASE='service'
-  log 'diagnostics log export requested'
+  [ "$CORE_QUIET_ACTION" -eq 1 ] || log 'diagnostics log export requested'
   nordvpn_easy_export_diagnostics_log 'nordvpn-easy'
   exit $?
 fi
@@ -982,9 +1024,13 @@ case "$ACTION_STARTED_AT" in
     ;;
 esac
 
+nordvpn_easy_write_status_cache >/dev/null 2>&1 || true
+
 if [ "$ACTION_RC" -eq 0 ]; then
+  nordvpn_easy_write_runtime_cache_value "${NORDVPN_EASY_LAST_ERROR_CACHE:-/tmp/run/nordvpn-easy/last_error}" '' >/dev/null 2>&1 || true
   log "action '$ACTION' completed successfully (duration=${ACTION_DURATION}s, public_country_verified=${PUBLIC_COUNTRY_VERIFIED:-0})"
 else
+  nordvpn_easy_record_last_error "action '$ACTION' failed (rc=$ACTION_RC)"
   nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "action '$ACTION' failed (duration=${ACTION_DURATION}s, rc=$ACTION_RC)"
 fi
 

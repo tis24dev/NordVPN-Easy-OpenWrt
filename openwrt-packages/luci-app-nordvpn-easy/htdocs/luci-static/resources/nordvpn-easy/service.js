@@ -1,7 +1,51 @@
 'use strict';
 'require baseclass';
-'require fs';
+'require rpc';
 'require ui';
+
+const callStatus = rpc.declare({
+	object: 'nordvpn.easy',
+	method: 'status'
+});
+
+const callAction = {};
+[
+	'connect',
+	'disconnect',
+	'reconnect',
+	'rotate',
+	'setup',
+	'check',
+	'install_hooks',
+	'remove_hooks',
+	'disable_runtime',
+	'public_ip',
+	'public_country',
+	'diagnostics'
+].forEach(function(method) {
+	callAction[method] = rpc.declare({
+		object: 'nordvpn.easy',
+		method: method
+	});
+});
+
+const callRefreshCountries = rpc.declare({
+	object: 'nordvpn.easy',
+	method: 'refresh_countries',
+	params: [ 'force' ]
+});
+
+const callServerCatalog = rpc.declare({
+	object: 'nordvpn.easy',
+	method: 'server_catalog',
+	params: [ 'country', 'force' ]
+});
+
+const callRefreshServers = rpc.declare({
+	object: 'nordvpn.easy',
+	method: 'refresh_servers',
+	params: [ 'country', 'force' ]
+});
 
 function parseJson(raw, fallback) {
 	try {
@@ -35,8 +79,78 @@ function resultToError(result, fallback) {
 	);
 }
 
+function normalizeExecResult(action, payload) {
+	let stdout = '';
+	let stderr = '';
+	let code = 0;
+	let message = '';
+
+	if (payload == null)
+		payload = {};
+
+	if (payload.code != null)
+		code = Number(payload.code) || 0;
+	else if (payload.success === false)
+		code = 1;
+
+	if (payload.stdout != null)
+		stdout = String(payload.stdout);
+	else if (payload.log != null)
+		stdout = String(payload.log);
+	else if (payload.code == null && payload.success == null)
+		stdout = JSON.stringify(payload);
+
+	if (payload.stderr != null)
+		stderr = String(payload.stderr);
+
+	if (payload.message != null)
+		message = String(payload.message);
+	else
+		message = responseMessage({ stdout: stdout, stderr: stderr });
+
+	return {
+		action: action,
+		code: code,
+		stdout: stdout,
+		stderr: stderr,
+		message: message
+	};
+}
+
 function execService(action, extraArgs) {
-	return fs.exec('/etc/init.d/nordvpn-easy', [ action ].concat(extraArgs || []));
+	const args = extraArgs || [];
+	let request;
+
+	switch (action) {
+	case 'status_json':
+		request = callStatus();
+		break;
+	case 'refresh_countries':
+		request = callRefreshCountries(false);
+		break;
+	case 'refresh_countries_force':
+		request = callRefreshCountries(true);
+		break;
+	case 'refresh_servers':
+		request = callRefreshServers(args[0] || '', args[1] === '1' || args[1] === true);
+		break;
+	case 'server_catalog':
+		request = callServerCatalog(args[0] || '', args[1] === '1' || args[1] === true);
+		break;
+	case 'diagnostics_log':
+		request = callAction.diagnostics();
+		break;
+	default:
+		if (!callAction[action])
+			return Promise.reject(new Error(_('Unsupported NordVPN Easy action: %s').format(action)));
+
+		request = callAction[action]();
+		break;
+	}
+
+	return request.then(function(payload) {
+		return normalizeExecResult(action, payload);
+	});
 }
 
 function runAction(action, extraArgs) {

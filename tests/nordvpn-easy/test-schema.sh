@@ -24,11 +24,16 @@ assert_eq() {
 assert_eq 'auto' "$(nordvpn_easy_default server_selection_mode)" 'default server selection mode'
 assert_eq '' "$(nordvpn_easy_default fallback_server_station)" 'default fallback server station'
 assert_eq '86400' "$(nordvpn_easy_default server_cache_ttl)" 'default server cache ttl'
+assert_eq '' "$(nordvpn_easy_default check_cron_schedule)" 'default cron schedule disabled'
+assert_eq '30' "$(nordvpn_easy_default hotplug_debounce_seconds)" 'default hotplug debounce'
+assert_eq '0' "$(nordvpn_easy_default kill_switch_enabled)" 'default kill switch disabled'
 assert_eq '1' "$(nordvpn_easy_normalize_value enabled yes)" 'boolean normalization for yes'
 assert_eq '1' "$(nordvpn_easy_normalize_value enabled true)" 'boolean normalization for true'
+assert_eq '1' "$(nordvpn_easy_normalize_value kill_switch_enabled true)" 'kill switch boolean normalization'
 assert_eq 'manual' "$(nordvpn_easy_normalize_value server_selection_mode manual)" 'manual mode normalization'
 assert_eq 'auto' "$(nordvpn_easy_normalize_value server_selection_mode broken)" 'invalid mode normalization'
 assert_eq '86400' "$(nordvpn_easy_normalize_value server_cache_ttl not-a-number)" 'invalid ttl normalization'
+assert_eq '30' "$(nordvpn_easy_normalize_value hotplug_debounce_seconds invalid)" 'invalid debounce normalization'
 assert_eq "$NORDVPN_EASY_SCHEMA_VERSION" "$(nordvpn_easy_normalize_value config_schema_version 0)" 'schema version normalization'
 assert_eq 'NORDVPN_TOKEN' "$(nordvpn_easy_env_name nordvpn_token)" 'runtime binding maps token env name'
 assert_eq 'VPN_IF' "$(nordvpn_easy_env_name vpn_if)" 'runtime binding maps vpn_if env name'
@@ -42,7 +47,7 @@ export SERVER_CACHE_TTL
 nordvpn_easy_apply_env_defaults
 
 assert_eq '' "${NORDVPN_TOKEN:-}" 'empty token default'
-assert_eq '* * * * *' "$CHECK_CRON_SCHEDULE" 'cron default with spaces'
+assert_eq '' "$CHECK_CRON_SCHEDULE" 'cron default disabled'
 assert_eq '86400' "$SERVER_CACHE_TTL" 'environment ttl default'
 
 printf '%s\n' 'test-schema.sh: ok'

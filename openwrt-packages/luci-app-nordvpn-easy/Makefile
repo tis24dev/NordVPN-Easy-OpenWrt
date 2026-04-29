@@ -12,7 +12,7 @@ PKG_LICENSE:=GPL-3.0-only
 PKG_MAINTAINER:=$(NORDVPN_EASY_PACKAGE_MAINTAINER)
 LUCI_TITLE:=LuCI support for NordVPN Easy
 LUCI_DESCRIPTION:=User-facing LuCI integration for NordVPN Easy on OpenWrt, bundled with the backend for manual upload installs
-LUCI_DEPENDS:=+ca-certificates +curl +jq +kmod-wireguard +wireguard-tools +luci-base
+LUCI_DEPENDS:=+ca-certificates +curl +jq +kmod-wireguard +wireguard-tools +luci-base +rpcd
 LUCI_PKGARCH:=all
 LUCI_URL:=$(NORDVPN_EASY_PACKAGE_URL)
 LUCI_MAINTAINER:=$(NORDVPN_EASY_PACKAGE_MAINTAINER)
@@ -64,9 +64,9 @@ define Build/Prepare/$(PKG_NAME)
 	$(INSTALL_DIR) $(PKG_BUILD_DIR)/root/usr/libexec/nordvpn-easy
 	$(INSTALL_BIN) $(CURDIR)/../nordvpn-easy/files/usr/libexec/nordvpn-easy/core.sh $(PKG_BUILD_DIR)/root/usr/libexec/nordvpn-easy/core.sh
 	$(INSTALL_DIR) $(PKG_BUILD_DIR)/root/usr/libexec/nordvpn-easy/lib
-	for lib in $(CURDIR)/../nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/*.sh; do \
-		$(INSTALL_DATA) "$$lib" $(PKG_BUILD_DIR)/root/usr/libexec/nordvpn-easy/lib/; \
-	done
+	$(CP) $(CURDIR)/../nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/. $(PKG_BUILD_DIR)/root/usr/libexec/nordvpn-easy/lib/
+	$(INSTALL_DIR) $(PKG_BUILD_DIR)/root/usr/libexec/rpcd
+	$(INSTALL_BIN) $(CURDIR)/../nordvpn-easy/files/usr/libexec/rpcd/nordvpn.easy $(PKG_BUILD_DIR)/root/usr/libexec/rpcd/nordvpn.easy
 endef
 
 include $(TOPDIR)/feeds/luci/luci.mk

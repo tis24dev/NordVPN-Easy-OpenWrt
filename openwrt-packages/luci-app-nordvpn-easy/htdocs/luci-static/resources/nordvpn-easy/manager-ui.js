@@ -19,6 +19,7 @@ const ids = {
 	HANDSHAKE_STATUS_ID: 'nordvpn-easy-handshake-status',
 	TRANSFER_STATUS_ID: 'nordvpn-easy-transfer-status',
 	OPERATION_STATUS_ID: 'nordvpn-easy-operation-status',
+	LAST_ERROR_STATUS_ID: 'nordvpn-easy-last-error-status',
 	PUBLIC_IP_STATUS_ID: 'nordvpn-easy-public-ip-status',
 	PUBLIC_COUNTRY_STATUS_ID: 'nordvpn-easy-public-country-status',
 	COUNTRY_MATCH_STATUS_ID: 'nordvpn-easy-country-match-status',
@@ -417,6 +418,10 @@ function renderStatusSection() {
 			E('tr', { class: 'tr' }, [
 				E('td', { class: 'td left', style: 'font-weight: bold' }, [ _('Operation Status') ]),
 				E('td', { class: 'td left', id: ids.OPERATION_STATUS_ID }, [ _('Collecting data...') ])
+			]),
+			E('tr', { class: 'tr' }, [
+				E('td', { class: 'td left', style: 'font-weight: bold' }, [ _('Last Error') ]),
+				E('td', { class: 'td left', id: ids.LAST_ERROR_STATUS_ID }, [ _('None') ])
 			]),
 			E('tr', { class: 'tr' }, [
 				E('td', { class: 'td left', style: 'font-weight: bold' }, [ _('Public IP') ]),

@@ -17,11 +17,13 @@ JS_FILES=(
 	"$ROOT_DIR/openwrt-packages/luci-app-nordvpn-easy/htdocs/luci-static/resources/view/nordvpn-easy/config.js"
 	"$ROOT_DIR/openwrt-packages/luci-app-nordvpn-easy/htdocs/luci-static/resources/view/nordvpn-easy/advanced.js"
 	"$ROOT_DIR/openwrt-packages/luci-app-nordvpn-easy/htdocs/luci-static/resources/view/nordvpn-easy/diagnostics.js"
+	"$ROOT_DIR/tests/nordvpn-easy/test-service.js"
 	"$ROOT_DIR/tests/nordvpn-easy/test-manager-actions.js"
 )
 
 SH_FILES=(
 	"$ROOT_DIR/openwrt-packages/nordvpn-easy/files/etc/init.d/nordvpn-easy"
+	"$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/rpcd/nordvpn.easy"
 	"$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/core.sh"
 	"$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/schema.sh"
 	"$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/config-context.sh"
@@ -39,6 +41,7 @@ SH_FILES=(
 	"$ROOT_DIR/tests/nordvpn-easy/test-init-cron.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-init-run-core.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-init-start-soft-fail.sh"
+	"$ROOT_DIR/tests/nordvpn-easy/test-rpcd.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-package-lockstep.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-runtime.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-wireguard.sh"
@@ -57,6 +60,7 @@ for file in "${SH_FILES[@]}"; do
 done
 
 printf '%s\n' 'Running fixture tests'
+node "$ROOT_DIR/tests/nordvpn-easy/test-service.js"
 node "$ROOT_DIR/tests/nordvpn-easy/test-manager-actions.js"
 sh "$ROOT_DIR/tests/nordvpn-easy/test-config-context.sh"
 sh "$ROOT_DIR/tests/nordvpn-easy/test-schema.sh"
@@ -66,6 +70,7 @@ sh "$ROOT_DIR/tests/nordvpn-easy/test-common-temp.sh"
 sh "$ROOT_DIR/tests/nordvpn-easy/test-init-cron.sh"
 sh "$ROOT_DIR/tests/nordvpn-easy/test-init-run-core.sh"
 sh "$ROOT_DIR/tests/nordvpn-easy/test-init-start-soft-fail.sh"
+sh "$ROOT_DIR/tests/nordvpn-easy/test-rpcd.sh"
 sh "$ROOT_DIR/tests/nordvpn-easy/test-package-lockstep.sh"
 sh "$ROOT_DIR/tests/nordvpn-easy/test-runtime.sh"
 sh "$ROOT_DIR/tests/nordvpn-easy/test-wireguard.sh"

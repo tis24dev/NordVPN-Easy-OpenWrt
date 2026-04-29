@@ -303,6 +303,8 @@ function updateLocalStatus(state, options) {
 			const localStatusSnapshot = buildLocalStatusSnapshot(res);
 			const status = localStatusSnapshot.status;
 			const desiredEnabled = !!status.desired_enabled;
+			const cachedPublicIp = normalizePublicIpValue(status.public_ip_cached);
+			const cachedPublicCountry = managerData.normalizeCountryCode(status.public_country_cached || '');
 
 			managerStore.clearError(state);
 			state.currentLocalStatus = status;
@@ -319,6 +321,24 @@ function updateLocalStatus(state, options) {
 			managerUI.replaceStatusText(
 				managerUI.ids.TRANSFER_STATUS_ID,
 				_('%s / %s').format(status.transfer_rx || '0 B', status.transfer_tx || '0 B')
+			);
+			managerUI.replaceStatusText(managerUI.ids.LAST_ERROR_STATUS_ID, status.last_error || _('None'));
+
+			if (cachedPublicIp)
+				state.cachedPublicIp = cachedPublicIp;
+
+			if (cachedPublicCountry) {
+				state.cachedPublicCountry = cachedPublicCountry;
+				state.cachedPublicCountryIp = cachedPublicIp || state.cachedPublicCountryIp || '';
+			}
+
+			managerUI.replaceStatusText(
+				managerUI.ids.PUBLIC_IP_STATUS_ID,
+				state.currentPublicIp || state.cachedPublicIp || _('Unavailable')
+			);
+			managerUI.replaceStatusText(
+				managerUI.ids.PUBLIC_COUNTRY_STATUS_ID,
+				state.currentPublicCountry || state.cachedPublicCountry || _('Unavailable')
 			);
 
 			if (state.currentOperationStatus.indexOf('busy:') === 0) {
