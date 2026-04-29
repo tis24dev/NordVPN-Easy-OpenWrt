@@ -132,27 +132,32 @@ rpc_reconnect() {
 }
 
 rpc_diagnostics() {
-	local tmp_dir log_file rc log_json message_json
+	local tmp_dir log_file stderr_file rc log_json stderr_json message_json
 
 	tmp_dir="$(mktemp -d /tmp/nordvpn-easy.diag.XXXXXX 2>/dev/null)" || {
 		printf '{"code":1,"success":false,"log":"","message":"could not create diagnostics temp directory"}\n'
 		return 0
 	}
 	log_file="${tmp_dir}/diagnostics.log"
-	"$INIT_SCRIPT" diagnostics_log > "$log_file" 2>/dev/null
+	stderr_file="${tmp_dir}/diagnostics.stderr"
+	"$INIT_SCRIPT" diagnostics_log > "$log_file" 2> "$stderr_file"
 	rc=$?
 	log_json="$(jq -Rs . < "$log_file")"
+	stderr_json="$(jq -Rs . < "$stderr_file")"
 	if [ "$rc" -eq 0 ]; then
 		message_json="$log_json"
+	elif [ -s "$stderr_file" ]; then
+		message_json="$({ printf '%s' 'diagnostics export failed: '; cat "$stderr_file"; } | jq -Rs .)"
 	else
 		message_json="$(rpc_json_string 'diagnostics export failed')"
 	fi
 	rm -rf -- "$tmp_dir"
-	printf '{"code":%s,"success":%s,"log":%s,"stdout":%s,"stderr":"","message":%s}\n' \
+	printf '{"code":%s,"success":%s,"log":%s,"stdout":%s,"stderr":%s,"message":%s}\n' \
 		"$rc" \
 		"$([ "$rc" -eq 0 ] && printf '%s' 'true' || printf '%s' 'false')" \
 		"$log_json" \
 		"$log_json" \
+		"$stderr_json" \
 		"$message_json"
 }
 

@@ -37,7 +37,16 @@ RUN_DIR="$TMP_DIR/run"
 mkdir -p "$RUN_DIR"
 cat > "$FAKE_INIT" <<'EOF'
 #!/bin/sh
-exit 1
+case "$1" in
+	diagnostics_log)
+		printf '%s\n' 'diag stdout'
+		printf '%s\n' 'diag stderr' >&2
+		exit 7
+		;;
+	*)
+		exit 1
+		;;
+esac
 EOF
 chmod 755 "$FAKE_INIT"
 printf '%s\n' 'public_ip failed (rc=1)' > "$RUN_DIR/last_error"
@@ -54,6 +63,21 @@ printf '%s' "$LOOKUP_JSON" | jq -er '
 	.stdout == "" and
 	.stderr == "public_ip failed (rc=1)" and
 	.message == "public_ip failed (rc=1)"
+' >/dev/null
+
+DIAG_JSON="$(
+	printf '{}' |
+		NORDVPN_EASY_LIB_DIR="$LIB_DIR" \
+		NORDVPN_EASY_INIT_SCRIPT="$FAKE_INIT" \
+		sh "$RPCD_SCRIPT" call diagnostics_log
+)"
+printf '%s' "$DIAG_JSON" | jq -er '
+	.code == 7 and
+	.success == false and
+	.log == "diag stdout\n" and
+	.stdout == "diag stdout\n" and
+	.stderr == "diag stderr\n" and
+	(.message | contains("diagnostics export failed: diag stderr"))
 ' >/dev/null
 
 printf '%s\n' 'test-rpcd.sh: ok'
