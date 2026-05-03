@@ -172,6 +172,31 @@ nordvpn_easy_build_server_recommendations_url() {
 	printf '%s\n' "$SERVER_RECOMMENDATIONS_URL"
 }
 
+nordvpn_easy_server_list_cache_is_usable() {
+	[ -f "$SERVER_LIST_FILE" ] || return 1
+
+	jq -er --arg country "${RESOLVED_COUNTRY_CODE:-}" '
+		(type == "array") and
+		(length > 0) and
+		(.[0].station // "" | length > 0) and
+		(
+			($country == "") or
+			([ .[] | select((.locations[0].country.code // "") == $country) ] | length > 0)
+		)
+	' "$SERVER_LIST_FILE" >/dev/null 2>&1
+}
+
+nordvpn_easy_use_cached_server_list_if_available() {
+	local reason="$1"
+
+	if nordvpn_easy_server_list_cache_is_usable; then
+		log "WARNING: $reason; using existing recommended server cache at $SERVER_LIST_FILE"
+		return 0
+	fi
+
+	return 1
+}
+
 nordvpn_easy_get_servers_list() {
 	local temp_dir=''
 	local server_list_tmp=''
@@ -184,12 +209,14 @@ nordvpn_easy_get_servers_list() {
 
 	curl -g -fsS --connect-timeout 15 --max-time 30 -o "$server_list_tmp" "$SERVER_RECOMMENDATIONS_URL" || {
 		rm -rf -- "$temp_dir"
+		nordvpn_easy_use_cached_server_list_if_available 'could not retrieve VPN servers' && return 0
 		log 'ERROR: COULD NOT RETRIEVE VPN SERVERS'
 		return 1
 	}
 
 	jq -er '.[0].station // empty' "$server_list_tmp" >/dev/null 2>&1 || {
 		rm -rf -- "$temp_dir"
+		nordvpn_easy_use_cached_server_list_if_available 'recommended VPN server response was empty or invalid' && return 0
 		if [ -n "$VPN_COUNTRY" ]; then
 			log "ERROR: NO WIREGUARD SERVERS FOUND FOR COUNTRY '$VPN_COUNTRY'"
 		else
@@ -200,6 +227,7 @@ nordvpn_easy_get_servers_list() {
 
 	mv "$server_list_tmp" "$SERVER_LIST_FILE" || {
 		rm -rf -- "$temp_dir"
+		nordvpn_easy_use_cached_server_list_if_available 'could not update recommended server cache' && return 0
 		log 'ERROR: COULD NOT UPDATE VPN SERVER LIST'
 		return 1
 	}

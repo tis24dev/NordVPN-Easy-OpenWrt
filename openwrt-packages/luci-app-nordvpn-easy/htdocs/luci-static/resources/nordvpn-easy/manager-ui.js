@@ -1,4 +1,5 @@
 'use strict';
+/* global baseclass, managerData, managerFormat, ui, document, E, _ */
 'require baseclass';
 'require nordvpn-easy/manager-data as managerData';
 'require nordvpn-easy/manager-format as managerFormat';

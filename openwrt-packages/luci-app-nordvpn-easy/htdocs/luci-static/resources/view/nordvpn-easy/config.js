@@ -1,4 +1,5 @@
 'use strict';
+/* global form, fs, managerActions, managerData, managerFormat, managerPolling, managerStore, managerUI, service, ui, uci, view, L, E, _ */
 'require form';
 'require fs';
 'require nordvpn-easy/manager-actions as managerActions';
@@ -16,20 +17,48 @@ const COUNTRIES_CACHE_PATH = '/tmp/nordvpn-easy-countries.json';
 const TOKEN_MASK_DISPLAY = '********';
 const state = managerStore.createState();
 
+function statusPayloadIsBusy(payload) {
+	const status = managerData.parseLocalStatus(JSON.stringify(payload || {}));
+	const operationStatus = String(status.operation_status || 'idle');
+
+	return operationStatus === 'busy' ||
+		operationStatus.indexOf('busy:') === 0 ||
+		String(status.operation_lock_state || 'none') === 'held';
+}
+
+function countriesCacheHasEntries(countriesRaw) {
+	return managerData.parseCountries(countriesRaw).length > 0;
+}
+
 const CountrySelectValue = form.ListValue.extend({
 	refreshCountries: function(buttonEl, section_id) {
 		buttonEl.disabled = true;
+	
+		return L.resolveDefault(service.execService('status_json'), null).then(function(statusRes) {
+			const payload = service.parseExecJsonResponse(statusRes, null);
 
-		return service.execService('refresh_countries_force').then(function(res) {
+			if (statusPayloadIsBusy(payload)) {
+				service.notifyInfo(_('NordVPN Easy is applying another runtime operation. Country refresh was skipped.'));
+				return null;
+			}
+
+			return service.execService('refresh_countries_force');
+		}).then(function(res) {
 			let message;
 
+			if (!res)
+				return null;
+	
 			if (res.code !== 0) {
 				message = res.stderr ? res.stderr.trim() : _('Country refresh failed.');
 				throw new Error(_('Country refresh failed with exit code %d: %s').format(res.code, message));
 			}
-
+	
 			return fs.read(COUNTRIES_CACHE_PATH);
 		}.bind(this)).then(function(countriesRaw) {
+			if (countriesRaw == null)
+				return;
+
 			const selectEl = managerUI.getSelectElement(this.cbid(section_id));
 			const currentCountry = selectEl ? managerData.normalizeCountryCode(selectEl.value) : '';
 			const countries = managerData.parseCountries(countriesRaw);
@@ -80,7 +109,7 @@ const TokenValue = form.Value.extend({
 		return uci.get(this.uciconfig || this.map.config, section_id, this.option) || '';
 	},
 
-	cfgvalue: function(section_id) {
+	cfgvalue: function() {
 		return '';
 	},
 
@@ -158,23 +187,29 @@ const TokenValue = form.Value.extend({
 return view.extend({
 	load: function() {
 		const uciLoad = uci.load('nordvpn_easy');
+		const countriesCachePromise = L.resolveDefault(fs.read(COUNTRIES_CACHE_PATH), '[]');
+		const statusPromise = L.resolveDefault(service.execService('status_json'), null);
 
-		return L.resolveDefault(service.execService('refresh_countries'), null).then(function() {
-			return L.resolveDefault(fs.read(COUNTRIES_CACHE_PATH), '[]');
-		}).then(function(countriesRaw) {
-			return Promise.all([
-				Promise.resolve(countriesRaw),
-				uciLoad
-			]);
-		}).then(function(results) {
-			const configuredCountry = managerData.normalizeCountryCode(uci.get('nordvpn_easy', 'main', 'vpn_country') || '');
-			const currentMode = String(uci.get('nordvpn_easy', 'main', 'server_selection_mode') || 'auto');
-			const statusPromise = L.resolveDefault(service.execService('status_json'), null);
-			const catalogPromise = managerStore.shouldLoadCatalog(currentMode, configuredCountry)
-				? L.resolveDefault(service.execService('server_catalog', [ configuredCountry ]), null)
-				: Promise.resolve(null);
+		return Promise.all([ uciLoad, countriesCachePromise, statusPromise ]).then(function(results) {
+			const countriesRaw = results[1];
+			const statusResult = results[2];
+			const statusPayload = service.parseExecJsonResponse(statusResult, null);
+			const runtimeBusy = statusPayloadIsBusy(statusPayload);
+			const countriesReady = (!countriesCacheHasEntries(countriesRaw) && !runtimeBusy)
+				? L.resolveDefault(service.execService('refresh_countries'), null).then(function() {
+					return L.resolveDefault(fs.read(COUNTRIES_CACHE_PATH), countriesRaw);
+				})
+				: Promise.resolve(countriesRaw);
 
-			return Promise.all([ Promise.resolve(results[0]), statusPromise, catalogPromise ]);
+			return countriesReady.then(function(finalCountriesRaw) {
+				const configuredCountry = managerData.normalizeCountryCode(uci.get('nordvpn_easy', 'main', 'vpn_country') || '');
+				const currentMode = String(uci.get('nordvpn_easy', 'main', 'server_selection_mode') || 'auto');
+				const catalogPromise = managerStore.shouldLoadCatalog(currentMode, configuredCountry) && !runtimeBusy
+					? L.resolveDefault(service.execService('server_catalog', [ configuredCountry ]), null)
+					: Promise.resolve(null);
+	
+				return Promise.all([ Promise.resolve(finalCountriesRaw), Promise.resolve(statusResult), catalogPromise ]);
+			});
 		});
 	},
 
@@ -193,7 +228,7 @@ return view.extend({
 		const currentPreferredStation = String(uci.get('nordvpn_easy', 'main', 'preferred_server_station') || '');
 		let m, s, o;
 
-		this.initialEnabled = (uci.get('nordvpn_easy', 'main', 'enabled') !== '0');
+		this.initialEnabled = managerData.parseEnabledFlag(uci.get('nordvpn_easy', 'main', 'enabled'));
 		this.initialCountry = currentCountry;
 		this.initialMode = currentMode;
 		this.initialPreferredStation = currentPreferredStation;
@@ -287,6 +322,7 @@ return view.extend({
 			const modeSelect = managerUI.getSelectElement(managerUI.ids.MODE_FIELD_ID);
 
 			managerUI.renderServerChoices(managerUI.getSelectElement(managerUI.ids.SERVER_FIELD_ID), state.currentServerCatalog, currentPreferredStation);
+			managerActions.renderLocalStatusSnapshot(state, state.currentLocalStatus);
 			if (!state.currentLocalStatusFresh)
 				managerActions.updateLocalStatus(state, { force: true });
 

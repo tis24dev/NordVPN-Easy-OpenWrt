@@ -1,4 +1,5 @@
 'use strict';
+/* global baseclass, managerActions, managerStore, poll, document */
 'require baseclass';
 'require nordvpn-easy/manager-actions as managerActions';
 'require nordvpn-easy/manager-store as managerStore';
@@ -11,6 +12,7 @@ function documentIsHidden() {
 function shouldSkipBackgroundPoll(state) {
 	return state.pollingSuspended ||
 		state.phase === managerStore.PHASES.SAVING ||
+		managerActions.runtimeOperationIsBusy(state, state.currentLocalStatus) ||
 		documentIsHidden();
 }
 

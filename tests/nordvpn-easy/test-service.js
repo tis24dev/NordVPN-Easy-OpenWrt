@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 'use strict';
+/* global require, __dirname, console, process */
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -37,6 +38,7 @@ if (!String.prototype.format) {
 function loadServiceModule() {
 	const source = fs.readFileSync(servicePath, 'utf8');
 	const calls = [];
+	const responses = [];
 	const context = {
 		baseclass: {
 			extend(api) {
@@ -44,15 +46,15 @@ function loadServiceModule() {
 			}
 		},
 		rpc: {
-			declare(spec) {
-				return function() {
-					const args = Array.prototype.slice.call(arguments);
-					calls.push({ spec: spec, args: args });
-					return Promise.resolve({
-						code: 0,
-						success: true,
-						stdout: JSON.stringify({ method: spec.method, args: args }),
-						stderr: ''
+				declare(spec) {
+					return function() {
+						const args = Array.prototype.slice.call(arguments);
+						calls.push({ spec: spec, args: args });
+						return Promise.resolve(responses.length ? responses.shift() : {
+							code: 0,
+							success: true,
+							stdout: JSON.stringify({ method: spec.method, args: args }),
+							stderr: ''
 					});
 				};
 			}
@@ -84,13 +86,14 @@ function loadServiceModule() {
 		Promise: Promise
 	};
 
-	return {
-		service: vm.runInNewContext(`(function(){\n${source}\n})();`, context, {
-			filename: servicePath
-		}),
-		calls: calls
-	};
-}
+		return {
+			service: vm.runInNewContext(`(function(){\n${source}\n})();`, context, {
+				filename: servicePath
+			}),
+			calls: calls,
+			responses: responses
+		};
+	}
 
 Promise.resolve().then(async function() {
 	const loaded = loadServiceModule();
@@ -103,6 +106,27 @@ Promise.resolve().then(async function() {
 	assert.equal(call.spec.method, 'refresh_servers', 'refresh_servers uses the dedicated ubus method');
 	assert.deepEqual(call.args, [ 'UY', true ], 'refresh_servers forwards country and force args');
 	assert.deepEqual(payload.args, [ 'UY', true ], 'refresh_servers preserves rpc payload in stdout');
+
+	loaded.responses.push({
+		code: 75,
+		success: false,
+		busy: true,
+		skipped: true,
+		reason: 'operation_busy',
+		holder_action: 'setup',
+		holder_pid: '1234',
+		holder_age_seconds: 9,
+		stdout: '',
+		stderr: 'operation busy'
+	});
+	const busyResult = await loaded.service.runAction('check');
+	const busyError = loaded.service.resultToError(busyResult);
+
+	assert.equal(busyResult.success, false, 'busy result is not a successful action');
+	assert.equal(busyResult.busy, true, 'busy result preserves busy flag');
+	assert.equal(busyResult.skipped, true, 'busy result preserves skipped flag');
+	assert.equal(busyResult.holder_action, 'setup', 'busy result preserves lock holder action');
+	assert.match(busyError.message, /already running setup/, 'busy result renders an operation-in-progress error');
 
 	await assert.rejects(
 		loaded.service.execService('unsupported_action'),

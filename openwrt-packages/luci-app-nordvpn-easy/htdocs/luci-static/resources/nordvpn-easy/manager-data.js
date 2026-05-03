@@ -1,8 +1,21 @@
 'use strict';
+/* global baseclass */
 'require baseclass';
 
 function normalizeCountryCode(value) {
 	return String(value || '').trim().toUpperCase();
+}
+
+function parseEnabledFlag(value) {
+	switch (String(value != null ? value : '0').trim().toLowerCase()) {
+	case '1':
+	case 'true':
+	case 'yes':
+	case 'on':
+		return true;
+	default:
+		return false;
+	}
 }
 
 function emptyServerCatalog() {
@@ -48,10 +61,14 @@ function parseLocalStatus(raw) {
 		server_selection_mode: String(status.server_selection_mode || 'auto'),
 		kill_switch_enabled: !!status.kill_switch_enabled,
 		selected_country: normalizeCountryCode(status.selected_country || ''),
-		interface: String(status.interface || ''),
-		vpn_status: String(status.vpn_status || 'inactive'),
-		operation_status: String(status.operation_status || 'idle'),
-		connected: !!status.connected,
+			interface: String(status.interface || ''),
+			vpn_status: String(status.vpn_status || 'inactive'),
+			operation_status: String(status.operation_status || 'idle'),
+			operation_lock_state: String(status.operation_lock_state || 'none'),
+			operation_lock_pid: String(status.operation_lock_pid || ''),
+			operation_lock_action: String(status.operation_lock_action || ''),
+			operation_lock_age_seconds: Number(status.operation_lock_age_seconds || 0),
+			connected: !!status.connected,
 		endpoint: String(status.endpoint || 'N/A'),
 		latest_handshake: String(status.latest_handshake || 'Never'),
 		latest_handshake_epoch: Number(status.latest_handshake_epoch || 0),
@@ -112,6 +129,7 @@ function buildServerCatalogIndex(catalog) {
 
 return baseclass.extend({
 	normalizeCountryCode: normalizeCountryCode,
+	parseEnabledFlag: parseEnabledFlag,
 	emptyServerCatalog: emptyServerCatalog,
 	parseJson: parseJson,
 	parseCountries: parseCountries,
