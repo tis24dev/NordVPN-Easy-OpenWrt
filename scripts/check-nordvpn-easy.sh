@@ -19,6 +19,7 @@ JS_FILES=(
 	"$ROOT_DIR/openwrt-packages/luci-app-nordvpn-easy/htdocs/luci-static/resources/view/nordvpn-easy/diagnostics.js"
 	"$ROOT_DIR/tests/nordvpn-easy/test-service.js"
 	"$ROOT_DIR/tests/nordvpn-easy/test-manager-actions.js"
+	"$ROOT_DIR/tests/nordvpn-easy/test-advanced.js"
 )
 
 SH_FILES=(
@@ -62,6 +63,7 @@ done
 printf '%s\n' 'Running fixture tests'
 node "$ROOT_DIR/tests/nordvpn-easy/test-service.js"
 node "$ROOT_DIR/tests/nordvpn-easy/test-manager-actions.js"
+node "$ROOT_DIR/tests/nordvpn-easy/test-advanced.js"
 sh "$ROOT_DIR/tests/nordvpn-easy/test-config-context.sh"
 sh "$ROOT_DIR/tests/nordvpn-easy/test-schema.sh"
 sh "$ROOT_DIR/tests/nordvpn-easy/test-catalog-fixtures.sh"

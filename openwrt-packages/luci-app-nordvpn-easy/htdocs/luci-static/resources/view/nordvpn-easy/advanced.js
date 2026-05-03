@@ -1,9 +1,14 @@
 'use strict';
-/* global form, fs, service, view, L, _ */
+/* global form, fs, managerData, managerFormat, service, uci, view, L, _ */
 'require form';
 'require fs';
+'require nordvpn-easy/manager-data as managerData';
+'require nordvpn-easy/manager-format as managerFormat';
 'require nordvpn-easy/service as service';
+'require uci';
 'require view';
+
+const SERVER_CATALOG_CACHE_PATH = '/tmp/nordvpn-easy-servers.json';
 
 function statusIsBusy(statusPayload) {
 	const operationStatus = String((statusPayload && statusPayload.operation_status) || 'idle');
@@ -29,22 +34,68 @@ function runAction(action, runtimeBusy) {
 	});
 }
 
+function fallbackBasicStatus(station, preferred, country) {
+	if (!station)
+		return _('Not configured');
+
+	if (preferred && station === preferred)
+		return _('Invalid: fallback matches the preferred server');
+
+	if (!country)
+		return _('Not verified: choose a server country first');
+
+	return '';
+}
+
+function fallbackCatalogStatus(station, country, catalog, catalogIndex, runtimeBusy) {
+	const match = catalogIndex[station];
+
+	if (!catalog || !catalog.servers || !catalog.servers.length)
+		return runtimeBusy
+			? _('Not verified while another runtime operation is running')
+			: _('Not verified: server catalog unavailable');
+
+	if (!match)
+		return _('Not found in %s catalog').format(catalog.country_name || country);
+
+	return _('Valid: %s').format(managerFormat.formatServerLabel(match));
+}
+
+function fallbackStatusLabel(fallbackStation, preferredStation, configuredCountry, catalog, catalogIndex, runtimeBusy) {
+	const station = String(fallbackStation || '').trim();
+	const preferred = String(preferredStation || '').trim();
+	const country = managerData.normalizeCountryCode(configuredCountry || '');
+	const basicStatus = fallbackBasicStatus(station, preferred, country);
+
+	return basicStatus || fallbackCatalogStatus(station, country, catalog, catalogIndex, runtimeBusy);
+}
+
 return view.extend({
-		load: function() {
-			return Promise.all([
-				L.resolveDefault(fs.stat('/etc/cron.d/nordvpn-easy'), null),
-				L.resolveDefault(fs.stat('/etc/hotplug.d/iface/95-nordvpn-easy'), null),
-				L.resolveDefault(service.execService('status_json'), null)
-			]);
-		},
-	
-		render: function(stats) {
-			const cronInstalled = !!stats[0];
-			const hotplugInstalled = !!stats[1];
-			const statusPayload = service.parseExecJsonResponse(stats[2], null);
-			const runtimeBusy = statusIsBusy(statusPayload);
-			const operationStatus = String((statusPayload && statusPayload.operation_status) || 'idle');
-			let m, s, o;
+	load: function() {
+		return Promise.all([
+			L.resolveDefault(fs.stat('/etc/cron.d/nordvpn-easy'), null),
+			L.resolveDefault(fs.stat('/etc/hotplug.d/iface/95-nordvpn-easy'), null),
+			L.resolveDefault(service.execService('status_json'), null),
+			uci.load('nordvpn_easy'),
+			L.resolveDefault(fs.read(SERVER_CATALOG_CACHE_PATH), '')
+		]);
+	},
+
+	render: function(stats) {
+		const cronInstalled = !!stats[0];
+		const hotplugInstalled = !!stats[1];
+		const statusPayload = service.parseExecJsonResponse(stats[2], null);
+		const runtimeBusy = statusIsBusy(statusPayload);
+		const operationStatus = String((statusPayload && statusPayload.operation_status) || 'idle');
+		const configuredCountry = managerData.normalizeCountryCode(uci.get('nordvpn_easy', 'main', 'vpn_country') || '');
+		const preferredStation = String(uci.get('nordvpn_easy', 'main', 'preferred_server_station') || '');
+		let fallbackCatalog = managerData.parseServerCatalog(stats[4] || '{}');
+
+		if (configuredCountry && fallbackCatalog.country_code !== configuredCountry)
+			fallbackCatalog = managerData.emptyServerCatalog();
+
+		const fallbackCatalogIndex = managerData.buildServerCatalogIndex(fallbackCatalog);
+		let m, s, o;
 
 		m = new form.Map('nordvpn_easy', _('NordVPN Easy Advanced'),
 			_('Adjust advanced network, health-check and recovery settings.'));
@@ -84,9 +135,38 @@ return view.extend({
 		s.addremove = false;
 
 		o = s.option(form.Value, 'fallback_server_station', _('Fallback Server Station'));
-		o.placeholder = 'hk318';
+		o.placeholder = _('Optional station id');
 		o.rmempty = true;
 		o.description = _('Optional. If the selected server cannot be applied or repeated health checks cannot recover connectivity, this station is promoted as the new preferred server. The fallback station must belong to the currently selected country.');
+		o.validate = function(section_id, value) {
+			const station = String(value || '').trim();
+
+			if (!station)
+				return true;
+
+			if (preferredStation && station === preferredStation)
+				return _('Fallback server must be different from the preferred server.');
+
+			if (!configuredCountry || !fallbackCatalog.servers.length)
+				return true;
+
+			if (!fallbackCatalogIndex[station])
+				return _('Fallback server was not found in the current country catalog.');
+
+			return true;
+		};
+
+		o = s.option(form.DummyValue, '_fallback_server_status', _('Fallback Status'));
+		o.cfgvalue = function(section_id) {
+			return fallbackStatusLabel(
+				uci.get('nordvpn_easy', section_id, 'fallback_server_station'),
+				preferredStation,
+				configuredCountry,
+				fallbackCatalog,
+				fallbackCatalogIndex,
+				runtimeBusy
+			);
+		};
 
 		s = m.section(form.NamedSection, 'main', 'nordvpn_easy', _('Health Checks & Recovery'));
 		s.anonymous = true;
@@ -164,48 +244,48 @@ return view.extend({
 		s.anonymous = true;
 		s.addremove = false;
 
-			o = s.option(form.DummyValue, '_hooks', _('Installed Hooks'));
-			o.cfgvalue = function() {
-				const state = [];
+		o = s.option(form.DummyValue, '_hooks', _('Installed Hooks'));
+		o.cfgvalue = function() {
+			const state = [];
 
 			state.push(cronInstalled ? _('cron: installed') : _('cron: missing'));
 			state.push(hotplugInstalled ? _('hotplug: installed') : _('hotplug: missing'));
 
-				return state.join(', ');
-			};
+			return state.join(', ');
+		};
 
-			o = s.option(form.DummyValue, '_operation_status', _('Operation Status'));
-			o.cfgvalue = function() {
-				return runtimeBusy ? _('Busy (%s)').format(operationStatus) : _('Idle');
-			};
-	
-			o = s.option(form.Button, '_run_setup', _('Run Setup'));
-			o.inputstyle = 'apply';
-			o.readonly = runtimeBusy;
-			o.onclick = function() {
-				return runAction('setup', runtimeBusy);
-			};
-	
-			o = s.option(form.Button, '_check', _('Run Check'));
-			o.inputstyle = 'apply';
-			o.readonly = runtimeBusy;
-			o.onclick = function() {
-				return runAction('check', runtimeBusy);
-			};
-	
-			o = s.option(form.Button, '_rotate', _('Rotate Server'));
-			o.inputstyle = 'apply';
-			o.readonly = runtimeBusy;
-			o.onclick = function() {
-				return runAction('rotate', runtimeBusy);
-			};
-	
-			o = s.option(form.Button, '_install_hooks', _('Install Hooks'));
-			o.inputstyle = 'apply';
-			o.readonly = runtimeBusy;
-			o.onclick = function() {
-				return runAction('install_hooks', runtimeBusy);
-			};
+		o = s.option(form.DummyValue, '_operation_status', _('Operation Status'));
+		o.cfgvalue = function() {
+			return runtimeBusy ? _('Busy (%s)').format(operationStatus) : _('Idle');
+		};
+
+		o = s.option(form.Button, '_run_setup', _('Run Setup'));
+		o.inputstyle = 'apply';
+		o.readonly = runtimeBusy;
+		o.onclick = function() {
+			return runAction('setup', runtimeBusy);
+		};
+
+		o = s.option(form.Button, '_check', _('Run Check'));
+		o.inputstyle = 'apply';
+		o.readonly = runtimeBusy;
+		o.onclick = function() {
+			return runAction('check', runtimeBusy);
+		};
+
+		o = s.option(form.Button, '_rotate', _('Rotate Server'));
+		o.inputstyle = 'apply';
+		o.readonly = runtimeBusy;
+		o.onclick = function() {
+			return runAction('rotate', runtimeBusy);
+		};
+
+		o = s.option(form.Button, '_install_hooks', _('Install Hooks'));
+		o.inputstyle = 'apply';
+		o.readonly = runtimeBusy;
+		o.onclick = function() {
+			return runAction('install_hooks', runtimeBusy);
+		};
 
 		o = s.option(form.Button, '_remove_hooks', _('Remove Hooks'));
 		o.inputstyle = 'reset';
