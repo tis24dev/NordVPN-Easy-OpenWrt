@@ -4,7 +4,20 @@
 'require nordvpn-easy/service as service';
 'require view';
 
-function runAction(action) {
+function statusIsBusy(statusPayload) {
+	const operationStatus = String((statusPayload && statusPayload.operation_status) || 'idle');
+
+	return operationStatus === 'busy' ||
+		operationStatus.indexOf('busy:') === 0 ||
+		String((statusPayload && statusPayload.operation_lock_state) || 'none') === 'held';
+}
+
+function runAction(action, runtimeBusy) {
+	if (runtimeBusy && [ 'setup', 'check', 'rotate', 'install_hooks' ].indexOf(action) !== -1) {
+		service.notifyInfo(_('NordVPN Easy is applying another runtime operation. This action was skipped.'));
+		return Promise.resolve();
+	}
+
 	return service.runAction(action).then(function(result) {
 		if (!result.success) {
 			service.notifyError(service.resultToError(result));
@@ -16,17 +29,21 @@ function runAction(action) {
 }
 
 return view.extend({
-	load: function() {
-		return Promise.all([
-			L.resolveDefault(fs.stat('/etc/cron.d/nordvpn-easy'), null),
-			L.resolveDefault(fs.stat('/etc/hotplug.d/iface/95-nordvpn-easy'), null)
-		]);
-	},
-
-	render: function(stats) {
-		const cronInstalled = !!stats[0];
-		const hotplugInstalled = !!stats[1];
-		let m, s, o;
+		load: function() {
+			return Promise.all([
+				L.resolveDefault(fs.stat('/etc/cron.d/nordvpn-easy'), null),
+				L.resolveDefault(fs.stat('/etc/hotplug.d/iface/95-nordvpn-easy'), null),
+				L.resolveDefault(service.execService('status_json'), null)
+			]);
+		},
+	
+		render: function(stats) {
+			const cronInstalled = !!stats[0];
+			const hotplugInstalled = !!stats[1];
+			const statusPayload = service.parseExecJsonResponse(stats[2], null);
+			const runtimeBusy = statusIsBusy(statusPayload);
+			const operationStatus = String((statusPayload && statusPayload.operation_status) || 'idle');
+			let m, s, o;
 
 		m = new form.Map('nordvpn_easy', _('NordVPN Easy Advanced'),
 			_('Adjust advanced network, health-check and recovery settings.'));
@@ -146,39 +163,48 @@ return view.extend({
 		s.anonymous = true;
 		s.addremove = false;
 
-		o = s.option(form.DummyValue, '_hooks', _('Installed Hooks'));
-		o.cfgvalue = function() {
-			const state = [];
+			o = s.option(form.DummyValue, '_hooks', _('Installed Hooks'));
+			o.cfgvalue = function() {
+				const state = [];
 
 			state.push(cronInstalled ? _('cron: installed') : _('cron: missing'));
 			state.push(hotplugInstalled ? _('hotplug: installed') : _('hotplug: missing'));
 
-			return state.join(', ');
-		};
+				return state.join(', ');
+			};
 
-		o = s.option(form.Button, '_run_setup', _('Run Setup'));
-		o.inputstyle = 'apply';
-		o.onclick = function() {
-			return runAction('setup');
-		};
-
-		o = s.option(form.Button, '_check', _('Run Check'));
-		o.inputstyle = 'apply';
-		o.onclick = function() {
-			return runAction('check');
-		};
-
-		o = s.option(form.Button, '_rotate', _('Rotate Server'));
-		o.inputstyle = 'apply';
-		o.onclick = function() {
-			return runAction('rotate');
-		};
-
-		o = s.option(form.Button, '_install_hooks', _('Install Hooks'));
-		o.inputstyle = 'apply';
-		o.onclick = function() {
-			return runAction('install_hooks');
-		};
+			o = s.option(form.DummyValue, '_operation_status', _('Operation Status'));
+			o.cfgvalue = function() {
+				return runtimeBusy ? _('Busy (%s)').format(operationStatus) : _('Idle');
+			};
+	
+			o = s.option(form.Button, '_run_setup', _('Run Setup'));
+			o.inputstyle = 'apply';
+			o.readonly = runtimeBusy;
+			o.onclick = function() {
+				return runAction('setup', runtimeBusy);
+			};
+	
+			o = s.option(form.Button, '_check', _('Run Check'));
+			o.inputstyle = 'apply';
+			o.readonly = runtimeBusy;
+			o.onclick = function() {
+				return runAction('check', runtimeBusy);
+			};
+	
+			o = s.option(form.Button, '_rotate', _('Rotate Server'));
+			o.inputstyle = 'apply';
+			o.readonly = runtimeBusy;
+			o.onclick = function() {
+				return runAction('rotate', runtimeBusy);
+			};
+	
+			o = s.option(form.Button, '_install_hooks', _('Install Hooks'));
+			o.inputstyle = 'apply';
+			o.readonly = runtimeBusy;
+			o.onclick = function() {
+				return runAction('install_hooks', runtimeBusy);
+			};
 
 		o = s.option(form.Button, '_remove_hooks', _('Remove Hooks'));
 		o.inputstyle = 'reset';

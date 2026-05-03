@@ -58,6 +58,18 @@ jq '. + [{
 
 nordvpn_easy_build_server_catalog_json 237 IT Italy < "$SERVER_LIST_FILE" > "$SERVER_CATALOG_FILE"
 
+RESOLVED_COUNTRY_CODE='IT'
+nordvpn_easy_server_list_cache_is_usable || {
+	printf '%s\n' 'FAIL: recommended server cache should be usable for its country' >&2
+	exit 1
+}
+RESOLVED_COUNTRY_CODE='HK'
+if nordvpn_easy_server_list_cache_is_usable; then
+	printf '%s\n' 'FAIL: recommended server cache should not be reused for a different country' >&2
+	exit 1
+fi
+RESOLVED_COUNTRY_CODE=''
+
 VPN_COUNTRY='IT'
 VPN_IF='wg0'
 SERVER_RECOMMENDATIONS_URL_BASE='https://example.invalid/recommendations'

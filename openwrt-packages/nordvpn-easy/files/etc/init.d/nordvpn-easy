@@ -14,8 +14,12 @@ CONFIG_CONTEXT_LIB='/usr/libexec/nordvpn-easy/lib/config-context.sh'
 CRON_PATH='/etc/cron.d/nordvpn-easy'
 HOTPLUG_PATH='/etc/hotplug.d/iface/95-nordvpn-easy'
 SERVICE_BACKEND_PAYLOAD_SIGNATURE='render-contract-v2'
-EXTRA_COMMANDS='setup check rotate refresh_countries refresh_countries_force server_catalog public_ip public_country operation_status vpn_status status_json diagnostics_log install_hooks remove_hooks disable_runtime render_runtime_config'
-EXTRA_HELP='  setup                 Run setup immediately
+NORDVPN_EASY_RC_BUSY="${NORDVPN_EASY_RC_BUSY:-75}"
+EXTRA_COMMANDS='connect disconnect reconnect setup check rotate refresh_countries refresh_countries_force server_catalog public_ip public_country operation_status vpn_status status_json diagnostics_log install_hooks remove_hooks disable_runtime render_runtime_config'
+EXTRA_HELP='  connect               Enable, run setup, then install hooks transactionally
+  disconnect            Disable runtime and remove hooks
+  reconnect             Run setup, then install hooks transactionally
+  setup                 Run setup immediately
   check                 Run one health check immediately
   rotate                Force server rotation immediately
   refresh_countries     Refresh the cached NordVPN country list
@@ -90,6 +94,7 @@ run_core_action() {
 	local action_config=''
 	local written_options=0
 	local failure_log_mode="${RUN_CORE_ACTION_FAILURE_LOG_MODE:-error}"
+	local busy_is_ok="${RUN_CORE_ACTION_BUSY_IS_OK:-${NORDVPN_EASY_BUSY_IS_OK:-0}}"
 	local action_log_mode='verbose'
 	local rc=0
 	shift
@@ -155,6 +160,12 @@ run_core_action() {
 		if [ "$action_log_mode" != 'quiet' ]; then
 			log_service_info "apply: core action '$action' completed successfully (duration=${action_duration}s)"
 		fi
+	elif [ "$rc" -eq "$NORDVPN_EASY_RC_BUSY" ]; then
+		if [ "$busy_is_ok" = '1' ]; then
+			[ "$action_log_mode" = 'quiet' ] || log_service_info "apply: core action '$action' skipped because another operation is running (duration=${action_duration}s, rc=$rc)"
+			return 0
+		fi
+		[ "$action_log_mode" = 'quiet' ] || log_service_info "apply: core action '$action' skipped because another operation is running (duration=${action_duration}s, rc=$rc)"
 	elif [ "$failure_log_mode" = 'info' ]; then
 		log_service_info "apply: core action '$action' failed but is deferred (duration=${action_duration}s, rc=$rc)"
 	else
@@ -268,7 +279,33 @@ validate_cron_schedule() {
 	return 1
 }
 
+normalize_cron_schedule() {
+	local schedule="$1"
+	local minute hour dom month dow
+
+	set -f
+	# shellcheck disable=SC2086 # Cron validation guarantees exactly five fields.
+	set -- $schedule
+	set +f
+	minute="${1:-}"
+	hour="${2:-}"
+	dom="${3:-}"
+	month="${4:-}"
+	dow="${5:-}"
+
+	case "$minute" in
+		'*'|'*/1'|'*/2'|'*/3'|'*/4')
+			printf '*/5 %s %s %s %s\n' "$hour" "$dom" "$month" "$dow"
+			;;
+		*)
+			printf '%s\n' "$schedule"
+			;;
+	esac
+}
+
 install_cron_hook() {
+	local effective_cron_schedule=''
+
 	load_service_config
 	mkdir -p /etc/cron.d
 
@@ -279,10 +316,15 @@ install_cron_hook() {
 			return 1
 		fi
 
+		effective_cron_schedule="$(normalize_cron_schedule "$cfg_check_cron_schedule")"
+		if [ "$effective_cron_schedule" != "$cfg_check_cron_schedule" ]; then
+			log_service_info "cron schedule '$cfg_check_cron_schedule' is faster than the 5-minute minimum; using '$effective_cron_schedule'"
+		fi
+
 		cat > "$CRON_PATH" <<EOF
-$cfg_check_cron_schedule /etc/init.d/$SERVICE_NAME check 2>&1 | logger -t $SERVICE_NAME-cron
+$effective_cron_schedule NORDVPN_EASY_BUSY_IS_OK=1 /etc/init.d/$SERVICE_NAME check 2>&1 | logger -t $SERVICE_NAME-cron
 EOF
-		log_service_info "installed cron hook at $CRON_PATH with schedule '$cfg_check_cron_schedule'"
+		log_service_info "installed cron hook at $CRON_PATH with schedule '$effective_cron_schedule'"
 	else
 		rm -f "$CRON_PATH"
 		log_service_info "removed cron hook from $CRON_PATH"
@@ -307,6 +349,7 @@ WAN_IF='$(nordvpn_easy_shell_quote "$cfg_wan_if")'
 VPN_IF='$(nordvpn_easy_shell_quote "$cfg_vpn_if")'
 DEBOUNCE_SECONDS='$(nordvpn_easy_shell_quote "$cfg_hotplug_debounce_seconds")'
 RUN_DIR='/tmp/run/nordvpn-easy'
+LOCK_DIR='/tmp/nordvpn-easy.lock'
 STAMP_FILE="\$RUN_DIR/hotplug.last"
 
 case "\$ACTION" in
@@ -338,7 +381,32 @@ fi
 
 printf '%s\n' "\$NOW_TS" > "\$STAMP_FILE" 2>/dev/null || true
 
-/etc/init.d/$SERVICE_NAME check 2>&1 | logger -t $SERVICE_NAME-hotplug
+if [ -r "\$LOCK_DIR/pid" ]; then
+	LOCK_PID="\$(cat "\$LOCK_DIR/pid" 2>/dev/null || true)"
+	case "\$LOCK_PID" in
+		''|*[!0-9]*)
+			;;
+		*)
+			if kill -0 "\$LOCK_PID" 2>/dev/null; then
+				LOCK_ACTION="\$(cat "\$LOCK_DIR/action" 2>/dev/null || printf '%s' 'unknown')"
+				LOCK_STARTED_AT="\$(cat "\$LOCK_DIR/started_at" 2>/dev/null || printf '%s' '0')"
+				case "\$LOCK_STARTED_AT" in
+					''|*[!0-9]*)
+						LOCK_AGE='0'
+						;;
+					*)
+						LOCK_AGE=\$((NOW_TS - LOCK_STARTED_AT))
+						[ "\$LOCK_AGE" -ge 0 ] || LOCK_AGE='0'
+						;;
+				esac
+				logger -t $SERVICE_NAME-hotplug "skipped \$ACTION for \$INTERFACE because runtime operation is busy (holder_action=\$LOCK_ACTION, holder_pid=\$LOCK_PID, holder_age_seconds=\$LOCK_AGE)"
+				exit 0
+			fi
+			;;
+	esac
+fi
+
+NORDVPN_EASY_BUSY_IS_OK=1 /etc/init.d/$SERVICE_NAME check 2>&1 | logger -t $SERVICE_NAME-hotplug
 EOF
 
 	chmod 755 "$HOTPLUG_PATH"
@@ -425,6 +493,46 @@ restart() {
 reload() {
 	log_service_info 'service reload requested'
 	restart
+}
+
+connect() {
+	load_service_config || return 1
+	log_service_info "connect requested; enabling runtime transactionally; $(nordvpn_easy_service_debug_summary 'cfg_')"
+	uci set "${UCI_CONFIG}.${UCI_SECTION}.enabled=1" || {
+		log_service_error 'connect failed while setting enabled=1'
+		return 1
+	}
+	uci commit "$UCI_CONFIG" || {
+		log_service_error 'connect failed while committing enabled=1'
+		return 1
+	}
+	setup || return $?
+	install_hooks
+}
+
+disconnect() {
+	load_service_config || return 1
+	log_service_info "disconnect requested; disabling runtime transactionally; $(nordvpn_easy_service_debug_summary 'cfg_')"
+	uci set "${UCI_CONFIG}.${UCI_SECTION}.enabled=0" || {
+		log_service_error 'disconnect failed while setting enabled=0'
+		return 1
+	}
+	uci commit "$UCI_CONFIG" || {
+		log_service_error 'disconnect failed while committing enabled=0'
+		return 1
+	}
+	disable_vpn_runtime
+}
+
+reconnect() {
+	load_service_config || return 1
+	log_service_info "reconnect requested; setup and hooks will run transactionally; $(nordvpn_easy_service_debug_summary 'cfg_')"
+	if [ "$cfg_enabled" -ne 1 ]; then
+		log_service_error 'reconnect refused because enabled=0; use connect to enable the runtime'
+		return 1
+	fi
+	setup || return $?
+	install_hooks
 }
 
 setup() {

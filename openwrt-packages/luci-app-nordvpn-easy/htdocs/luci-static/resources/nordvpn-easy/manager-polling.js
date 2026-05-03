@@ -11,6 +11,7 @@ function documentIsHidden() {
 function shouldSkipBackgroundPoll(state) {
 	return state.pollingSuspended ||
 		state.phase === managerStore.PHASES.SAVING ||
+		managerActions.runtimeOperationIsBusy(state, state.currentLocalStatus) ||
 		documentIsHidden();
 }
 

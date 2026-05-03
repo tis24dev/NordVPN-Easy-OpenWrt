@@ -117,19 +117,19 @@ function deriveRuntimeActionPlan(previousEnabled, enabled, previousCountry, coun
 	};
 
 	if (!wasEnabled && currentEnabled) {
-		plan.actions = [ 'setup', 'install_hooks' ];
+		plan.actions = [ 'connect' ];
 		plan.successMessage = _('NordVPN Easy enabled: setup completed and hooks installed.');
 		return plan;
 	}
 
 	if (wasEnabled && !currentEnabled) {
-		plan.actions = [ 'disable_runtime' ];
+		plan.actions = [ 'disconnect' ];
 		plan.successMessage = _('NordVPN Easy disabled: VPN interface stopped and hooks removed.');
 		return plan;
 	}
 
 	if (currentEnabled && serverSelectionChanged) {
-		plan.actions = [ 'setup', 'install_hooks' ];
+		plan.actions = [ 'reconnect' ];
 		plan.successMessage = currentMode === 'manual'
 			? _('NordVPN Easy restarted and synchronized the selected manual server.')
 			: _('NordVPN Easy restarted and synchronized the automatic server selection.');
@@ -137,7 +137,7 @@ function deriveRuntimeActionPlan(previousEnabled, enabled, previousCountry, coun
 	}
 
 	if (runtimeReconciliationRequired) {
-		plan.actions = [ 'setup', 'install_hooks' ];
+		plan.actions = [ 'reconnect' ];
 		plan.successMessage = _('NordVPN Easy runtime synchronized with the saved configuration.');
 	}
 
@@ -166,6 +166,20 @@ function loadServerCatalog(state, country, forceRefresh) {
 		managerUI.renderServerChoices(managerUI.getSelectElement(managerUI.ids.SERVER_FIELD_ID), state.currentServerCatalog, '');
 		managerUI.updateServerSelectionState(state);
 		return Promise.resolve(state.currentServerCatalog);
+	}
+
+	if (runtimeOperationIsBusy(state, state.currentLocalStatus)) {
+		if (state.currentServerCatalog &&
+			state.currentServerCatalog.servers &&
+			state.currentServerCatalog.servers.length &&
+			managerData.normalizeCountryCode(state.currentServerCatalog.country_code) === requestedCountry) {
+			managerUI.renderServerChoices(managerUI.getSelectElement(managerUI.ids.SERVER_FIELD_ID), state.currentServerCatalog, '');
+			managerUI.updateServerSelectionState(state);
+			return Promise.resolve(state.currentServerCatalog);
+		}
+
+		managerUI.updateServerSelectionState(state);
+		return Promise.resolve(managerData.emptyServerCatalog());
 	}
 
 	if (forceRefresh)
@@ -207,14 +221,25 @@ function normalizePublicIpValue(value) {
 	return publicIp;
 }
 
+function runtimeOperationIsBusy(state, status) {
+	const runtimeStatus = status || (state && state.currentLocalStatus) || {};
+	const operationStatus = String(runtimeStatus.operation_status || (state && state.currentOperationStatus) || 'idle');
+
+	return !!(state && state.pendingOperationLabel) ||
+		operationStatus === 'busy' ||
+		operationStatus.indexOf('busy:') === 0 ||
+		String(runtimeStatus.operation_lock_state || 'none') === 'held';
+}
+
 function publicLookupsAllowed(state, status) {
 	const runtimeStatus = status || state.currentLocalStatus || {};
 
 	return !!state.appliedEnabled &&
-		!!runtimeStatus.desired_enabled &&
-		!runtimeStatus.runtime_disabled &&
-		!runtimeStatus.interface_disabled &&
-		!managerUI.isDisableRequested(state);
+			!!runtimeStatus.desired_enabled &&
+			!runtimeStatus.runtime_disabled &&
+			!runtimeStatus.interface_disabled &&
+			!runtimeOperationIsBusy(state, runtimeStatus) &&
+			!managerUI.isDisableRequested(state);
 }
 
 function clearPublicLookupDisplay(state) {
@@ -540,6 +565,11 @@ function handleRefreshServerCatalog(state, ev) {
 		return Promise.resolve();
 	}
 
+	if (runtimeOperationIsBusy(state, state.currentLocalStatus)) {
+		ui.addNotification(null, E('p', _('NordVPN Easy is applying another runtime operation. Server catalog refresh was skipped.')), 'info');
+		return Promise.resolve();
+	}
+
 	if (button)
 		button.disabled = true;
 
@@ -808,10 +838,11 @@ function handleSaveApply(viewState, state, ev, mode) {
 	});
 }
 
-return baseclass.extend({
-	hasServerSelectionChanged: hasServerSelectionChanged,
-	deriveRuntimeActionPlan: deriveRuntimeActionPlan,
-	loadServerCatalog: loadServerCatalog,
+	return baseclass.extend({
+		hasServerSelectionChanged: hasServerSelectionChanged,
+		deriveRuntimeActionPlan: deriveRuntimeActionPlan,
+		runtimeOperationIsBusy: runtimeOperationIsBusy,
+		loadServerCatalog: loadServerCatalog,
 	renderLocalStatusSnapshot: renderLocalStatusSnapshot,
 	updatePublicIp: updatePublicIp,
 	updatePublicCountry: updatePublicCountry,

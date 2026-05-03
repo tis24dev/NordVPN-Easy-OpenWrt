@@ -80,4 +80,68 @@ printf '%s' "$DIAG_JSON" | jq -er '
 	(.message | contains("diagnostics export failed: diag stderr"))
 ' >/dev/null
 
+TX_INIT="$TMP_DIR/init-transactional"
+TX_CAPTURE="$TMP_DIR/transactional-calls"
+LOCK_DIR="$TMP_DIR/lock"
+mkdir -p "$LOCK_DIR"
+cat > "$TX_INIT" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$TX_CAPTURE"
+case "\$1" in
+	connect)
+		exit 0
+		;;
+	check)
+		exit 75
+		;;
+	*)
+		exit 1
+		;;
+esac
+EOF
+chmod 755 "$TX_INIT"
+
+CONNECT_JSON="$(
+	printf '{}' |
+		NORDVPN_EASY_LIB_DIR="$LIB_DIR" \
+		NORDVPN_EASY_INIT_SCRIPT="$TX_INIT" \
+		sh "$RPCD_SCRIPT" call connect
+)"
+printf '%s' "$CONNECT_JSON" | jq -er '
+	.success == true and
+	.action == "connect" and
+	.busy == false and
+	.skipped == false
+' >/dev/null
+case "$(cat "$TX_CAPTURE")" in
+	connect)
+		;;
+	*)
+		printf '%s\n' 'FAIL: rpc connect should invoke the init connect transaction exactly once' >&2
+		exit 1
+		;;
+esac
+
+printf '%s\n' "$$" > "$LOCK_DIR/pid"
+printf '%s\n' 'setup' > "$LOCK_DIR/action"
+printf '%s\n' "$(date +%s)" > "$LOCK_DIR/started_at"
+printf '%s\n' 'held' > "$LOCK_DIR/state"
+BUSY_JSON="$(
+	printf '{}' |
+		NORDVPN_EASY_LIB_DIR="$LIB_DIR" \
+		NORDVPN_EASY_INIT_SCRIPT="$TX_INIT" \
+		NORDVPN_EASY_LOCK_DIR="$LOCK_DIR" \
+		sh "$RPCD_SCRIPT" call check
+)"
+printf '%s' "$BUSY_JSON" | jq -er '
+	.success == false and
+	.busy == true and
+	.skipped == true and
+	.reason == "operation_busy" and
+	.holder_action == "setup" and
+	.holder_pid != "" and
+	.holder_age_seconds >= 0 and
+	(.message | contains("operation busy"))
+' >/dev/null
+
 printf '%s\n' 'test-rpcd.sh: ok'

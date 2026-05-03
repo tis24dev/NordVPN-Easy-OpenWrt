@@ -70,6 +70,14 @@ function responseMessage(res, fallback) {
 }
 
 function resultToError(result, fallback) {
+	if (result && result.busy) {
+		return new Error(
+			_('NordVPN Easy is already running %s. Try again when the current operation finishes.').format(
+				result.holder_action || _('another operation')
+			)
+		);
+	}
+
 	return new Error(
 		_('%s failed with exit code %d: %s').format(
 			result.action || _('command'),
@@ -84,6 +92,7 @@ function normalizeExecResult(action, payload) {
 	let stderr = '';
 	let code = 0;
 	let message = '';
+	let holderAgeSeconds = 0;
 
 	if (payload == null)
 		payload = {};
@@ -108,9 +117,18 @@ function normalizeExecResult(action, payload) {
 	else
 		message = responseMessage({ stdout: stdout, stderr: stderr });
 
+	if (payload.holder_age_seconds != null)
+		holderAgeSeconds = Number(payload.holder_age_seconds) || 0;
+
 	return {
 		action: action,
 		code: code,
+		busy: !!payload.busy,
+		skipped: !!payload.skipped,
+		reason: String(payload.reason || ''),
+		holder_pid: String(payload.holder_pid || ''),
+		holder_action: String(payload.holder_action || ''),
+		holder_age_seconds: holderAgeSeconds,
 		stdout: stdout,
 		stderr: stderr,
 		message: message
@@ -155,13 +173,19 @@ function execService(action, extraArgs) {
 
 function runAction(action, extraArgs) {
 	return execService(action, extraArgs).then(function(res) {
-		return {
-			action: action,
-			code: res.code,
-			success: (res.code === 0),
-			stdout: res.stdout || '',
-			stderr: res.stderr || '',
-			message: responseMessage(res)
+			return {
+				action: action,
+				code: res.code,
+				success: (res.code === 0),
+				busy: !!res.busy,
+				skipped: !!res.skipped,
+				reason: res.reason || '',
+				holder_pid: res.holder_pid || '',
+				holder_action: res.holder_action || '',
+				holder_age_seconds: res.holder_age_seconds || 0,
+				stdout: res.stdout || '',
+				stderr: res.stderr || '',
+				message: responseMessage(res)
 		};
 	}).catch(function(err) {
 		return {

@@ -5,6 +5,8 @@ INIT_SCRIPT="${NORDVPN_EASY_INIT_SCRIPT:-/etc/init.d/nordvpn-easy}"
 UCI_CONFIG='nordvpn_easy'
 UCI_SECTION='main'
 LIB_DIR="${NORDVPN_EASY_LIB_DIR:-/usr/libexec/nordvpn-easy/lib}"
+LOCK_DIR="${NORDVPN_EASY_LOCK_DIR:-/tmp/nordvpn-easy.lock}"
+NORDVPN_EASY_RC_BUSY="${NORDVPN_EASY_RC_BUSY:-75}"
 
 # shellcheck disable=SC1090
 . "${LIB_DIR}/config-context.sh" || exit 1
@@ -31,11 +33,13 @@ rpc_input_bool() {
 rpc_command_result() {
 	local action="$1"
 	local tmp_dir out_file err_file rc stdout_json stderr_json
-	local cached_error message_json
+	local cached_error message_json reason_json
+	local busy='false' skipped='false' reason=''
+	local holder_pid='' holder_action='' holder_age_seconds='0'
 	shift
 
 	tmp_dir="$(mktemp -d /tmp/nordvpn-easy.rpc.XXXXXX 2>/dev/null)" || {
-		printf '{"action":%s,"code":1,"success":false,"stdout":"","stderr":"could not create rpc temp directory","message":"could not create rpc temp directory"}\n' "$(rpc_json_string "$action")"
+		printf '{"action":%s,"code":1,"success":false,"busy":false,"skipped":false,"reason":"","holder_pid":"","holder_action":"","holder_age_seconds":0,"stdout":"","stderr":"could not create rpc temp directory","message":"could not create rpc temp directory"}\n' "$(rpc_json_string "$action")"
 		return 0
 	}
 	out_file="${tmp_dir}/stdout"
@@ -44,13 +48,28 @@ rpc_command_result() {
 	"$@" > "$out_file" 2> "$err_file"
 	rc=$?
 
-	if [ "$rc" -ne 0 ] && [ ! -s "$out_file" ] && [ ! -s "$err_file" ]; then
+	if [ "$rc" -eq "$NORDVPN_EASY_RC_BUSY" ]; then
+		busy='true'
+		skipped='true'
+		reason='operation_busy'
+		nordvpn_easy_load_lock_metadata "$LOCK_DIR"
+		holder_pid="${OPERATION_LOCK_PID:-}"
+		holder_action="${OPERATION_LOCK_ACTION:-}"
+		holder_age_seconds="${OPERATION_LOCK_AGE_SECONDS:-0}"
+		if [ ! -s "$err_file" ]; then
+			printf 'operation busy: another NordVPN Easy operation is running (holder_action=%s, holder_pid=%s, holder_age_seconds=%s)' \
+				"${holder_action:-unknown}" \
+				"${holder_pid:-unknown}" \
+				"${holder_age_seconds:-0}" > "$err_file"
+		fi
+	elif [ "$rc" -ne 0 ] && [ ! -s "$out_file" ] && [ ! -s "$err_file" ]; then
 		cached_error="$(sed -n '1p' "$NORDVPN_EASY_LAST_ERROR_CACHE" 2>/dev/null || true)"
 		printf '%s' "${cached_error:-${action} failed without output}" > "$err_file"
 	fi
 
 	stdout_json="$(jq -Rs . < "$out_file")"
 	stderr_json="$(jq -Rs . < "$err_file")"
+	reason_json="$(rpc_json_string "$reason")"
 	if [ "$rc" -eq 0 ]; then
 		message_json="$stdout_json"
 	else
@@ -58,10 +77,16 @@ rpc_command_result() {
 	fi
 	rm -rf -- "$tmp_dir"
 
-	printf '{"action":%s,"code":%s,"success":%s,"stdout":%s,"stderr":%s,"message":%s}\n' \
+	printf '{"action":%s,"code":%s,"success":%s,"busy":%s,"skipped":%s,"reason":%s,"holder_pid":%s,"holder_action":%s,"holder_age_seconds":%s,"stdout":%s,"stderr":%s,"message":%s}\n' \
 		"$(rpc_json_string "$action")" \
 		"$rc" \
 		"$([ "$rc" -eq 0 ] && printf '%s' 'true' || printf '%s' 'false')" \
+		"$busy" \
+		"$skipped" \
+		"$reason_json" \
+		"$(rpc_json_string "$holder_pid")" \
+		"$(rpc_json_string "$holder_action")" \
+		"${holder_age_seconds:-0}" \
 		"$stdout_json" \
 		"$stderr_json" \
 		"$message_json"
@@ -120,15 +145,15 @@ rpc_refresh_servers() {
 }
 
 rpc_connect() {
-	rpc_command_result 'connect' sh -c "uci set ${UCI_CONFIG}.${UCI_SECTION}.enabled='1' && uci commit ${UCI_CONFIG} && ${INIT_SCRIPT} setup && ${INIT_SCRIPT} install_hooks"
+	rpc_command_result 'connect' "$INIT_SCRIPT" connect
 }
 
 rpc_disconnect() {
-	rpc_command_result 'disconnect' sh -c "uci set ${UCI_CONFIG}.${UCI_SECTION}.enabled='0' && uci commit ${UCI_CONFIG} && ${INIT_SCRIPT} disable_runtime"
+	rpc_command_result 'disconnect' "$INIT_SCRIPT" disconnect
 }
 
 rpc_reconnect() {
-	rpc_command_result 'reconnect' sh -c "${INIT_SCRIPT} setup && ${INIT_SCRIPT} install_hooks"
+	rpc_command_result 'reconnect' "$INIT_SCRIPT" reconnect
 }
 
 rpc_diagnostics() {

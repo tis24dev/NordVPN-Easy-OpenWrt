@@ -225,51 +225,51 @@ assert.equal(
 assert.deepEqual(
 	normalizeValue(managerActions.deriveRuntimeActionPlan(false, true, '', 'UY', 'auto', 'auto', '', '', healthyRuntime)),
 	{
-		actions: [ 'setup', 'install_hooks' ],
+		actions: [ 'connect' ],
 		successMessage: 'NordVPN Easy enabled: setup completed and hooks installed.',
 		serverSelectionChanged: true
 	},
-	'disabled to enabled keeps the existing setup flow'
+	'disabled to enabled uses transactional connect'
 );
 
 assert.deepEqual(
 	normalizeValue(managerActions.deriveRuntimeActionPlan(true, false, 'AT', 'AT', 'auto', 'auto', '', '', healthyRuntime)),
 	{
-		actions: [ 'disable_runtime' ],
+		actions: [ 'disconnect' ],
 		successMessage: 'NordVPN Easy disabled: VPN interface stopped and hooks removed.',
 		serverSelectionChanged: false
 	},
-	'enabled to disabled keeps the disable flow'
+	'enabled to disabled uses transactional disconnect'
 );
 
 assert.deepEqual(
 	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'AT', 'UY', 'auto', 'auto', '', '', healthyRuntime)),
 	{
-		actions: [ 'setup', 'install_hooks' ],
+		actions: [ 'reconnect' ],
 		successMessage: 'NordVPN Easy restarted and synchronized the automatic server selection.',
 		serverSelectionChanged: true
 	},
-	'enabled country changes use the clean restart flow'
+	'enabled country changes use transactional reconnect'
 );
 
 assert.deepEqual(
 	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'UY', 'UY', 'auto', 'manual', '', 'uy123', healthyRuntime)),
 	{
-		actions: [ 'setup', 'install_hooks' ],
+		actions: [ 'reconnect' ],
 		successMessage: 'NordVPN Easy restarted and synchronized the selected manual server.',
 		serverSelectionChanged: true
 	},
-	'enabled mode changes use the clean restart flow'
+	'enabled mode changes use transactional reconnect'
 );
 
 assert.deepEqual(
 	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'UY', 'UY', 'manual', 'manual', 'uy123', 'uy456', healthyRuntime)),
 	{
-		actions: [ 'setup', 'install_hooks' ],
+		actions: [ 'reconnect' ],
 		successMessage: 'NordVPN Easy restarted and synchronized the selected manual server.',
 		serverSelectionChanged: true
 	},
-	'enabled manual preferred server changes use the clean restart flow'
+	'enabled manual preferred server changes use transactional reconnect'
 );
 
 assert.deepEqual(
@@ -285,7 +285,7 @@ assert.deepEqual(
 assert.deepEqual(
 	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'UY', 'UY', 'auto', 'auto', '', '', disabledRuntime)),
 	{
-		actions: [ 'setup', 'install_hooks' ],
+		actions: [ 'reconnect' ],
 		successMessage: 'NordVPN Easy runtime synchronized with the saved configuration.',
 		serverSelectionChanged: false
 	},
@@ -295,7 +295,7 @@ assert.deepEqual(
 assert.deepEqual(
 	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'UY', 'UY', 'auto', 'auto', '', '', missingRuntime)),
 	{
-		actions: [ 'setup', 'install_hooks' ],
+		actions: [ 'reconnect' ],
 		successMessage: 'NordVPN Easy runtime synchronized with the saved configuration.',
 		serverSelectionChanged: false
 	},
@@ -305,7 +305,7 @@ assert.deepEqual(
 assert.deepEqual(
 	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'UY', 'UY', 'auto', 'auto', '', '', unknownRuntime)),
 	{
-		actions: [ 'setup', 'install_hooks' ],
+		actions: [ 'reconnect' ],
 		successMessage: 'NordVPN Easy runtime synchronized with the saved configuration.',
 		serverSelectionChanged: false
 	},
@@ -315,7 +315,7 @@ assert.deepEqual(
 assert.deepEqual(
 	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'UY', 'UY', 'auto', 'auto', '', '', null)),
 	{
-		actions: [ 'setup', 'install_hooks' ],
+		actions: [ 'reconnect' ],
 		successMessage: 'NordVPN Easy runtime synchronized with the saved configuration.',
 		serverSelectionChanged: false
 	},

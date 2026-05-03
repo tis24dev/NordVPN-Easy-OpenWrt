@@ -47,6 +47,7 @@ SERVER_RECOMMENDATIONS_URL_BASE="${NORDVPN_API}/servers/recommendations?filters[
 SERVER_CATALOG_URL_BASE="${NORDVPN_API}/servers?filters[servers_technologies][identifier]=wireguard_udp&limit=5000"
 CREDENTIALS_URL="${NORDVPN_API}/users/services/credentials"
 LOCK_DIR='/tmp/nordvpn-easy.lock'
+NORDVPN_EASY_RC_BUSY="${NORDVPN_EASY_RC_BUSY:-75}"
 RESOLVED_COUNTRY_ID=''
 RESOLVED_COUNTRY_NAME=''
 RESOLVED_COUNTRY_CODE=''
@@ -389,6 +390,39 @@ public_lookup_log () {
   [ "${PUBLIC_LOOKUP_LOG_MODE:-verbose}" = 'quiet' ] || log "$@"
 }
 
+nordvpn_easy_runtime_lock_is_busy () {
+  nordvpn_easy_load_lock_metadata "${LOCK_DIR:-/tmp/nordvpn-easy.lock}"
+  [ "${OPERATION_LOCK_STATE:-none}" = 'held' ] || return 1
+  [ "${OPERATION_LOCK_PID:-}" != "$$" ] || return 1
+}
+
+nordvpn_easy_lock_holder_summary () {
+  printf 'holder_action=%s, holder_pid=%s, holder_age_seconds=%s' \
+    "${OPERATION_LOCK_ACTION:-unknown}" \
+    "${OPERATION_LOCK_PID:-unknown}" \
+    "${OPERATION_LOCK_AGE_SECONDS:-0}"
+}
+
+nordvpn_easy_public_lookup_cache_or_busy () {
+  local lookup_action="$1"
+  local cache_file="$2"
+  local cached_value=''
+
+  if ! nordvpn_easy_runtime_lock_is_busy; then
+    return 1
+  fi
+
+  cached_value="$(sed -n '1p' "$cache_file" 2>/dev/null || true)"
+  if [ -n "$cached_value" ]; then
+    printf '%s\n' "$cached_value"
+    public_lookup_log "$lookup_action request skipped because another runtime operation is running ($(nordvpn_easy_lock_holder_summary)); returned cached value"
+    return 0
+  fi
+
+  public_lookup_log "$lookup_action request skipped because another runtime operation is running ($(nordvpn_easy_lock_holder_summary)); no cached value is available"
+  return "$NORDVPN_EASY_RC_BUSY"
+}
+
 nordvpn_easy_write_runtime_cache_value () {
   local cache_file="$1"
   local cache_value="$2"
@@ -637,6 +671,23 @@ server_catalog_cache_matches_country () {
   ' "$SERVER_CATALOG_FILE" >/dev/null 2>&1
 }
 
+server_catalog_cache_matches_query () {
+  TARGET_QUERY="$1"
+
+  [ -f "$SERVER_CATALOG_FILE" ] || return 1
+
+  jq -er --arg query "$TARGET_QUERY" '
+    (.servers | type == "array") and
+    (.servers | length > 0) and
+    (
+      ($query == "") or
+      ((.country_id | tostring) == $query) or
+      ((.country_code // "" | ascii_downcase) == ($query | ascii_downcase)) or
+      ((.country_name // "" | ascii_downcase) == ($query | ascii_downcase))
+    )
+  ' "$SERVER_CATALOG_FILE" >/dev/null 2>&1
+}
+
 fetch_server_catalog () {
   FORCE_REFRESH="${1:-0}"
   COUNTRY_QUERY="${2:-$VPN_COUNTRY}"
@@ -880,6 +931,12 @@ if [ "$ACTION" = 'public_ip' ]; then
   PUBLIC_LOOKUP_LOG_MODE="${1:-verbose}"
   LOG_PHASE='poll'
   public_lookup_log "public_ip request starting (mode=${PUBLIC_LOOKUP_LOG_MODE})"
+  if nordvpn_easy_public_lookup_cache_or_busy 'public_ip' "$NORDVPN_EASY_PUBLIC_IP_CACHE"; then
+    exit 0
+  else
+    ACTION_RC=$?
+    [ "$ACTION_RC" -eq "$NORDVPN_EASY_RC_BUSY" ] && exit "$NORDVPN_EASY_RC_BUSY"
+  fi
   command -v curl >/dev/null 2>&1 || {
     log 'curl IS MISSING, PLEASE INSTALL'
     exit 1
@@ -902,6 +959,12 @@ if [ "$ACTION" = 'public_country' ]; then
   PUBLIC_LOOKUP_LOG_MODE="${1:-verbose}"
   LOG_PHASE='poll'
   public_lookup_log "public_country request starting (mode=${PUBLIC_LOOKUP_LOG_MODE})"
+  if nordvpn_easy_public_lookup_cache_or_busy 'public_country' "$NORDVPN_EASY_PUBLIC_COUNTRY_CACHE"; then
+    exit 0
+  else
+    ACTION_RC=$?
+    [ "$ACTION_RC" -eq "$NORDVPN_EASY_RC_BUSY" ] && exit "$NORDVPN_EASY_RC_BUSY"
+  fi
   require_commands || exit 1
   get_public_country
   ACTION_RC=$?
@@ -949,22 +1012,29 @@ fi
 if [ "$ACTION" = 'server_catalog' ]; then
   SERVER_CATALOG_QUERY="${1:-$VPN_COUNTRY}"
   SERVER_CATALOG_FORCE="${2:-0}"
+  if nordvpn_easy_runtime_lock_is_busy; then
+    if server_catalog_cache_matches_query "$SERVER_CATALOG_QUERY"; then
+      log "server_catalog request skipped because another runtime operation is running ($(nordvpn_easy_lock_holder_summary)); returned cached catalog"
+      nordvpn_easy_emit_server_catalog_json "$SERVER_CATALOG_FILE" "$SERVER_CATALOG_TS_FILE" "$(server_cache_ttl_value)"
+      exit 0
+    fi
+
+    log "SKIPPED: action 'server_catalog' skipped because another runtime operation is running ($(nordvpn_easy_lock_holder_summary))"
+    exit "$NORDVPN_EASY_RC_BUSY"
+  fi
 fi
 
 require_commands || exit 1
 
 log "action dispatch starting (args=$(nordvpn_easy_debug_cli_args "$@"), config_source=${CONFIG_CONTEXT_SOURCE:-unknown}, vpn_if=${VPN_IF:-unset}, desired_enabled=${DESIRED_ENABLED:-0})"
 
-# Intentionally exit 0 on lock contention so cron/hotplug do not log an error when another instance already holds the lock.
 acquire_lock
 LOCK_STATUS=$?
 if [ "$LOCK_STATUS" -ne 0 ]; then
-  if [ "$LOCK_STATUS" -eq 2 ] && lock_contention_is_nonfatal; then
-    exit 0
-  fi
-
   if [ "$LOCK_STATUS" -eq 2 ]; then
-    log "ERROR: ACTION '$ACTION' ABORTED BECAUSE ANOTHER NORDVPN-EASY OPERATION IS STILL RUNNING"
+    nordvpn_easy_load_lock_metadata "$LOCK_DIR"
+    log "SKIPPED: action '$ACTION' skipped because another runtime operation is running ($(nordvpn_easy_lock_holder_summary))"
+    exit "$NORDVPN_EASY_RC_BUSY"
   else
     log "ERROR: ACTION '$ACTION' FAILED TO ACQUIRE EXECUTION LOCK AT $LOCK_DIR"
   fi
