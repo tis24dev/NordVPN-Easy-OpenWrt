@@ -1,4 +1,5 @@
 'use strict';
+/* global form, fs, managerActions, managerData, managerFormat, managerPolling, managerStore, managerUI, service, ui, uci, view, L, E, _ */
 'require form';
 'require fs';
 'require nordvpn-easy/manager-actions as managerActions';
@@ -108,7 +109,7 @@ const TokenValue = form.Value.extend({
 		return uci.get(this.uciconfig || this.map.config, section_id, this.option) || '';
 	},
 
-	cfgvalue: function(section_id) {
+	cfgvalue: function() {
 		return '';
 	},
 

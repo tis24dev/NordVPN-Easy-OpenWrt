@@ -1,4 +1,5 @@
 'use strict';
+/* global baseclass, managerActions, managerStore, poll, document */
 'require baseclass';
 'require nordvpn-easy/manager-actions as managerActions';
 'require nordvpn-easy/manager-store as managerStore';

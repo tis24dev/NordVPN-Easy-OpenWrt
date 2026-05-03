@@ -1,4 +1,5 @@
 'use strict';
+/* global baseclass, _ */
 'require baseclass';
 
 function humanizeAction(action) {

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 'use strict';
+/* global require, __dirname, console, setTimeout, clearTimeout, process */
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs');

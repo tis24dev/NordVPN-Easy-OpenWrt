@@ -1,4 +1,5 @@
 'use strict';
+/* global form, fs, service, view, L, _ */
 'require form';
 'require fs';
 'require nordvpn-easy/service as service';

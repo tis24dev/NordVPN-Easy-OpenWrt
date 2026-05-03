@@ -1,4 +1,5 @@
 'use strict';
+/* global service, ui, view, E, _ */
 'require nordvpn-easy/service as service';
 'require ui';
 'require view';

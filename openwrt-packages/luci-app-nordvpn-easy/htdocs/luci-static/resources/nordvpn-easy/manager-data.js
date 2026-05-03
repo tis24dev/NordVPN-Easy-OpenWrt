@@ -1,4 +1,5 @@
 'use strict';
+/* global baseclass */
 'require baseclass';
 
 function normalizeCountryCode(value) {

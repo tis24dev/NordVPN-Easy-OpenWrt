@@ -1,4 +1,5 @@
 'use strict';
+/* global baseclass, rpc, ui, document, window, Blob, E, _ */
 'require baseclass';
 'require rpc';
 'require ui';
@@ -8,25 +9,64 @@ const callStatus = rpc.declare({
 	method: 'status'
 });
 
-const callAction = {};
-[
-	'connect',
-	'disconnect',
-	'reconnect',
-	'rotate',
-	'setup',
-	'check',
-	'install_hooks',
-	'remove_hooks',
-	'disable_runtime',
-	'public_ip',
-	'public_country',
-	'diagnostics'
-].forEach(function(method) {
-	callAction[method] = rpc.declare({
-		object: 'nordvpn.easy',
-		method: method
-	});
+const callConnect = rpc.declare({
+	object: 'nordvpn.easy',
+	method: 'connect'
+});
+
+const callDisconnect = rpc.declare({
+	object: 'nordvpn.easy',
+	method: 'disconnect'
+});
+
+const callReconnect = rpc.declare({
+	object: 'nordvpn.easy',
+	method: 'reconnect'
+});
+
+const callRotate = rpc.declare({
+	object: 'nordvpn.easy',
+	method: 'rotate'
+});
+
+const callSetup = rpc.declare({
+	object: 'nordvpn.easy',
+	method: 'setup'
+});
+
+const callCheck = rpc.declare({
+	object: 'nordvpn.easy',
+	method: 'check'
+});
+
+const callInstallHooks = rpc.declare({
+	object: 'nordvpn.easy',
+	method: 'install_hooks'
+});
+
+const callRemoveHooks = rpc.declare({
+	object: 'nordvpn.easy',
+	method: 'remove_hooks'
+});
+
+const callDisableRuntime = rpc.declare({
+	object: 'nordvpn.easy',
+	method: 'disable_runtime'
+});
+
+const callPublicIp = rpc.declare({
+	object: 'nordvpn.easy',
+	method: 'public_ip'
+});
+
+const callPublicCountry = rpc.declare({
+	object: 'nordvpn.easy',
+	method: 'public_country'
+});
+
+const callDiagnostics = rpc.declare({
+	object: 'nordvpn.easy',
+	method: 'diagnostics'
 });
 
 const callRefreshCountries = rpc.declare({
@@ -135,6 +175,35 @@ function normalizeExecResult(action, payload) {
 	};
 }
 
+function callSimpleAction(action) {
+	switch (action) {
+	case 'connect':
+		return callConnect();
+	case 'disconnect':
+		return callDisconnect();
+	case 'reconnect':
+		return callReconnect();
+	case 'rotate':
+		return callRotate();
+	case 'setup':
+		return callSetup();
+	case 'check':
+		return callCheck();
+	case 'install_hooks':
+		return callInstallHooks();
+	case 'remove_hooks':
+		return callRemoveHooks();
+	case 'disable_runtime':
+		return callDisableRuntime();
+	case 'public_ip':
+		return callPublicIp();
+	case 'public_country':
+		return callPublicCountry();
+	default:
+		return null;
+	}
+}
+
 function execService(action, extraArgs) {
 	const args = extraArgs || [];
 	let request;
@@ -156,13 +225,12 @@ function execService(action, extraArgs) {
 		request = callServerCatalog(args[0] || '', args[1] === '1' || args[1] === true);
 		break;
 	case 'diagnostics_log':
-		request = callAction.diagnostics();
+		request = callDiagnostics();
 		break;
 	default:
-		if (!callAction[action])
+		request = callSimpleAction(action);
+		if (!request)
 			return Promise.reject(new Error(_('Unsupported NordVPN Easy action: %s').format(action)));
-
-		request = callAction[action]();
 		break;
 	}
 
