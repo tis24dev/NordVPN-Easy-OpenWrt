@@ -51,7 +51,7 @@ nordvpn_easy_debug_cli_args() { printf '%s\n' 'none'; }
 nordvpn_easy_service_debug_summary() { printf '%s\n' 'enabled=1 (checked/on), token=present'; }
 nordvpn_easy_runtime_file_debug_summary() { printf '%s\n' 'file_token=present'; }
 nordvpn_easy_runtime_config_validation_summary() { printf '%s\n' 'render_validation=ok'; }
-nordvpn_easy_service_backend_payload_summary() { printf '%s\n' 'service_payload=render-contract-v2, lib_payload=render-contract-v2, payload_match=1'; }
+nordvpn_easy_service_backend_payload_summary() { printf '%s\n' 'service_payload=render-contract-v3, lib_payload=render-contract-v3, payload_match=1'; }
 nordvpn_easy_mktemp_dir() {
 	local result_var="$2"
 	local temp_dir

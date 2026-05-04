@@ -384,6 +384,28 @@ async function testFallbackValidationUsesCurrentCountryCatalog() {
 	assert.match(String(statusOption.cfgvalue('main')), /Valid: UY - Montevideo - uy456\.nordvpn\.com - 8%/, 'fallback status renders the matched catalog server');
 }
 
+async function testWireGuardTransportControlsValidateOperationalRanges() {
+	const harness = loadAdvancedView();
+
+	await harness.view.render(harness.stats);
+
+	const keepaliveOption = harness.formHarness.findOption('wireguard_persistent_keepalive');
+	const mtuOption = harness.formHarness.findOption('wireguard_mtu');
+	const mtuFixOption = harness.formHarness.findOption('firewall_mtu_fix');
+
+	assert.equal(keepaliveOption.default, '15', 'WireGuard keepalive defaults to 15 seconds in Advanced');
+	assert.equal(keepaliveOption.validate('main', '0'), true, 'keepalive 0 is allowed to disable keepalive deliberately');
+	assert.equal(keepaliveOption.validate('main', '15'), true, 'keepalive 15 is valid');
+	assert.match(String(keepaliveOption.validate('main', '121')), /120 seconds or less/, 'keepalive above 120 is rejected');
+	assert.match(String(keepaliveOption.validate('main', 'abc')), /between 0 and 120/, 'non-numeric keepalive is rejected');
+
+	assert.equal(mtuOption.validate('main', ''), true, 'empty MTU keeps automatic mode');
+	assert.equal(mtuOption.validate('main', '1420'), true, 'MTU 1420 is valid');
+	assert.match(String(mtuOption.validate('main', '1279')), /between 1280 and 1500/, 'low MTU is rejected');
+	assert.match(String(mtuOption.validate('main', '1501')), /between 1280 and 1500/, 'high MTU is rejected');
+	assert.equal(mtuFixOption.default, '1', 'MSS clamping defaults on');
+}
+
 async function testBusyRuntimeDisablesMutableActionsButKeepsHookRemovalAvailable() {
 	const harness = loadAdvancedView({
 		statusPayload: {
@@ -451,6 +473,7 @@ async function testMismatchedCatalogIsClearedBeforeFallbackStateIsDerived() {
 
 Promise.resolve().then(async function() {
 	await testFallbackValidationUsesCurrentCountryCatalog();
+	await testWireGuardTransportControlsValidateOperationalRanges();
 	await testBusyRuntimeDisablesMutableActionsButKeepsHookRemovalAvailable();
 	await testMismatchedCatalogIsClearedBeforeFallbackStateIsDerived();
 	console.log('test-advanced.js: ok');

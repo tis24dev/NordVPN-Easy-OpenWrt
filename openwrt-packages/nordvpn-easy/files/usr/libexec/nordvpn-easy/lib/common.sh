@@ -211,7 +211,9 @@ nordvpn_easy_server_cache_is_enabled() {
 }
 
 nordvpn_easy_current_server_station() {
-	uci -q get "network.${VPN_IF}server.nordvpn_station" 2>/dev/null || true
+	local vpn_if="${VPN_IF:-wg0}"
+
+	uci -q get "network.${vpn_if}server.nordvpn_station" 2>/dev/null || true
 }
 
 nordvpn_easy_set_server_preference_in_uci() {
@@ -379,17 +381,38 @@ nordvpn_easy_on_signal() {
 	esac
 }
 
+nordvpn_easy_sanitize_diagnostics_stream() {
+	sed \
+		-e "s/\([._[:alnum:]-]*nordvpn_token='\)[^']*'/\1***REDACTED***'/g" \
+		-e "s/\([._[:alnum:]-]*private_key='\)[^']*'/\1***REDACTED***'/g" \
+		-e "s/\([._[:alnum:]-]*preshared_key='\)[^']*'/\1***REDACTED***'/g" \
+		-e 's/\("nordvpn_token"[[:space:]]*:[[:space:]]*"\)[^"]*"/\1***REDACTED***"/g' \
+		-e 's/\("private_key"[[:space:]]*:[[:space:]]*"\)[^"]*"/\1***REDACTED***"/g' \
+		-e 's/\("preshared_key"[[:space:]]*:[[:space:]]*"\)[^"]*"/\1***REDACTED***"/g' \
+		-e 's/\(token:\)[^"[:space:]]*/\1***REDACTED***/g' \
+		-e 's/\(Authorization:[[:space:]]*Basic[[:space:]]\)[^"[:space:]]*/\1***REDACTED***/g'
+}
+
+nordvpn_easy_diagnostics_section() {
+	printf '\n## %s\n' "$1"
+}
+
+nordvpn_easy_print_sanitized_command() {
+	local title="$1"
+	shift
+
+	nordvpn_easy_diagnostics_section "$title"
+	"$@" 2>&1 | nordvpn_easy_sanitize_diagnostics_stream || true
+}
+
 nordvpn_easy_export_diagnostics_log() {
 	local service_name="${1:-nordvpn-easy}"
 	local temp_dir=''
 	local tmp_log=''
 	local tail_lines="${NORDVPN_EASY_DIAGNOSTICS_TAIL_LINES:-2000}"
 	local tail_rc=0
-
-	command -v logread >/dev/null 2>&1 || {
-		nordvpn_easy_log 'logread command not found'
-		return 1
-	}
+	local vpn_if="${VPN_IF:-wg0}"
+	local firewall_zone=''
 
 	case "$tail_lines" in
 		''|*[!0-9]*)
@@ -400,12 +423,60 @@ nordvpn_easy_export_diagnostics_log() {
 	nordvpn_easy_mktemp_dir 'diagnostics' temp_dir || return 1
 	tmp_log="$(nordvpn_easy_temp_file_path "$temp_dir" "${service_name}.diagnostics.log")"
 
-	logread -e "$service_name" > "$tmp_log" || {
-		rm -rf -- "$temp_dir"
-		return 1
-	}
+	printf '# NordVPN Easy Diagnostics\n'
+	printf 'generated_at=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date 2>/dev/null || printf '%s' 'unknown')"
+	printf 'vpn_if=%s\n' "$vpn_if"
 
-	tail -n "$tail_lines" "$tmp_log" || tail_rc=$?
+	if command -v nordvpn_easy_emit_status_json >/dev/null 2>&1; then
+		nordvpn_easy_print_sanitized_command 'Runtime status JSON' nordvpn_easy_emit_status_json
+	fi
+
+	if command -v wg >/dev/null 2>&1; then
+		nordvpn_easy_print_sanitized_command 'WireGuard status' wg show "$vpn_if"
+	else
+		nordvpn_easy_diagnostics_section 'WireGuard status'
+		printf '%s\n' 'wg command not found'
+	fi
+
+	if command -v uci >/dev/null 2>&1; then
+		nordvpn_easy_print_sanitized_command 'UCI nordvpn_easy' uci show nordvpn_easy
+		nordvpn_easy_print_sanitized_command "UCI network.${vpn_if}" uci show "network.${vpn_if}"
+		nordvpn_easy_print_sanitized_command "UCI network.${vpn_if}server" uci show "network.${vpn_if}server"
+
+		if command -v nordvpn_easy_find_firewall_zone_section >/dev/null 2>&1; then
+			firewall_zone="$(nordvpn_easy_find_firewall_zone_section "$vpn_if" 2>/dev/null || true)"
+			if [ -n "$firewall_zone" ]; then
+				nordvpn_easy_print_sanitized_command "UCI firewall zone for ${vpn_if}" uci show "$firewall_zone"
+			fi
+		fi
+	fi
+
+	if command -v ip >/dev/null 2>&1; then
+		nordvpn_easy_print_sanitized_command "IP link ${vpn_if}" ip -o link show dev "$vpn_if"
+		nordvpn_easy_print_sanitized_command "Routes via ${vpn_if}" ip route show dev "$vpn_if"
+		nordvpn_easy_print_sanitized_command 'Default routes' ip route show default
+	fi
+
+	nordvpn_easy_diagnostics_section 'DNS'
+	{
+		printf '%s\n' '# /etc/resolv.conf'
+		cat /etc/resolv.conf 2>/dev/null || true
+		printf '%s\n' '# /tmp/resolv.conf.d/resolv.conf.auto'
+		cat /tmp/resolv.conf.d/resolv.conf.auto 2>/dev/null || true
+	} | nordvpn_easy_sanitize_diagnostics_stream
+
+	nordvpn_easy_diagnostics_section 'NordVPN Easy log'
+	if command -v logread >/dev/null 2>&1; then
+		logread -e "$service_name" > "$tmp_log" || {
+			rm -rf -- "$temp_dir"
+			return 1
+		}
+
+		tail -n "$tail_lines" "$tmp_log" | nordvpn_easy_sanitize_diagnostics_stream || tail_rc=$?
+	else
+		printf '%s\n' 'logread command not found'
+	fi
+
 	rm -rf -- "$temp_dir"
 	return "$tail_rc"
 }

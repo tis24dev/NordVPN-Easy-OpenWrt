@@ -1,7 +1,7 @@
 #!/bin/sh
 
-NORDVPN_EASY_SCHEMA_VERSION="${NORDVPN_EASY_SCHEMA_VERSION:-2}"
-NORDVPN_EASY_BACKEND_PAYLOAD_SIGNATURE="${NORDVPN_EASY_BACKEND_PAYLOAD_SIGNATURE:-render-contract-v2}"
+NORDVPN_EASY_SCHEMA_VERSION="${NORDVPN_EASY_SCHEMA_VERSION:-3}"
+NORDVPN_EASY_BACKEND_PAYLOAD_SIGNATURE="${NORDVPN_EASY_BACKEND_PAYLOAD_SIGNATURE:-render-contract-v3}"
 
 nordvpn_easy_shell_quote() {
 	printf "%s" "$1" | sed "s/'/'\\\\''/g"
@@ -19,11 +19,14 @@ preferred_server_hostname
 preferred_server_station
 fallback_server_station
 server_cache_enabled
-server_cache_ttl
-vpn_port
-vpn_addr
-vpn_dns1
-vpn_dns2
+	server_cache_ttl
+	vpn_port
+	wireguard_persistent_keepalive
+	wireguard_mtu
+	firewall_mtu_fix
+	vpn_addr
+	vpn_dns1
+	vpn_dns2
 check_cron_schedule
 enable_hotplug
 hotplug_debounce_seconds
@@ -55,6 +58,9 @@ fallback_server_station FALLBACK_SERVER_STATION
 server_cache_enabled SERVER_CACHE_ENABLED
 server_cache_ttl SERVER_CACHE_TTL
 vpn_port VPN_PORT
+wireguard_persistent_keepalive WIREGUARD_PERSISTENT_KEEPALIVE
+wireguard_mtu WIREGUARD_MTU
+firewall_mtu_fix FIREWALL_MTU_FIX
 vpn_addr VPN_ADDR
 vpn_dns1 VPN_DNS1
 vpn_dns2 VPN_DNS2
@@ -89,13 +95,16 @@ nordvpn_easy_default() {
 		server_selection_mode) printf '%s\n' 'auto' ;;
 		preferred_server_hostname) printf '%s\n' '' ;;
 		preferred_server_station) printf '%s\n' '' ;;
-		fallback_server_station) printf '%s\n' '' ;;
-		server_cache_enabled) printf '%s\n' '1' ;;
-		server_cache_ttl) printf '%s\n' '86400' ;;
-		vpn_port) printf '%s\n' '51820' ;;
-		vpn_addr) printf '%s\n' '10.5.0.2/32' ;;
-		vpn_dns1) printf '%s\n' '103.86.99.99' ;;
-		vpn_dns2) printf '%s\n' '103.86.96.96' ;;
+			fallback_server_station) printf '%s\n' '' ;;
+			server_cache_enabled) printf '%s\n' '1' ;;
+			server_cache_ttl) printf '%s\n' '86400' ;;
+			vpn_port) printf '%s\n' '51820' ;;
+			wireguard_persistent_keepalive) printf '%s\n' '15' ;;
+			wireguard_mtu) printf '%s\n' '' ;;
+			firewall_mtu_fix) printf '%s\n' '1' ;;
+			vpn_addr) printf '%s\n' '10.5.0.2/32' ;;
+			vpn_dns1) printf '%s\n' '103.86.99.99' ;;
+			vpn_dns2) printf '%s\n' '103.86.96.96' ;;
 		check_cron_schedule) printf '%s\n' '' ;;
 		enable_hotplug) printf '%s\n' '1' ;;
 		hotplug_debounce_seconds) printf '%s\n' '30' ;;
@@ -115,7 +124,7 @@ nordvpn_easy_default() {
 
 nordvpn_easy_is_bool_option() {
 	case "$1" in
-		enabled|server_cache_enabled|enable_hotplug|kill_switch_enabled)
+			enabled|server_cache_enabled|enable_hotplug|kill_switch_enabled|firewall_mtu_fix)
 			return 0
 			;;
 		*)
@@ -167,6 +176,10 @@ nordvpn_easy_normalize_value() {
 	default_value="$(nordvpn_easy_default "$option" 2>/dev/null || printf '%s' '')"
 
 	if nordvpn_easy_is_bool_option "$option"; then
+		if [ -z "$value" ]; then
+			printf '%s\n' "$default_value"
+			return 0
+		fi
 		nordvpn_easy_normalize_bool "$value"
 		return 0
 	fi
@@ -184,6 +197,37 @@ nordvpn_easy_normalize_value() {
 	fi
 
 	case "$option" in
+		wireguard_persistent_keepalive)
+			case "$value" in
+				''|*[!0-9]*)
+					printf '%s\n' "$default_value"
+					;;
+				*)
+					if [ "$value" -le 120 ]; then
+						printf '%s\n' "$value"
+					else
+						printf '%s\n' "$default_value"
+					fi
+					;;
+			esac
+			;;
+		wireguard_mtu)
+			case "$value" in
+				'')
+					printf '%s\n' ''
+					;;
+				*[!0-9]*)
+					printf '%s\n' "$default_value"
+					;;
+				*)
+					if [ "$value" -ge 1280 ] && [ "$value" -le 1500 ]; then
+						printf '%s\n' "$value"
+					else
+						printf '%s\n' "$default_value"
+					fi
+					;;
+			esac
+			;;
 		wan_if|vpn_if|vpn_addr)
 			if [ -n "$value" ]; then
 				printf '%s\n' "$value"

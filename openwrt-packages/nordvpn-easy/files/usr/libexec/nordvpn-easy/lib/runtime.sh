@@ -143,7 +143,56 @@ nordvpn_easy_parse_wg_dump_peer() {
 			if (!found)
 				printf "N/A\t0\t0\t0\n"
 		}
-	'
+		'
+}
+
+nordvpn_easy_handshake_age_seconds() {
+	local epoch="$1"
+	local now diff
+
+	case "$epoch" in
+		''|*[!0-9]*)
+			printf '%s\n' '0'
+			return 0
+			;;
+	esac
+
+	[ "$epoch" -gt 0 ] || {
+		printf '%s\n' '0'
+		return 0
+	}
+
+	now="$(date +%s 2>/dev/null || printf '%s' '0')"
+	case "$now" in
+		''|*[!0-9]*|0)
+			printf '%s\n' '0'
+			return 0
+			;;
+	esac
+
+	diff=$((now - epoch))
+	[ "$diff" -lt 0 ] && diff=0
+	printf '%s\n' "$diff"
+}
+
+nordvpn_easy_status_firewall_mtu_fix() {
+	local vpn_if="${1:-$VPN_IF}"
+	local section=''
+	local networks=''
+	local network=''
+	local mtu_fix=''
+
+	for section in $(uci show firewall 2>/dev/null | awk -F= '$2=="zone"{ print $1 }'); do
+		networks="$(uci -q get "${section}.network" 2>/dev/null || true)"
+		for network in $networks; do
+			[ "$network" = "$vpn_if" ] || continue
+			mtu_fix="$(uci -q get "${section}.mtu_fix" 2>/dev/null || true)"
+			[ "$mtu_fix" = '1' ] && printf '%s\n' 'true' || printf '%s\n' 'false'
+			return 0
+		done
+	done
+
+	[ "${FIREWALL_MTU_FIX:-1}" = '1' ] && printf '%s\n' 'true' || printf '%s\n' 'false'
 }
 
 nordvpn_easy_operation_status_value() {
@@ -311,8 +360,13 @@ nordvpn_easy_emit_status_json() {
 	local peer_section=''
 	local wg_dump=''
 	local endpoint='N/A'
+	local endpoint_port="${VPN_PORT:-51820}"
+	local wireguard_keepalive="${WIREGUARD_PERSISTENT_KEEPALIVE:-15}"
+	local wireguard_mtu="${WIREGUARD_MTU:-}"
+	local firewall_mtu_fix='false'
 	local latest_handshake='Never'
 	local latest_handshake_epoch='0'
+	local handshake_age_seconds='0'
 	local transfer_rx='0 B'
 	local transfer_rx_bytes='0'
 	local transfer_tx='0 B'
@@ -352,11 +406,15 @@ nordvpn_easy_emit_status_json() {
 		current_city="$(uci -q get "network.${peer_section}.nordvpn_city" 2>/dev/null || true)"
 		current_country="$(uci -q get "network.${peer_section}.nordvpn_country_code" 2>/dev/null || true)"
 		current_load="$(uci -q get "network.${peer_section}.nordvpn_load" 2>/dev/null || true)"
+		endpoint_port="$(uci -q get "network.${peer_section}.endpoint_port" 2>/dev/null || printf '%s' "$endpoint_port")"
+		wireguard_keepalive="$(uci -q get "network.${peer_section}.persistent_keepalive" 2>/dev/null || printf '%s' "$wireguard_keepalive")"
+		wireguard_mtu="$(uci -q get "network.${VPN_IF}.mtu" 2>/dev/null || printf '%s' "$wireguard_mtu")"
 
 		[ -n "$current_hostname" ] || current_hostname="$(uci -q get "network.${peer_section}.description" 2>/dev/null || true)"
 	fi
 
 	updated_at="$(date +%s 2>/dev/null || printf '%s' '0')"
+	firewall_mtu_fix="$(nordvpn_easy_status_firewall_mtu_fix "$VPN_IF")"
 	wg_dump="$(wg show "$VPN_IF" dump 2>/dev/null)"
 
 	if [ -n "$wg_dump" ]; then
@@ -365,6 +423,7 @@ $(nordvpn_easy_parse_wg_dump_peer "$wg_dump")
 EOF
 
 		latest_handshake="$(nordvpn_easy_humanize_handshake_age "$latest_handshake_epoch")"
+		handshake_age_seconds="$(nordvpn_easy_handshake_age_seconds "$latest_handshake_epoch")"
 		transfer_rx="$(nordvpn_easy_format_human_bytes "$transfer_rx_bytes")"
 		transfer_tx="$(nordvpn_easy_format_human_bytes "$transfer_tx_bytes")"
 
@@ -402,6 +461,17 @@ EOF
 	[ -r "$NORDVPN_EASY_PUBLIC_COUNTRY_CACHE" ] && public_country_cached="$(sed -n '1p' "$NORDVPN_EASY_PUBLIC_COUNTRY_CACHE" 2>/dev/null)"
 	[ -r "$NORDVPN_EASY_LAST_ERROR_CACHE" ] && last_error="$(sed -n '1p' "$NORDVPN_EASY_LAST_ERROR_CACHE" 2>/dev/null)"
 
+	case "$wireguard_keepalive" in
+		''|*[!0-9]*)
+			wireguard_keepalive="${WIREGUARD_PERSISTENT_KEEPALIVE:-15}"
+			;;
+	esac
+	case "$wireguard_keepalive" in
+		''|*[!0-9]*)
+			wireguard_keepalive='15'
+			;;
+	esac
+
 	cat <<EOF
 {
   "updated_at": $updated_at,
@@ -419,13 +489,18 @@ EOF
   "operation_status": "$(nordvpn_easy_json_escape "$operation")",
   "operation_lock_state": "$(nordvpn_easy_json_escape "$operation_lock_state")",
   "operation_lock_pid": "$(nordvpn_easy_json_escape "$operation_lock_pid")",
-  "operation_lock_action": "$(nordvpn_easy_json_escape "$operation_lock_action")",
-  "operation_lock_age_seconds": $operation_lock_age_seconds,
-  "connected": $connected,
-  "endpoint": "$(nordvpn_easy_json_escape "$endpoint")",
-  "latest_handshake": "$(nordvpn_easy_json_escape "$latest_handshake")",
-  "latest_handshake_epoch": $latest_handshake_epoch,
-  "transfer_rx": "$(nordvpn_easy_json_escape "$transfer_rx")",
+	  "operation_lock_action": "$(nordvpn_easy_json_escape "$operation_lock_action")",
+	  "operation_lock_age_seconds": $operation_lock_age_seconds,
+	  "connected": $connected,
+	  "endpoint": "$(nordvpn_easy_json_escape "$endpoint")",
+	  "endpoint_port": "$(nordvpn_easy_json_escape "$endpoint_port")",
+	  "wireguard_persistent_keepalive": $wireguard_keepalive,
+	  "wireguard_mtu": "$(nordvpn_easy_json_escape "$wireguard_mtu")",
+	  "firewall_mtu_fix": $firewall_mtu_fix,
+	  "latest_handshake": "$(nordvpn_easy_json_escape "$latest_handshake")",
+	  "latest_handshake_epoch": $latest_handshake_epoch,
+	  "handshake_age_seconds": $handshake_age_seconds,
+	  "transfer_rx": "$(nordvpn_easy_json_escape "$transfer_rx")",
   "transfer_rx_bytes": $transfer_rx_bytes,
   "transfer_tx": "$(nordvpn_easy_json_escape "$transfer_tx")",
   "transfer_tx_bytes": $transfer_tx_bytes,

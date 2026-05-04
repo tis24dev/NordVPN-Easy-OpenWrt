@@ -87,6 +87,9 @@ set_uci_value 'nordvpn_easy.main.server_selection_mode' 'manual'
 set_uci_value 'nordvpn_easy.main.preferred_server_station' 'es123'
 set_uci_value 'nordvpn_easy.main.preferred_server_hostname' 'es12.nordvpn.com'
 set_uci_value 'nordvpn_easy.main.fallback_server_station' 'es456'
+set_uci_value 'nordvpn_easy.main.wireguard_persistent_keepalive' '10'
+set_uci_value 'nordvpn_easy.main.wireguard_mtu' '1420'
+set_uci_value 'nordvpn_easy.main.firewall_mtu_fix' 'yes'
 
 # shellcheck disable=SC1090
 . "$CONFIG_CONTEXT_LIB"
@@ -97,6 +100,9 @@ assert_eq '1' "$cfg_enabled" 'service context normalizes enabled'
 assert_eq 'wg0' "$cfg_vpn_if" 'service context defaults vpn_if'
 assert_eq '10.5.0.2/32' "$cfg_vpn_addr" 'service context defaults vpn_addr'
 assert_eq 'manual' "$cfg_server_selection_mode" 'service context keeps manual mode'
+assert_eq '10' "$cfg_wireguard_persistent_keepalive" 'service context keeps custom keepalive'
+assert_eq '1420' "$cfg_wireguard_mtu" 'service context keeps custom WireGuard MTU'
+assert_eq '1' "$cfg_firewall_mtu_fix" 'service context normalizes firewall MTU fix'
 
 nordvpn_easy_export_runtime_context_from_service 'cfg_'
 
@@ -104,6 +110,9 @@ assert_eq '1' "$DESIRED_ENABLED" 'runtime context exports desired_enabled'
 assert_eq 'wg0' "$VPN_IF" 'runtime context exports vpn_if'
 assert_eq '10.5.0.2/32' "$VPN_ADDR" 'runtime context exports vpn_addr'
 assert_eq 'es456' "$FALLBACK_SERVER_STATION" 'runtime context exports fallback station'
+assert_eq '10' "$WIREGUARD_PERSISTENT_KEEPALIVE" 'runtime context exports keepalive'
+assert_eq '1420' "$WIREGUARD_MTU" 'runtime context exports WireGuard MTU'
+assert_eq '1' "$FIREWALL_MTU_FIX" 'runtime context exports firewall MTU fix'
 
 RUNTIME_FILE="$TMP_DIR/runtime.conf"
 umask 0022
@@ -133,12 +142,18 @@ assert_eq 'present' "$(nordvpn_easy_runtime_file_key_state "$RUNTIME_FILE" 'VPN_
 assert_eq 'present' "$(nordvpn_easy_runtime_file_key_state "$RUNTIME_FILE" 'VPN_ADDR')" 'runtime file writes vpn_addr'
 assert_eq 'present' "$(nordvpn_easy_runtime_file_key_state "$RUNTIME_FILE" 'VPN_PORT')" 'runtime file writes vpn_port'
 assert_eq 'present' "$(nordvpn_easy_runtime_file_key_state "$RUNTIME_FILE" 'FALLBACK_SERVER_STATION')" 'runtime file writes fallback station'
+assert_eq 'present' "$(nordvpn_easy_runtime_file_key_state "$RUNTIME_FILE" 'WIREGUARD_PERSISTENT_KEEPALIVE')" 'runtime file writes keepalive'
+assert_eq 'present' "$(nordvpn_easy_runtime_file_key_state "$RUNTIME_FILE" 'WIREGUARD_MTU')" 'runtime file writes WireGuard MTU'
+assert_eq 'present' "$(nordvpn_easy_runtime_file_key_state "$RUNTIME_FILE" 'FIREWALL_MTU_FIX')" 'runtime file writes firewall MTU fix'
 assert_file_has_line "NORDVPN_TOKEN='abc123'" "$RUNTIME_FILE" 'runtime file contains exact token key'
 assert_file_has_line "WAN_IF='wan'" "$RUNTIME_FILE" 'runtime file contains exact wan_if key'
 assert_file_has_line "VPN_IF='wg0'" "$RUNTIME_FILE" 'runtime file contains exact vpn_if key'
 assert_file_has_line "VPN_ADDR='10.5.0.2/32'" "$RUNTIME_FILE" 'runtime file contains exact vpn_addr key'
 assert_file_has_line "VPN_PORT='51820'" "$RUNTIME_FILE" 'runtime file contains exact vpn_port key'
 assert_file_has_line "FALLBACK_SERVER_STATION='es456'" "$RUNTIME_FILE" 'runtime file contains exact fallback station key'
+assert_file_has_line "WIREGUARD_PERSISTENT_KEEPALIVE='10'" "$RUNTIME_FILE" 'runtime file contains exact keepalive key'
+assert_file_has_line "WIREGUARD_MTU='1420'" "$RUNTIME_FILE" 'runtime file contains exact MTU key'
+assert_file_has_line "FIREWALL_MTU_FIX='1'" "$RUNTIME_FILE" 'runtime file contains exact firewall MTU fix key'
 
 RUNTIME_TOKEN="$(
 	(
@@ -182,6 +197,27 @@ RUNTIME_FALLBACK_SERVER_STATION="$(
 		printf '%s' "$FALLBACK_SERVER_STATION"
 	)
 )"
+RUNTIME_WIREGUARD_KEEPALIVE="$(
+	(
+		# shellcheck disable=SC1090
+		. "$RUNTIME_FILE"
+		printf '%s' "$WIREGUARD_PERSISTENT_KEEPALIVE"
+	)
+)"
+RUNTIME_WIREGUARD_MTU="$(
+	(
+		# shellcheck disable=SC1090
+		. "$RUNTIME_FILE"
+		printf '%s' "$WIREGUARD_MTU"
+	)
+)"
+RUNTIME_FIREWALL_MTU_FIX="$(
+	(
+		# shellcheck disable=SC1090
+		. "$RUNTIME_FILE"
+		printf '%s' "$FIREWALL_MTU_FIX"
+	)
+)"
 
 assert_eq 'abc123' "$RUNTIME_TOKEN" 'runtime file round-trips token'
 assert_eq 'wan' "$RUNTIME_WAN_IF" 'runtime file round-trips wan_if'
@@ -189,6 +225,9 @@ assert_eq 'wg0' "$RUNTIME_VPN_IF" 'runtime file round-trips vpn_if'
 assert_eq '10.5.0.2/32' "$RUNTIME_VPN_ADDR" 'runtime file round-trips vpn_addr'
 assert_eq '51820' "$RUNTIME_VPN_PORT" 'runtime file round-trips vpn_port'
 assert_eq 'es456' "$RUNTIME_FALLBACK_SERVER_STATION" 'runtime file round-trips fallback station'
+assert_eq '10' "$RUNTIME_WIREGUARD_KEEPALIVE" 'runtime file round-trips keepalive'
+assert_eq '1420' "$RUNTIME_WIREGUARD_MTU" 'runtime file round-trips WireGuard MTU'
+assert_eq '1' "$RUNTIME_FIREWALL_MTU_FIX" 'runtime file round-trips firewall MTU fix'
 
 nordvpn_easy_validate_runtime_config "$RUNTIME_FILE" 'cfg_'
 assert_eq 'ok' "$NORDVPN_EASY_RUNTIME_CONFIG_VALIDATION_STATUS" 'runtime config validation succeeds'

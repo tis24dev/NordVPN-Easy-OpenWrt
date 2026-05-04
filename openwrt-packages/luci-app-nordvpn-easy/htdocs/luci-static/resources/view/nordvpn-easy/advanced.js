@@ -122,6 +122,47 @@ return view.extend({
 		o.rmempty = true;
 		o.description = _('Optional. Backend VPN server port.');
 
+		o = s.option(form.Value, 'wireguard_persistent_keepalive', _('WireGuard Keepalive'));
+		o.default = '15';
+		o.placeholder = '15';
+		o.rmempty = false;
+		o.description = _('Seconds between WireGuard keepalive packets. Lower values help clients behind aggressive NAT; use 0 only to disable keepalive deliberately.');
+		o.validate = function(_section_id, value) {
+			const keepalive = String(value || '').trim();
+
+			if (!/^[0-9]+$/.test(keepalive))
+				return _('Keepalive must be a number between 0 and 120 seconds.');
+
+			if (Number(keepalive) > 120)
+				return _('Keepalive must be 120 seconds or less.');
+
+			return true;
+		};
+
+		o = s.option(form.Value, 'wireguard_mtu', _('WireGuard MTU'));
+		o.placeholder = _('Automatic');
+		o.rmempty = true;
+		o.description = _('Optional. Leave automatic unless streams or sites stall over WireGuard; typical diagnostic values are 1420, 1380 or 1280.');
+		o.validate = function(_section_id, value) {
+			const mtu = String(value || '').trim();
+
+			if (!mtu)
+				return true;
+
+			if (!/^[0-9]+$/.test(mtu))
+				return _('MTU must be empty or a number between 1280 and 1500.');
+
+			if (Number(mtu) < 1280 || Number(mtu) > 1500)
+				return _('MTU must be between 1280 and 1500.');
+
+			return true;
+		};
+
+		o = s.option(form.Flag, 'firewall_mtu_fix', _('MSS Clamping'));
+		o.default = '1';
+		o.rmempty = false;
+		o.description = _('Enable TCP MSS clamping on the firewall zone that carries the WireGuard tunnel. This reduces MTU blackhole problems on long-lived streams.');
+
 		o = s.option(form.Value, 'vpn_dns1', _('DNS 1'));
 		o.placeholder = '103.86.99.99';
 		o.rmempty = true;

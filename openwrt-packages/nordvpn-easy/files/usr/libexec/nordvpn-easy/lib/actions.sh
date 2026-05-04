@@ -505,8 +505,7 @@ nordvpn_easy_configure_vpn_interface() {
 
 	uci -q delete "network.${VPN_IF}server"
 	uci set "network.${VPN_IF}server"="wireguard_${VPN_IF}"
-	uci set "network.${VPN_IF}server.endpoint_port"="$VPN_PORT"
-	uci set "network.${VPN_IF}server.persistent_keepalive"='25'
+	nordvpn_easy_apply_wireguard_transport_settings "${VPN_IF}server" || return 1
 	uci set "network.${VPN_IF}server.route_allowed_ips"='1'
 	uci add_list "network.${VPN_IF}server.allowed_ips"='0.0.0.0/0'
 
@@ -549,6 +548,18 @@ nordvpn_easy_bootstrap_if_needed() {
 	else
 		log "runtime: interface $VPN_IF is already configured; ensuring it is enabled and present"
 		nordvpn_easy_ensure_vpn_interface_enabled || return 1
+		nordvpn_easy_apply_wireguard_transport_settings "${VPN_IF}server" || return 1
+		if [ "${NORDVPN_EASY_UCI_CHANGED:-0}" -eq 1 ]; then
+			log "runtime: repaired WireGuard transport settings for $VPN_IF (keepalive=${WIREGUARD_PERSISTENT_KEEPALIVE:-15}, mtu=${WIREGUARD_MTU:-auto})"
+			uci commit network || {
+				nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" 'could not commit network configuration while repairing WireGuard transport settings'
+				return 1
+			}
+			/etc/init.d/network reload || {
+				log "ERROR: NETWORK RELOAD FAILED WHILE REPAIRING WIREGUARD TRANSPORT SETTINGS ON $VPN_IF"
+				return 1
+			}
+		fi
 	fi
 
 	nordvpn_easy_ensure_vpn_in_wan_zone || return 1

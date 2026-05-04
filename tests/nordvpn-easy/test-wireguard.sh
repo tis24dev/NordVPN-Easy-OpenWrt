@@ -34,6 +34,9 @@ assert_eq() {
 log() { :; }
 
 UCI_ENDPOINT_HOST=''
+UCI_ENDPOINT_PORT=''
+UCI_KEEPALIVE=''
+UCI_MTU=''
 UCI_STATION=''
 UCI_HOSTNAME=''
 
@@ -45,10 +48,16 @@ uci() {
 			return $?
 			;;
 		get)
-			case "$2" in
-				network.wg0server.endpoint_host) printf '%s\n' "$UCI_ENDPOINT_HOST" ;;
-				network.wg0server.nordvpn_station)
-					[ -n "$UCI_STATION" ] || return 1
+				case "$2" in
+					network.wg0server.endpoint_host) printf '%s\n' "$UCI_ENDPOINT_HOST" ;;
+					network.wg0server.endpoint_port) printf '%s\n' "$UCI_ENDPOINT_PORT" ;;
+					network.wg0server.persistent_keepalive) printf '%s\n' "$UCI_KEEPALIVE" ;;
+					network.wg0.mtu)
+						[ -n "$UCI_MTU" ] || return 1
+						printf '%s\n' "$UCI_MTU"
+						;;
+					network.wg0server.nordvpn_station)
+						[ -n "$UCI_STATION" ] || return 1
 					printf '%s\n' "$UCI_STATION"
 					;;
 				network.wg0server.nordvpn_hostname) printf '%s\n' "$UCI_HOSTNAME" ;;
@@ -56,14 +65,23 @@ uci() {
 			esac
 			return 0
 			;;
-		set)
-			case "${2%%=*}" in
-				network.wg0server.endpoint_host) UCI_ENDPOINT_HOST="${2#*=}" ;;
-				network.wg0server.nordvpn_station) UCI_STATION="${2#*=}" ;;
-				network.wg0server.nordvpn_hostname) UCI_HOSTNAME="${2#*=}" ;;
-			esac
-			return 0
-			;;
+			set)
+				case "${2%%=*}" in
+					network.wg0server.endpoint_host) UCI_ENDPOINT_HOST="${2#*=}" ;;
+					network.wg0server.endpoint_port) UCI_ENDPOINT_PORT="${2#*=}" ;;
+					network.wg0server.persistent_keepalive) UCI_KEEPALIVE="${2#*=}" ;;
+					network.wg0.mtu) UCI_MTU="${2#*=}" ;;
+					network.wg0server.nordvpn_station) UCI_STATION="${2#*=}" ;;
+					network.wg0server.nordvpn_hostname) UCI_HOSTNAME="${2#*=}" ;;
+				esac
+				return 0
+				;;
+			delete)
+				case "$2" in
+					network.wg0.mtu) UCI_MTU='' ;;
+				esac
+				return 0
+				;;
 		*)
 			return 1
 			;;
@@ -98,6 +116,9 @@ nordvpn_easy_ping_interface() {
 }
 
 VPN_IF='wg0'
+VPN_PORT='51820'
+WIREGUARD_PERSISTENT_KEEPALIVE='15'
+WIREGUARD_MTU=''
 POST_RESTART_DELAY='5'
 
 printf '%s\n' '100' > "$FAKE_NOW_FILE"
@@ -122,11 +143,25 @@ assert_eq '1,1,' "$SLEEP_CALLS" 'wait helper retries until the timeout window is
 nordvpn_easy_set_vpn_server_in_uci 'it12.nordvpn.com' 'it123' 'PUBKEY-123' 'IT' 'Milan' '12'
 
 assert_eq 'it12.nordvpn.com' "$UCI_ENDPOINT_HOST" 'wireguard peer endpoint host uses hostname'
+assert_eq '51820' "$UCI_ENDPOINT_PORT" 'wireguard peer endpoint port is repaired during server update'
+assert_eq '15' "$UCI_KEEPALIVE" 'wireguard peer keepalive defaults to 15 seconds'
+assert_eq '' "$UCI_MTU" 'empty WireGuard MTU leaves interface MTU automatic'
 assert_eq 'it12.nordvpn.com' "$UCI_HOSTNAME" 'wireguard peer stores NordVPN hostname separately'
 assert_eq 'it123' "$UCI_STATION" 'wireguard peer stores NordVPN station separately'
 assert_eq 'it123' "$(nordvpn_easy_current_server_station)" 'current server station reads the stored station id'
 
 UCI_STATION=''
 assert_eq '' "$(nordvpn_easy_current_server_station || true)" 'current server station does not fall back to endpoint host when station metadata is missing'
+
+WIREGUARD_PERSISTENT_KEEPALIVE='10'
+WIREGUARD_MTU='1420'
+nordvpn_easy_apply_wireguard_transport_settings 'wg0server'
+
+assert_eq '10' "$UCI_KEEPALIVE" 'transport repair applies configured keepalive'
+assert_eq '1420' "$UCI_MTU" 'transport repair applies configured MTU'
+
+WIREGUARD_MTU=''
+nordvpn_easy_apply_wireguard_transport_settings 'wg0server'
+assert_eq '' "$UCI_MTU" 'transport repair removes MTU when automatic is selected'
 
 printf '%s\n' 'test-wireguard.sh: ok'
