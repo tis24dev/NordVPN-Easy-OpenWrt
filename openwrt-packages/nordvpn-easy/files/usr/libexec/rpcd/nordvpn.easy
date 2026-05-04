@@ -1,6 +1,5 @@
 #!/bin/sh
 
-SERVICE_NAME='nordvpn-easy'
 INIT_SCRIPT="${NORDVPN_EASY_INIT_SCRIPT:-/etc/init.d/nordvpn-easy}"
 UCI_CONFIG='nordvpn_easy'
 UCI_SECTION='main'
@@ -106,6 +105,8 @@ rpc_load_runtime_context_readonly() {
 	desired_enabled="$(nordvpn_easy_normalize_value 'enabled' "$raw_value")"
 	nordvpn_easy_assign_shell_var 'DESIRED_ENABLED' "$desired_enabled"
 	nordvpn_easy_assign_shell_var 'ENABLED' "$desired_enabled"
+	# Mirrors config-context.sh for status emitters and debug summaries.
+	# shellcheck disable=SC2034
 	CONFIG_CONTEXT_SOURCE="uci:${UCI_CONFIG}.${UCI_SECTION}:readonly"
 }
 

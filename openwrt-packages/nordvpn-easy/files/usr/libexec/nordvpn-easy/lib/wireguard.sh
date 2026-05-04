@@ -303,6 +303,8 @@ nordvpn_easy_apply_wireguard_transport_settings() {
 	local keepalive=''
 	local mtu=''
 
+	# Read by actions.sh after transport settings are applied.
+	# shellcheck disable=SC2034
 	NORDVPN_EASY_UCI_CHANGED=0
 
 	nordvpn_easy_set_uci_option_if_changed "network.${peer_section}.endpoint_port" "$endpoint_port" || return 1

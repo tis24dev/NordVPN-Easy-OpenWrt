@@ -5,7 +5,7 @@ nordvpn_easy_migrate_service_config() {
 	local uci_section="$2"
 	local section_ref="${uci_config}.${uci_section}"
 	local changed=0
-	local option old_value default_value normalized_value
+	local option old_value normalized_value
 
 	if ! uci -q get "$section_ref" >/dev/null 2>&1; then
 		uci set "${section_ref}=nordvpn_easy"
@@ -18,7 +18,6 @@ nordvpn_easy_migrate_service_config() {
 	fi
 
 	for option in $(nordvpn_easy_uci_options); do
-		default_value="$(nordvpn_easy_default "$option" 2>/dev/null || printf '%s' '')"
 		if uci -q get "${section_ref}.${option}" >/dev/null 2>&1; then
 			old_value="$(uci -q get "${section_ref}.${option}" 2>/dev/null)"
 		else

@@ -104,6 +104,8 @@ nordvpn_easy_load_runtime_context_from_uci() {
 
 	nordvpn_easy_load_service_context "$prefix" "$uci_config" "$uci_section" || return 1
 	nordvpn_easy_export_runtime_context_from_service "$prefix" || return 1
+	# Read by core.sh after this library loads the runtime context.
+	# shellcheck disable=SC2034
 	CONFIG_CONTEXT_SOURCE="uci:${uci_config}.${uci_section}"
 }
 
