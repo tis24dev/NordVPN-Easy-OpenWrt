@@ -160,6 +160,9 @@ nordvpn_easy_apply_wireguard_transport_settings 'wg0server'
 assert_eq '10' "$UCI_KEEPALIVE" 'transport repair applies configured keepalive'
 assert_eq '1420' "$UCI_MTU" 'transport repair applies configured MTU'
 
+nordvpn_easy_apply_wireguard_transport_settings 'wg0server' '443'
+assert_eq '443' "$UCI_ENDPOINT_PORT" 'transport repair applies explicit endpoint port'
+
 WIREGUARD_MTU=''
 nordvpn_easy_apply_wireguard_transport_settings 'wg0server'
 assert_eq '' "$UCI_MTU" 'transport repair removes MTU when automatic is selected'

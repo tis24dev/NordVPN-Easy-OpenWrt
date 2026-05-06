@@ -299,7 +299,7 @@ nordvpn_easy_wireguard_mtu_value() {
 
 nordvpn_easy_apply_wireguard_transport_settings() {
 	local peer_section="${1:-${VPN_IF}server}"
-	local endpoint_port="${VPN_PORT:-51820}"
+	local endpoint_port="${2:-${VPN_PORT:-51820}}"
 	local keepalive=''
 	local mtu=''
 
