@@ -27,18 +27,18 @@ nordvpn_easy_find_server_in_catalog() {
 	}
 
 	CATALOG_MATCHED_SERVER_LINE="$(jq -er \
-		--arg hostname "$target_hostname" \
-		--arg station "$target_station" '
-			[
-				.servers[] | select(
-					((.station // "" | ascii_downcase) == ($station | ascii_downcase)) and
-					(($hostname == "") or ((.hostname // "" | ascii_downcase) == ($hostname | ascii_downcase)))
-				)
-			][0] | [
-				.hostname,
-				.station,
-				.public_key,
-				.country_code,
+			--arg hostname "$target_hostname" \
+			--arg station "$target_station" '
+				([
+					.servers[] | select(
+						((.station // "" | ascii_downcase) == ($station | ascii_downcase)) and
+						(($hostname == "") or ((.hostname // "" | ascii_downcase) == ($hostname | ascii_downcase)))
+					)
+				][0] // empty) | [
+					.hostname,
+					.station,
+					.public_key,
+					.country_code,
 				.city,
 				((.load // 0) | tostring)
 			] | @tsv
@@ -104,6 +104,26 @@ nordvpn_easy_preferred_server_matches_current() {
 nordvpn_easy_apply_preferred_server_from_catalog() {
 	nordvpn_easy_find_preferred_server_in_catalog || return 1
 	nordvpn_easy_apply_catalog_server_line_to_uci "$CATALOG_MATCHED_SERVER_LINE" 'preferred'
+}
+
+nordvpn_easy_validate_current_manual_server_connectivity() {
+	log "Current VPN server already matches the preferred manual server $PREFERRED_SERVER_STATION; validating tunnel connectivity"
+	if nordvpn_easy_ping_interface "$VPN_IF"; then
+		log "Manual preferred VPN server $PREFERRED_SERVER_STATION passed connectivity validation"
+		return 0
+	fi
+
+	log "WARNING: manual preferred VPN server $PREFERRED_SERVER_STATION is active but failed connectivity validation"
+	if nordvpn_easy_try_configured_fallback_server reload "preferred manual server $PREFERRED_SERVER_STATION is active but failed connectivity validation"; then
+		return 0
+	fi
+
+	if nordvpn_easy_has_fallback_server_preference; then
+		log 'ERROR: manual preferred server failed connectivity validation and the configured fallback server did not restore connectivity'
+	else
+		log 'ERROR: manual preferred server failed connectivity validation and no fallback server is configured'
+	fi
+	return 1
 }
 
 nordvpn_easy_apply_fallback_server_from_catalog() {
@@ -294,8 +314,8 @@ nordvpn_easy_sync_server_selection() {
 		nordvpn_easy_require_manual_server_preference || return 1
 
 		if nordvpn_easy_preferred_server_matches_current; then
-			log 'Current VPN server already matches the preferred manual server'
-			return 0
+			nordvpn_easy_validate_current_manual_server_connectivity
+			return $?
 		fi
 
 		log 'Current VPN server does not match the preferred manual server, applying preference'
@@ -485,8 +505,7 @@ nordvpn_easy_configure_vpn_interface() {
 
 	uci -q delete "network.${VPN_IF}server"
 	uci set "network.${VPN_IF}server"="wireguard_${VPN_IF}"
-	uci set "network.${VPN_IF}server.endpoint_port"="$VPN_PORT"
-	uci set "network.${VPN_IF}server.persistent_keepalive"='25'
+	nordvpn_easy_apply_wireguard_transport_settings "${VPN_IF}server" || return 1
 	uci set "network.${VPN_IF}server.route_allowed_ips"='1'
 	uci add_list "network.${VPN_IF}server.allowed_ips"='0.0.0.0/0'
 
@@ -529,6 +548,18 @@ nordvpn_easy_bootstrap_if_needed() {
 	else
 		log "runtime: interface $VPN_IF is already configured; ensuring it is enabled and present"
 		nordvpn_easy_ensure_vpn_interface_enabled || return 1
+		nordvpn_easy_apply_wireguard_transport_settings "${VPN_IF}server" || return 1
+		if [ "${NORDVPN_EASY_UCI_CHANGED:-0}" -eq 1 ]; then
+			log "runtime: repaired WireGuard transport settings for $VPN_IF (keepalive=${WIREGUARD_PERSISTENT_KEEPALIVE:-15}, mtu=${WIREGUARD_MTU:-auto})"
+			uci commit network || {
+				nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" 'could not commit network configuration while repairing WireGuard transport settings'
+				return 1
+			}
+			/etc/init.d/network reload || {
+				log "ERROR: NETWORK RELOAD FAILED WHILE REPAIRING WIREGUARD TRANSPORT SETTINGS ON $VPN_IF"
+				return 1
+			}
+		fi
 	fi
 
 	nordvpn_easy_ensure_vpn_in_wan_zone || return 1
@@ -573,6 +604,30 @@ nordvpn_easy_check_once() {
 			return 0
 		}
 
+		if [ "$failed_pings" -ge "$SERVER_ROTATE_THRESHOLD" ]; then
+			log "healthcheck: ping failed $failed_pings times; evaluating server rotation"
+
+			if nordvpn_easy_server_selection_is_manual; then
+				if nordvpn_easy_try_configured_fallback_server restart 'manual server recovery threshold reached'; then
+					return 0
+				fi
+
+				if nordvpn_easy_has_fallback_server_preference; then
+					log 'healthcheck: manual server selection is enabled, but the configured fallback server did not restore connectivity'
+				else
+					log 'healthcheck: manual server selection is enabled and no fallback server is configured; stopping this health-check without automatic rotation'
+				fi
+				return 1
+			fi
+
+			if nordvpn_easy_get_servers_list; then
+				log 'healthcheck: changing VPN server after repeated failures'
+				nordvpn_easy_change_vpn_server restart && return 0
+			else
+				log 'healthcheck: refreshing VPN server list failed'
+			fi
+		fi
+
 		if [ "$failed_pings" -gt "$INTERFACE_RESTART_THRESHOLD" ]; then
 			if [ "$restart_count" -ge "$max_interface_restarts" ]; then
 				log "healthcheck: ping failed $failed_pings times; restart limit reached for $VPN_IF ($restart_count/$max_interface_restarts)"
@@ -587,30 +642,19 @@ nordvpn_easy_check_once() {
 			log "healthcheck: requesting ifup for interface $VPN_IF during recovery"
 			ifup "$VPN_IF"
 			sleep "$POST_RESTART_DELAY"
-				nordvpn_easy_log_vpn_interface_state 'after-recovery-restart'
-			elif [ "$failed_pings" -ge "$SERVER_ROTATE_THRESHOLD" ]; then
-				log "healthcheck: ping failed $failed_pings times; evaluating server rotation"
+			nordvpn_easy_log_vpn_interface_state 'after-recovery-restart'
 
-				if nordvpn_easy_server_selection_is_manual; then
-					if nordvpn_easy_try_configured_fallback_server restart 'manual server recovery threshold reached'; then
-						return 0
-					fi
-
-					if nordvpn_easy_has_fallback_server_preference; then
-						log 'healthcheck: manual server selection is enabled, but the configured fallback server did not restore connectivity'
-					else
-						log 'healthcheck: manual server selection is enabled and no fallback server is configured; skipping automatic server rotation'
-					fi
-				else
-					if nordvpn_easy_get_servers_list; then
-						log 'healthcheck: changing VPN server after repeated failures'
-						nordvpn_easy_change_vpn_server restart && return 0
-					else
-						log 'healthcheck: refreshing VPN server list failed'
-					fi
+			if nordvpn_easy_ping_interface "$VPN_IF"; then
+				log "healthcheck: interface restart restored connectivity on $VPN_IF"
+				return 0
 			fi
 
-			log 'healthcheck: restarting network as part of recovery'
+			if nordvpn_easy_server_selection_is_manual; then
+				log 'healthcheck: manual server selection is enabled; not restarting the whole network after interface recovery failed'
+				return 1
+			fi
+
+			log 'healthcheck: restarting network as last automatic recovery fallback'
 			/etc/init.d/network restart || {
 				log 'ERROR: NETWORK RESTART FAILED'
 				return 1

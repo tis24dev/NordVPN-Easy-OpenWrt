@@ -389,7 +389,7 @@ function updatePublicIp(state, options) {
 		if (!publicLookupsAllowed(state, state.currentLocalStatus)) {
 			clearPublicLookupDisplay(state);
 			managerUI.updateCountryMatchStatus(state);
-			return;
+			return Promise.resolve();
 		}
 
 		return service.execService('public_ip', extraArgs).then(function(res) {
@@ -413,11 +413,11 @@ function updatePublicIp(state, options) {
 				state.currentPublicCountryIp = '';
 				managerUI.replaceStatusText(managerUI.ids.PUBLIC_COUNTRY_STATUS_ID, _('Unavailable'));
 				managerUI.updateCountryMatchStatus(state);
-				return;
+				return Promise.resolve();
 			}
 
 			if (!shouldRefreshCountry)
-				return;
+				return Promise.resolve();
 
 			managerUI.replaceStatusText(managerUI.ids.PUBLIC_COUNTRY_STATUS_ID, _('Checking...'));
 			return updatePublicCountry(state, {
@@ -454,7 +454,7 @@ function updatePublicCountry(state, options) {
 		if (!publicLookupsAllowed(state, state.currentLocalStatus)) {
 			clearPublicLookupDisplay(state);
 			managerUI.updateCountryMatchStatus(state);
-			return;
+			return Promise.resolve();
 		}
 
 		if (!expectedPublicIp) {
@@ -462,7 +462,7 @@ function updatePublicCountry(state, options) {
 			state.currentPublicCountryIp = '';
 			managerUI.replaceStatusText(managerUI.ids.PUBLIC_COUNTRY_STATUS_ID, _('Unavailable'));
 			managerUI.updateCountryMatchStatus(state);
-			return;
+			return Promise.resolve();
 		}
 
 		return service.execService('public_country', extraArgs).then(function(res) {
@@ -679,7 +679,7 @@ function handleSaveApply(viewState, state, ev, mode) {
 
 	return confirmationPromise.then(function(confirmed) {
 		if (!confirmed)
-			return;
+			return Promise.resolve();
 
 		notifyDebugBlock(_('Save & Apply requested'), debugLines.concat([
 			_('UCI changes are being committed before runtime actions start.')
@@ -773,7 +773,7 @@ function handleSaveApply(viewState, state, ev, mode) {
 							managerStore.resumePolling(state);
 							updateLocalStatus(state, { force: true });
 							finishResolve();
-							return;
+							return Promise.resolve();
 						}
 
 						state.pendingOperationLabel = managerFormat.formatActionsLabel(actions);

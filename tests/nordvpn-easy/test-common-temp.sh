@@ -60,4 +60,95 @@ nordvpn_easy_mktemp_dir 'missing-mktemp' >/dev/null 2>&1 || mktemp_rc=$?
 assert_eq '1' "$mktemp_rc" 'missing mktemp reports blocker'
 PATH="$ORIG_PATH"
 
+SANITIZED="$(
+	printf "%s\n" \
+		"nordvpn_easy.main.nordvpn_token='token-secret'" \
+		"network.wg0.private_key='private-secret'" \
+		"network.wg0.preshared_key='psk-secret'" |
+		nordvpn_easy_sanitize_diagnostics_stream
+)"
+
+case "$SANITIZED" in
+	*token-secret*|*private-secret*|*psk-secret*)
+		printf '%s\n' 'FAIL: diagnostics sanitizer leaked a secret' >&2
+		exit 1
+		;;
+esac
+
+case "$SANITIZED" in
+	*'***REDACTED***'*)
+		;;
+	*)
+		printf '%s\n' 'FAIL: diagnostics sanitizer did not redact sensitive values' >&2
+		exit 1
+		;;
+esac
+
+VPN_IF='wg0'
+WIREGUARD_PERSISTENT_KEEPALIVE='15'
+WIREGUARD_MTU='1420'
+FIREWALL_MTU_FIX='1'
+
+nordvpn_easy_emit_status_json() {
+	printf '%s\n' '{"wireguard_persistent_keepalive":15,"wireguard_mtu":"1420","firewall_mtu_fix":true}'
+}
+
+nordvpn_easy_find_firewall_zone_section() {
+	[ "$1" = 'wg0' ] || return 1
+	printf '%s\n' 'firewall.@zone[1]'
+}
+
+wg() {
+	printf '%s\n' 'interface: wg0'
+	printf '%s\n' '  public key: public-only'
+}
+
+uci() {
+	case "$*" in
+		'show nordvpn_easy')
+			printf "%s\n" "nordvpn_easy.main.nordvpn_token='token-secret'"
+			;;
+		'show network.wg0')
+			printf "%s\n" "network.wg0.private_key='private-secret'"
+			printf "%s\n" "network.wg0.mtu='1420'"
+			;;
+		'show network.wg0server')
+			printf "%s\n" "network.wg0server.persistent_keepalive='15'"
+			;;
+		'show firewall.@zone[1]')
+			printf "%s\n" "firewall.@zone[1].network='wan wg0'"
+			printf "%s\n" "firewall.@zone[1].mtu_fix='1'"
+			;;
+		*)
+			return 1
+			;;
+	esac
+}
+
+ip() {
+	printf '%s\n' "$*"
+}
+
+logread() {
+	printf "%s\n" "user.notice nordvpn-easy: token:token-secret"
+}
+
+DIAGNOSTICS_OUTPUT="$(nordvpn_easy_export_diagnostics_log 'nordvpn-easy')"
+
+case "$DIAGNOSTICS_OUTPUT" in
+	*'WireGuard status'*'persistent_keepalive'*'mtu_fix'*)
+		;;
+	*)
+		printf '%s\n' 'FAIL: diagnostics export should include WireGuard and firewall transport state' >&2
+		exit 1
+		;;
+esac
+
+case "$DIAGNOSTICS_OUTPUT" in
+	*token-secret*|*private-secret*)
+		printf '%s\n' 'FAIL: diagnostics export leaked a secret' >&2
+		exit 1
+		;;
+esac
+
 printf '%s\n' 'test-common-temp.sh: ok'

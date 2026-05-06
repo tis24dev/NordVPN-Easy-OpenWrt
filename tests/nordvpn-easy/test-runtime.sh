@@ -60,6 +60,9 @@ DESIRED_ENABLED=1
 VPN_IF='wg0'
 SERVER_SELECTION_MODE='auto'
 KILL_SWITCH_ENABLED='1'
+WIREGUARD_PERSISTENT_KEEPALIVE='15'
+WIREGUARD_MTU=''
+FIREWALL_MTU_FIX='1'
 VPN_COUNTRY='ES'
 PREFERRED_SERVER_HOSTNAME=''
 PREFERRED_SERVER_STATION=''
@@ -73,11 +76,14 @@ uci() {
 			return $?
 			;;
 		get)
-			case "$2" in
-				network.wg0.disabled) printf '%s\n' '0' ;;
-				network.wg0.proto) printf '%s\n' 'wireguard' ;;
-				network.wg0server.endpoint_host) printf '%s\n' 'es12.nordvpn.com' ;;
-				network.wg0server.nordvpn_hostname) printf '%s\n' 'es12.nordvpn.com' ;;
+				case "$2" in
+					network.wg0.disabled) printf '%s\n' '0' ;;
+					network.wg0.proto) printf '%s\n' 'wireguard' ;;
+					network.wg0.mtu) printf '%s\n' '1420' ;;
+					network.wg0server.endpoint_host) printf '%s\n' 'es12.nordvpn.com' ;;
+					network.wg0server.endpoint_port) printf '%s\n' '51820' ;;
+					network.wg0server.persistent_keepalive) printf '%s\n' '15' ;;
+					network.wg0server.nordvpn_hostname) printf '%s\n' 'es12.nordvpn.com' ;;
 				network.wg0server.nordvpn_station) printf '%s\n' 'es123' ;;
 				network.wg0server.nordvpn_city) printf '%s\n' 'Madrid' ;;
 				network.wg0server.nordvpn_country_code) printf '%s\n' 'ES' ;;
@@ -117,6 +123,11 @@ assert_eq "$$" "$(printf '%s' "$STATUS_JSON" | jq -r '.operation_lock_pid')" 'st
 assert_eq 'check' "$(printf '%s' "$STATUS_JSON" | jq -r '.operation_lock_action')" 'status json exposes lock action'
 assert_eq 'recovering' "$(printf '%s' "$STATUS_JSON" | jq -r '.state')" 'status json derives enterprise state from busy check'
 assert_eq 'true' "$(printf '%s' "$STATUS_JSON" | jq -r '.kill_switch_enabled')" 'status json exposes kill switch flag'
+assert_eq '51820' "$(printf '%s' "$STATUS_JSON" | jq -r '.endpoint_port')" 'status json exposes endpoint port'
+assert_eq '15' "$(printf '%s' "$STATUS_JSON" | jq -r '.wireguard_persistent_keepalive')" 'status json exposes WireGuard keepalive'
+assert_eq '1420' "$(printf '%s' "$STATUS_JSON" | jq -r '.wireguard_mtu')" 'status json exposes WireGuard MTU'
+assert_eq 'true' "$(printf '%s' "$STATUS_JSON" | jq -r '.firewall_mtu_fix')" 'status json exposes firewall MTU fix'
+assert_eq '0' "$(printf '%s' "$STATUS_JSON" | jq -r '.handshake_age_seconds')" 'status json exposes handshake age seconds'
 assert_eq 'false' "$(printf '%s' "$STATUS_JSON" | jq -r '.runtime_disabled')" 'status json keeps runtime disabled false'
 assert_eq 'active' "$(printf '%s' "$STATUS_JSON" | jq -r '.vpn_status')" 'status json falls back to ip link when ifstatus probe fails'
 assert_eq 'wg0server' "$(nordvpn_easy_peer_section_name 'wg0')" 'peer section lookup falls back to exact section match'
@@ -129,11 +140,13 @@ uci_missing_station() {
 			return $?
 			;;
 		get)
-			case "$2" in
-				network.wg0.disabled) printf '%s\n' '0' ;;
-				network.wg0.proto) printf '%s\n' 'wireguard' ;;
-				network.wg0server.endpoint_host) printf '%s\n' 'es12.nordvpn.com' ;;
-				network.wg0server.nordvpn_hostname) printf '%s\n' 'es12.nordvpn.com' ;;
+				case "$2" in
+					network.wg0.disabled) printf '%s\n' '0' ;;
+					network.wg0.proto) printf '%s\n' 'wireguard' ;;
+					network.wg0server.endpoint_host) printf '%s\n' 'es12.nordvpn.com' ;;
+					network.wg0server.endpoint_port) printf '%s\n' '51820' ;;
+					network.wg0server.persistent_keepalive) printf '%s\n' '15' ;;
+					network.wg0server.nordvpn_hostname) printf '%s\n' 'es12.nordvpn.com' ;;
 				network.wg0server.nordvpn_station) return 1 ;;
 				network.wg0server.nordvpn_city) printf '%s\n' 'Madrid' ;;
 				network.wg0server.nordvpn_country_code) printf '%s\n' 'ES' ;;

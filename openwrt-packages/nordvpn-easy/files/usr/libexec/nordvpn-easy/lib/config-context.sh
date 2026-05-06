@@ -104,6 +104,8 @@ nordvpn_easy_load_runtime_context_from_uci() {
 
 	nordvpn_easy_load_service_context "$prefix" "$uci_config" "$uci_section" || return 1
 	nordvpn_easy_export_runtime_context_from_service "$prefix" || return 1
+	# Read by core.sh after this library loads the runtime context.
+	# shellcheck disable=SC2034
 	CONFIG_CONTEXT_SOURCE="uci:${uci_config}.${uci_section}"
 }
 
@@ -140,7 +142,7 @@ nordvpn_easy_debug_value_or_default() {
 
 nordvpn_easy_service_debug_summary() {
 	local prefix="${1:-cfg_}"
-	local enabled mode country preferred_station preferred_hostname fallback_station wan_if vpn_if token
+	local enabled mode country preferred_station preferred_hostname fallback_station wan_if vpn_if keepalive mtu mtu_fix token
 
 	eval "enabled=\${${prefix}enabled-0}"
 	eval "mode=\${${prefix}server_selection_mode-}"
@@ -150,6 +152,9 @@ nordvpn_easy_service_debug_summary() {
 	eval "fallback_station=\${${prefix}fallback_server_station-}"
 	eval "wan_if=\${${prefix}wan_if-}"
 	eval "vpn_if=\${${prefix}vpn_if-}"
+	eval "keepalive=\${${prefix}wireguard_persistent_keepalive-}"
+	eval "mtu=\${${prefix}wireguard_mtu-}"
+	eval "mtu_fix=\${${prefix}firewall_mtu_fix-}"
 	eval "token=\${${prefix}nordvpn_token-}"
 
 	printf '%s' "enabled=${enabled:-0} ($(nordvpn_easy_enabled_flag_label "${enabled:-0}")), "
@@ -160,6 +165,9 @@ nordvpn_easy_service_debug_summary() {
 	printf '%s' "fallback_station=$(nordvpn_easy_debug_value_or_default "${fallback_station:-}" 'disabled'), "
 	printf '%s' "wan_if=$(nordvpn_easy_debug_value_or_default "${wan_if:-}" 'unset'), "
 	printf '%s' "vpn_if=$(nordvpn_easy_debug_value_or_default "${vpn_if:-}" 'unset'), "
+	printf '%s' "wg_keepalive=$(nordvpn_easy_debug_value_or_default "${keepalive:-}" '15'), "
+	printf '%s' "wg_mtu=$(nordvpn_easy_debug_value_or_default "${mtu:-}" 'auto'), "
+	printf '%s' "mtu_fix=$(nordvpn_easy_debug_value_or_default "${mtu_fix:-}" '1'), "
 	printf '%s' "token=$([ -n "${token:-}" ] && printf '%s' 'present' || printf '%s' 'missing')"
 }
 
@@ -174,6 +182,9 @@ nordvpn_easy_runtime_env_debug_summary() {
 	printf '%s' "vpn_if=$(nordvpn_easy_debug_value_or_default "${VPN_IF:-}" 'unset'), "
 	printf '%s' "vpn_addr=$(nordvpn_easy_debug_value_or_default "${VPN_ADDR:-}" 'unset'), "
 	printf '%s' "vpn_port=$(nordvpn_easy_debug_value_or_default "${VPN_PORT:-}" 'unset'), "
+	printf '%s' "wg_keepalive=$(nordvpn_easy_debug_value_or_default "${WIREGUARD_PERSISTENT_KEEPALIVE:-}" '15'), "
+	printf '%s' "wg_mtu=$(nordvpn_easy_debug_value_or_default "${WIREGUARD_MTU:-}" 'auto'), "
+	printf '%s' "mtu_fix=$(nordvpn_easy_debug_value_or_default "${FIREWALL_MTU_FIX:-}" '1'), "
 	printf '%s' "token=$([ -n "${NORDVPN_TOKEN:-}" ] && printf '%s' 'present' || printf '%s' 'missing')"
 }
 
@@ -261,7 +272,8 @@ nordvpn_easy_runtime_file_debug_summary() {
 	printf '%s' "file_wan_if=$(nordvpn_easy_runtime_file_key_state "$runtime_file" 'WAN_IF'), "
 	printf '%s' "file_vpn_if=$(nordvpn_easy_runtime_file_key_state "$runtime_file" 'VPN_IF'), "
 	printf '%s' "file_vpn_addr=$(nordvpn_easy_runtime_file_key_state "$runtime_file" 'VPN_ADDR'), "
-	printf '%s' "file_vpn_port=$(nordvpn_easy_runtime_file_key_state "$runtime_file" 'VPN_PORT')"
+	printf '%s' "file_vpn_port=$(nordvpn_easy_runtime_file_key_state "$runtime_file" 'VPN_PORT'), "
+	printf '%s' "file_wg_keepalive=$(nordvpn_easy_runtime_file_key_state "$runtime_file" 'WIREGUARD_PERSISTENT_KEEPALIVE')"
 }
 
 nordvpn_easy_validate_runtime_config() {

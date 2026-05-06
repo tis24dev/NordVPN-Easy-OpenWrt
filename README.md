@@ -121,11 +121,39 @@ Key settings include:
 - `wan_if`
 - `vpn_if`
 - `vpn_country`
+- `wireguard_persistent_keepalive` (default `15`)
+- `wireguard_mtu` (empty means automatic)
+- `firewall_mtu_fix` (default `1`)
 - recovery thresholds and timing values
 
 Country filtering is supported. The backend resolves the requested country and
 then asks NordVPN for recommended WireGuard servers inside that country. City
 selection is not implemented.
+
+## WireGuard stability troubleshooting
+
+NordLynx uses WireGuard over UDP. For routers behind NAT, NordVPN Easy keeps the
+peer alive with `wireguard_persistent_keepalive=15` by default and repairs older
+peer configurations that miss the setting during setup/reconnect.
+
+If long-lived streams or downloads drop after roughly 30 seconds while OpenVPN is
+stable, check diagnostics first. Common causes are an aggressive upstream NAT,
+MTU/MSS blackholes, or a bad VPN server path rather than an OpenWrt log-visible
+interface failure.
+
+Suggested checks:
+
+- keep `wireguard_persistent_keepalive` at `15`; try `10` only for very
+  aggressive NAT devices
+- leave `firewall_mtu_fix=1` enabled so TCP MSS is clamped on the VPN firewall
+  zone
+- if streams still stall, test `wireguard_mtu` values `1420`, `1380`, then
+  `1280`
+- rotate or choose a fallback server if only one NordVPN endpoint is affected
+
+The NordLynx private key is stored locally by OpenWrt in `/etc/config/network`
+under the WireGuard interface so netifd can bring the tunnel up. NordVPN Easy
+does not expose that key in LuCI, logs, status JSON or diagnostics export.
 
 ## Current status
 

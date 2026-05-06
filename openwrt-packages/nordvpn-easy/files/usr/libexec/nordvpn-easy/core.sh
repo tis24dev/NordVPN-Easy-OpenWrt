@@ -34,6 +34,8 @@ nordvpn_easy_apply_env_defaults
 
 VPN_INTERFACE_PRESENT_DELAY="${VPN_INTERFACE_PRESENT_DELAY:-10}"
 
+# Sourced runtime libraries read these globals after core.sh initializes them.
+# shellcheck disable=SC2034
 SERVER_LIST_FILE='/tmp/nordvpn.json'
 COUNTRIES_CACHE_FILE='/tmp/nordvpn-easy-countries.json'
 COUNTRIES_CACHE_TS_FILE='/tmp/nordvpn-easy-countries.timestamp'
@@ -43,6 +45,7 @@ COUNTRIES_CACHE_TTL="${COUNTRIES_CACHE_TTL:-86400}"
 NORDVPN_API='https://api.nordvpn.com/v1'
 COUNTRIES_URL="${NORDVPN_API}/servers/countries"
 PUBLIC_COUNTRY_API='https://api.country.is'   # Third-party API, no auth required; returns JSON like {"country":"XX"} with an ISO country code.
+# shellcheck disable=SC2034
 SERVER_RECOMMENDATIONS_URL_BASE="${NORDVPN_API}/servers/recommendations?filters[servers_technologies][identifier]=wireguard_udp&limit=10"
 SERVER_CATALOG_URL_BASE="${NORDVPN_API}/servers?filters[servers_technologies][identifier]=wireguard_udp&limit=5000"
 CREDENTIALS_URL="${NORDVPN_API}/users/services/credentials"
@@ -54,35 +57,14 @@ RESOLVED_COUNTRY_CODE=''
 RESOLVED_COUNTRY_QUERY=''
 CONFIG_PATH=''
 CONFIG_PATH_REQUIRED=0
+# shellcheck disable=SC2034
 LOCK_ACQUIRED=0
 PUBLIC_COUNTRY_VERIFIED=0
 SERVER_CATALOG_QUERY=''
 SERVER_CATALOG_FORCE='0'
 PUBLIC_LOOKUP_LOG_MODE='verbose'
 CORE_QUIET_ACTION=0
-CORE_BACKEND_PAYLOAD_SIGNATURE='render-contract-v2'
-
-# List of IPs to randomly ping
-IP0='8.8.8.8'
-IP1='8.8.4.4'
-IP2='1.1.1.1'
-IP3='1.0.0.1'
-IP4='208.67.222.222'
-IP5='208.67.220.220'
-IP6='9.9.9.9'
-IP7='149.112.112.112'
-IP8='195.46.39.39'
-IP9='195.46.39.40'
-IP10='45.90.28.165'
-IP11='45.90.30.165'
-IP12='156.154.70.1'
-IP13='156.154.71.1'
-IP14='8.26.56.26'
-IP15='8.20.247.20'
-IP16='64.6.64.6'
-IP17='64.6.65.6'
-IP18='209.244.0.3'
-IP19='209.244.0.4'
+CORE_BACKEND_PAYLOAD_SIGNATURE='render-contract-v3'
 
 log () {
   nordvpn_easy_log_phase "${LOG_PHASE:-runtime}" "$@"
@@ -241,7 +223,29 @@ ensure_vpn_interface_enabled () {
 }
 
 pick_ping_ip () {
-  eval "printf '%s\n' \"\$IP$(awk 'BEGIN { srand(); print int((rand()*10000000)) % 20 }')\""
+  # Keep this static: analyzer-friendly and no eval for a fixed probe list.
+  case "$(awk 'BEGIN { srand(); print int(rand() * 20) }')" in
+    0)  printf '%s\n' '8.8.8.8' ;;
+    1)  printf '%s\n' '8.8.4.4' ;;
+    2)  printf '%s\n' '1.1.1.1' ;;
+    3)  printf '%s\n' '1.0.0.1' ;;
+    4)  printf '%s\n' '208.67.222.222' ;;
+    5)  printf '%s\n' '208.67.220.220' ;;
+    6)  printf '%s\n' '9.9.9.9' ;;
+    7)  printf '%s\n' '149.112.112.112' ;;
+    8)  printf '%s\n' '195.46.39.39' ;;
+    9)  printf '%s\n' '195.46.39.40' ;;
+    10) printf '%s\n' '45.90.28.165' ;;
+    11) printf '%s\n' '45.90.30.165' ;;
+    12) printf '%s\n' '156.154.70.1' ;;
+    13) printf '%s\n' '156.154.71.1' ;;
+    14) printf '%s\n' '8.26.56.26' ;;
+    15) printf '%s\n' '8.20.247.20' ;;
+    16) printf '%s\n' '64.6.64.6' ;;
+    17) printf '%s\n' '64.6.65.6' ;;
+    18) printf '%s\n' '209.244.0.3' ;;
+    *)  printf '%s\n' '209.244.0.4' ;;
+  esac
 }
 
 ping_interface () {
@@ -888,6 +892,8 @@ if [ $# -gt 0 ]; then
   esac
 fi
 
+# Used by common.sh logging helpers sourced above.
+# shellcheck disable=SC2034
 ACTION_TRACE_ID="$(date +%s 2>/dev/null || printf '%s' '0').$$"
 ACTION_STARTED_AT="$(date +%s 2>/dev/null || printf '%s' '0')"
 

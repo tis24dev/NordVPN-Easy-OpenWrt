@@ -14,11 +14,18 @@ nordvpn_easy_log_vpn_interface_state() {
 	VPN_PROTO=$(uci -q get "network.${VPN_IF}.proto" 2>/dev/null)
 	VPN_DISABLED=$(uci -q get "network.${VPN_IF}.disabled" 2>/dev/null)
 	VPN_ENDPOINT=$(uci -q get "network.${VPN_IF}server.endpoint_host" 2>/dev/null)
+	VPN_ENDPOINT_PORT=$(uci -q get "network.${VPN_IF}server.endpoint_port" 2>/dev/null)
+	VPN_KEEPALIVE=$(uci -q get "network.${VPN_IF}server.persistent_keepalive" 2>/dev/null)
+	VPN_MTU=$(uci -q get "network.${VPN_IF}.mtu" 2>/dev/null)
+	VPN_MTU_FIX='unknown'
 	VPN_LINK_PRESENT='no'
 
 	ip link show dev "$VPN_IF" >/dev/null 2>&1 && VPN_LINK_PRESENT='yes'
+	if VPN_FIREWALL_ZONE="$(nordvpn_easy_find_firewall_zone_section "$VPN_IF" 2>/dev/null)"; then
+		VPN_MTU_FIX=$(uci -q get "${VPN_FIREWALL_ZONE}.mtu_fix" 2>/dev/null)
+	fi
 
-	log "runtime: interface state [$STATE_CONTEXT]: proto=${VPN_PROTO:-absent}, disabled=${VPN_DISABLED:-0}, link_present=$VPN_LINK_PRESENT, endpoint=${VPN_ENDPOINT:-none}"
+	log "runtime: interface state [$STATE_CONTEXT]: proto=${VPN_PROTO:-absent}, disabled=${VPN_DISABLED:-0}, link_present=$VPN_LINK_PRESENT, endpoint=${VPN_ENDPOINT:-none}, endpoint_port=${VPN_ENDPOINT_PORT:-${VPN_PORT:-unset}}, keepalive=${VPN_KEEPALIVE:-${WIREGUARD_PERSISTENT_KEEPALIVE:-15}}, mtu=${VPN_MTU:-auto}, mtu_fix=${VPN_MTU_FIX:-unset}"
 }
 
 nordvpn_easy_recover_missing_vpn_interface() {
@@ -237,6 +244,82 @@ nordvpn_easy_find_firewall_zone_section() {
 	return 1
 }
 
+nordvpn_easy_set_uci_option_if_changed() {
+	local key="$1"
+	local value="$2"
+	local current=''
+
+	current="$(uci -q get "$key" 2>/dev/null || true)"
+	[ "$current" = "$value" ] && return 0
+
+	uci set "${key}=${value}" || return 1
+	NORDVPN_EASY_UCI_CHANGED=1
+}
+
+nordvpn_easy_delete_uci_option_if_present() {
+	local key="$1"
+
+	uci -q get "$key" >/dev/null 2>&1 || return 0
+	uci -q delete "$key" || return 1
+	NORDVPN_EASY_UCI_CHANGED=1
+}
+
+nordvpn_easy_wireguard_keepalive_value() {
+	case "${WIREGUARD_PERSISTENT_KEEPALIVE:-15}" in
+		''|*[!0-9]*)
+			printf '%s\n' '15'
+			;;
+		*)
+			if [ "$WIREGUARD_PERSISTENT_KEEPALIVE" -le 120 ]; then
+				printf '%s\n' "$WIREGUARD_PERSISTENT_KEEPALIVE"
+			else
+				printf '%s\n' '15'
+			fi
+			;;
+	esac
+}
+
+nordvpn_easy_wireguard_mtu_value() {
+	case "${WIREGUARD_MTU:-}" in
+		'')
+			printf '%s\n' ''
+			;;
+		*[!0-9]*)
+			printf '%s\n' ''
+			;;
+		*)
+			if [ "$WIREGUARD_MTU" -ge 1280 ] && [ "$WIREGUARD_MTU" -le 1500 ]; then
+				printf '%s\n' "$WIREGUARD_MTU"
+			else
+				printf '%s\n' ''
+			fi
+			;;
+	esac
+}
+
+nordvpn_easy_apply_wireguard_transport_settings() {
+	local peer_section="${1:-${VPN_IF}server}"
+	local endpoint_port="${2:-${VPN_PORT:-51820}}"
+	local keepalive=''
+	local mtu=''
+
+	# Read by actions.sh after transport settings are applied.
+	# shellcheck disable=SC2034
+	NORDVPN_EASY_UCI_CHANGED=0
+
+	nordvpn_easy_set_uci_option_if_changed "network.${peer_section}.endpoint_port" "$endpoint_port" || return 1
+
+	keepalive="$(nordvpn_easy_wireguard_keepalive_value)"
+	nordvpn_easy_set_uci_option_if_changed "network.${peer_section}.persistent_keepalive" "$keepalive" || return 1
+
+	mtu="$(nordvpn_easy_wireguard_mtu_value)"
+	if [ -n "$mtu" ]; then
+		nordvpn_easy_set_uci_option_if_changed "network.${VPN_IF}.mtu" "$mtu" || return 1
+	else
+		nordvpn_easy_delete_uci_option_if_present "network.${VPN_IF}.mtu" || return 1
+	fi
+}
+
 nordvpn_easy_ensure_vpn_in_wan_zone() {
 	WAN_ZONE=$(find_firewall_zone_section "$WAN_IF") || {
 		log "ERROR: FIREWALL ZONE FOR $WAN_IF NOT FOUND"
@@ -272,8 +355,19 @@ nordvpn_easy_ensure_vpn_in_wan_zone() {
 		FIREWALL_CHANGED=1
 	fi
 
+	CURRENT_MTU_FIX=$(uci -q get "${WAN_ZONE}.mtu_fix" 2>/dev/null || true)
+	if [ "${FIREWALL_MTU_FIX:-1}" = '1' ]; then
+		if [ "$CURRENT_MTU_FIX" != '1' ]; then
+			uci set "${WAN_ZONE}.mtu_fix=1"
+			FIREWALL_CHANGED=1
+		fi
+	elif [ "$CURRENT_MTU_FIX" != '0' ]; then
+		uci set "${WAN_ZONE}.mtu_fix=0"
+		FIREWALL_CHANGED=1
+	fi
+
 	if [ "$FIREWALL_CHANGED" -ne 1 ]; then
-	log "runtime: firewall zone for $WAN_IF already contains $VPN_IF"
+		log "runtime: firewall zone for $WAN_IF already contains $VPN_IF with mtu_fix=${CURRENT_MTU_FIX:-unset}"
 		return 0
 	fi
 
@@ -287,7 +381,7 @@ nordvpn_easy_ensure_vpn_in_wan_zone() {
 		return 1
 	}
 
-	log "runtime: firewall updated so zone for $WAN_IF includes $VPN_IF"
+	log "runtime: firewall updated so zone for $WAN_IF includes $VPN_IF with mtu_fix=${FIREWALL_MTU_FIX:-1}"
 }
 
 nordvpn_easy_set_vpn_server_in_uci() {
@@ -312,6 +406,7 @@ nordvpn_easy_set_vpn_server_in_uci() {
 	uci set "network.${VPN_IF}server.nordvpn_country_code"="${4:-}"
 	uci set "network.${VPN_IF}server.nordvpn_city"="${5:-}"
 	uci set "network.${VPN_IF}server.nordvpn_load"="${6:-}"
+	nordvpn_easy_apply_wireguard_transport_settings "${VPN_IF}server" || return 1
 	log "apply: prepared VPN peer update for server $1 ($2)"
 }
 

@@ -1,6 +1,9 @@
 #!/bin/sh /etc/rc.common
 
+# OpenWrt rc.common consumes these metadata variables.
+# shellcheck disable=SC2034
 START=95
+# shellcheck disable=SC2034
 STOP=10
 
 . /lib/functions.sh
@@ -13,9 +16,12 @@ CORE_SCRIPT='/usr/libexec/nordvpn-easy/core.sh'
 CONFIG_CONTEXT_LIB='/usr/libexec/nordvpn-easy/lib/config-context.sh'
 CRON_PATH='/etc/cron.d/nordvpn-easy'
 HOTPLUG_PATH='/etc/hotplug.d/iface/95-nordvpn-easy'
-SERVICE_BACKEND_PAYLOAD_SIGNATURE='render-contract-v2'
+SERVICE_BACKEND_PAYLOAD_SIGNATURE='render-contract-v3'
 NORDVPN_EASY_RC_BUSY="${NORDVPN_EASY_RC_BUSY:-75}"
+# OpenWrt rc.common consumes the command/help metadata.
+# shellcheck disable=SC2034
 EXTRA_COMMANDS='connect disconnect reconnect setup check rotate refresh_countries refresh_countries_force server_catalog public_ip public_country operation_status vpn_status status_json diagnostics_log install_hooks remove_hooks disable_runtime render_runtime_config'
+# shellcheck disable=SC2034
 EXTRA_HELP='  connect               Enable, run setup, then install hooks transactionally
   disconnect            Disable runtime and remove hooks
   reconnect             Run setup, then install hooks transactionally
