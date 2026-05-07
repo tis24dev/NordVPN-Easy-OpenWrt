@@ -1,8 +1,49 @@
 #!/bin/sh
 # shellcheck disable=SC2153
 
+nordvpn_easy_wireguard_peer_section_name() {
+	local vpn_if="${1:-$VPN_IF}"
+	local peer_section=''
+
+	if command -v nordvpn_easy_peer_section_name >/dev/null 2>&1; then
+		nordvpn_easy_peer_section_name "$vpn_if"
+		return $?
+	fi
+
+	if uci -q get "network.${vpn_if}server.endpoint_host" >/dev/null 2>&1; then
+		printf '%s\n' "${vpn_if}server"
+		return 0
+	fi
+
+	peer_section="$(
+		uci show network 2>/dev/null | awk -F '[.=]' -v target="wireguard_${vpn_if}" '
+			$1 == "network" && $3 == target {
+				print $2
+				exit
+			}
+		'
+	)"
+	[ -n "$peer_section" ] || return 1
+	printf '%s\n' "$peer_section"
+}
+
+nordvpn_easy_vpn_interface_has_wireguard_proto() {
+	local vpn_if="${1:-$VPN_IF}"
+
+	[ "$(uci -q get "network.${vpn_if}.proto" 2>/dev/null)" = 'wireguard' ]
+}
+
+nordvpn_easy_vpn_has_peer_section() {
+	local vpn_if="${1:-$VPN_IF}"
+
+	nordvpn_easy_wireguard_peer_section_name "$vpn_if" >/dev/null 2>&1
+}
+
 nordvpn_easy_vpn_is_configured() {
-	[ "$(uci -q get "network.${VPN_IF}.proto" 2>/dev/null)" = 'wireguard' ]
+	local vpn_if="${1:-$VPN_IF}"
+
+	nordvpn_easy_vpn_interface_has_wireguard_proto "$vpn_if" || return 1
+	nordvpn_easy_vpn_has_peer_section "$vpn_if"
 }
 
 nordvpn_easy_vpn_link_is_present() {
