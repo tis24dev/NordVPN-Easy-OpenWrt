@@ -408,4 +408,51 @@ assert_eq '1' "$BOOTSTRAP_CONFIGURE_COUNT" 'bootstrap falls back to full create 
 assert_eq '1' "$BOOTSTRAP_ZONE_COUNT" 'bootstrap continues after full create fallback'
 assert_eq '1' "$BOOTSTRAP_PRESENT_COUNT" 'bootstrap validates interface after full create fallback'
 
+NORDVPN_EASY_RUN_DIR="$TMP_DIR/run"
+NETWORK_RELOAD_COUNT_FILE="$TMP_DIR/network-reload-count"
+NORDVPN_EASY_NETWORK_INIT="$TMP_DIR/network-ok.sh"
+cat > "$NORDVPN_EASY_NETWORK_INIT" <<EOF
+#!/bin/sh
+count="\$(cat "$NETWORK_RELOAD_COUNT_FILE" 2>/dev/null || printf '%s' '0')"
+printf '%s\n' "\$((count + 1))" > "$NETWORK_RELOAD_COUNT_FILE"
+exit 0
+EOF
+chmod +x "$NORDVPN_EASY_NETWORK_INIT"
+
+VPN_CONFIGURED_RC=0
+BOOTSTRAP_REPAIR_COUNT=0
+BOOTSTRAP_CONFIGURE_COUNT=0
+BOOTSTRAP_ENABLE_COUNT=0
+BOOTSTRAP_TRANSPORT_COUNT=0
+BOOTSTRAP_ZONE_COUNT=0
+BOOTSTRAP_PRESENT_COUNT=0
+mkdir -p "$NORDVPN_EASY_RUN_DIR"
+printf '%s\n' 'reason=unit-test pending reload' > "$(nordvpn_easy_pending_network_reload_marker_path)"
+
+nordvpn_easy_bootstrap_if_needed
+
+assert_eq '1' "$(cat "$NETWORK_RELOAD_COUNT_FILE")" 'bootstrap retries a pending network reload before skipping repair'
+assert_eq '0' "$BOOTSTRAP_REPAIR_COUNT" 'configured bootstrap does not run missing peer repair after pending reload retry'
+assert_eq '1' "$BOOTSTRAP_ENABLE_COUNT" 'configured bootstrap continues after pending reload retry'
+if [ -f "$(nordvpn_easy_pending_network_reload_marker_path)" ]; then
+	printf '%s\n' 'FAIL: successful pending reload retry should clear marker' >&2
+	exit 1
+fi
+
+NORDVPN_EASY_NETWORK_INIT="$TMP_DIR/network-fail.sh"
+cat > "$NORDVPN_EASY_NETWORK_INIT" <<'EOF'
+#!/bin/sh
+printf '%s\n' 'reload exploded' >&2
+exit 7
+EOF
+chmod +x "$NORDVPN_EASY_NETWORK_INIT"
+
+RELOAD_RC=0
+nordvpn_easy_reload_network_for_wireguard 'unit test reload failure' || RELOAD_RC=$?
+assert_eq '1' "$RELOAD_RC" 'network reload helper fails when network reload fails'
+if [ ! -f "$(nordvpn_easy_pending_network_reload_marker_path)" ]; then
+	printf '%s\n' 'FAIL: failed network reload should leave pending marker' >&2
+	exit 1
+fi
+
 printf '%s\n' 'test-actions.sh: ok'

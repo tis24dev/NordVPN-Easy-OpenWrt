@@ -532,6 +532,70 @@ nordvpn_easy_configure_vpn_interface() {
 	nordvpn_easy_log_vpn_interface_state 'after-create'
 }
 
+nordvpn_easy_pending_network_reload_marker_path() {
+	printf '%s/network-reload-pending-%s\n' "${NORDVPN_EASY_RUN_DIR:-/tmp/run/nordvpn-easy}" "${VPN_IF:-wg0}"
+}
+
+nordvpn_easy_mark_network_reload_pending() {
+	local reason="$1"
+	local marker_path=''
+	local marker_dir=''
+
+	marker_path="$(nordvpn_easy_pending_network_reload_marker_path)"
+	marker_dir="${marker_path%/*}"
+	mkdir -p "$marker_dir" 2>/dev/null || {
+		nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "could not create pending reload marker directory $marker_dir for $VPN_IF"
+		return 1
+	}
+
+	{
+		printf 'vpn_if=%s\n' "$VPN_IF"
+		printf 'created_at=%s\n' "$(date +%s 2>/dev/null || printf '%s' '0')"
+		printf 'reason=%s\n' "$reason"
+	} > "$marker_path" || {
+		nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "could not write pending reload marker $marker_path for $VPN_IF"
+		return 1
+	}
+}
+
+nordvpn_easy_network_reload_is_pending() {
+	[ -f "$(nordvpn_easy_pending_network_reload_marker_path)" ]
+}
+
+nordvpn_easy_clear_pending_network_reload() {
+	rm -f "$(nordvpn_easy_pending_network_reload_marker_path)" 2>/dev/null || true
+}
+
+nordvpn_easy_reload_network_for_wireguard() {
+	local context="$1"
+	local network_init="${NORDVPN_EASY_NETWORK_INIT:-/etc/init.d/network}"
+	local reload_output=''
+	local reload_rc=0
+	local marker_path=''
+
+	reload_output="$("$network_init" reload 2>&1)" || {
+		reload_rc=$?
+		reload_output="$(printf '%s' "$reload_output" | sed -n '1p')"
+		marker_path="$(nordvpn_easy_pending_network_reload_marker_path)"
+		nordvpn_easy_mark_network_reload_pending "$context failed with rc=$reload_rc" || true
+		nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "network reload failed for $VPN_IF while $context (rc=$reload_rc, output=${reload_output:-none}, pending_marker=$marker_path)"
+		return 1
+	}
+
+	nordvpn_easy_clear_pending_network_reload
+}
+
+nordvpn_easy_retry_pending_network_reload() {
+	local marker_path=''
+	local marker_reason=''
+
+	nordvpn_easy_network_reload_is_pending || return 0
+	marker_path="$(nordvpn_easy_pending_network_reload_marker_path)"
+	marker_reason="$(sed -n 's/^reason=//p' "$marker_path" 2>/dev/null | sed -n '1p')"
+	log "runtime: retrying pending network reload for $VPN_IF (${marker_reason:-reason unavailable})"
+	nordvpn_easy_reload_network_for_wireguard 'retrying pending WireGuard peer reload'
+}
+
 nordvpn_easy_repair_missing_wireguard_peer() {
 	local existing_private_key=''
 
@@ -571,10 +635,7 @@ nordvpn_easy_repair_missing_wireguard_peer() {
 		return 1
 	}
 
-	/etc/init.d/network reload || {
-		log "ERROR: NETWORK RELOAD FAILED WHILE REPAIRING MISSING WIREGUARD PEER ON $VPN_IF"
-		return 1
-	}
+	nordvpn_easy_reload_network_for_wireguard 'repairing missing WireGuard peer' || return 1
 
 	log "runtime: rebuilt missing WireGuard peer section for $VPN_IF"
 }
@@ -595,6 +656,7 @@ nordvpn_easy_bootstrap_if_needed() {
 			nordvpn_easy_configure_vpn_interface || return 1
 		fi
 	else
+		nordvpn_easy_retry_pending_network_reload || return 1
 		log "runtime: interface $VPN_IF is already configured; ensuring it is enabled and present"
 		nordvpn_easy_ensure_vpn_interface_enabled || return 1
 		nordvpn_easy_apply_wireguard_transport_settings "${VPN_IF}server" || return 1
