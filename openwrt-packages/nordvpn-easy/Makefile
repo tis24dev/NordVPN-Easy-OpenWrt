@@ -34,6 +34,21 @@ define Package/nordvpn-easy/conffiles
 /etc/config/nordvpn_easy
 endef
 
+define Package/nordvpn-easy/prerm
+#!/bin/sh
+
+[ -n "$${IPKG_INSTROOT}" ] && exit 0
+[ "$${PKG_UPGRADE:-0}" = "1" ] && exit 0
+
+case "$${1:-}" in
+	remove|purge)
+		rm -f /etc/config/nordvpn_easy /etc/config/nordvpn_easy-opkg
+		;;
+esac
+
+exit 0
+endef
+
 define Build/Compile
 endef
 

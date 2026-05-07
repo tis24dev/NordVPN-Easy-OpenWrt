@@ -37,6 +37,7 @@ luci_init_source="\$(CURDIR)/../nordvpn-easy/files/etc/init.d/nordvpn-easy"
 luci_core_source="\$(CURDIR)/../nordvpn-easy/files/usr/libexec/nordvpn-easy/core.sh"
 luci_lib_source="\$(CURDIR)/../nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/."
 luci_rpcd_source="\$(CURDIR)/../nordvpn-easy/files/usr/libexec/rpcd/nordvpn.easy"
+config_cleanup='rm -f /etc/config/nordvpn_easy /etc/config/nordvpn_easy-opkg'
 
 assert_eq "$backend_version" "$luci_version" 'backend and LuCI packages share default version'
 assert_eq "$backend_release" "$luci_release" 'backend and LuCI packages share default release'
@@ -64,6 +65,16 @@ grep -E "${dollar_pattern}${dollar_pattern}+lib" "$LUCI_MAKEFILE" >/dev/null 2>&
 
 grep -F "$luci_rpcd_source" "$LUCI_MAKEFILE" >/dev/null 2>&1 || {
 	printf '%s\n' 'FAIL: LuCI package must install rpcd plugin from backend package source' >&2
+	exit 1
+}
+
+grep -F "$config_cleanup" "$BACKEND_MAKEFILE" >/dev/null 2>&1 || {
+	printf '%s\n' 'FAIL: backend package prerm must remove the UCI config during uninstall' >&2
+	exit 1
+}
+
+grep -F "$config_cleanup" "$LUCI_MAKEFILE" >/dev/null 2>&1 || {
+	printf '%s\n' 'FAIL: LuCI package prerm must remove the UCI config during uninstall' >&2
 	exit 1
 }
 
