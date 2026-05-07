@@ -64,12 +64,14 @@ SANITIZED="$(
 	printf "%s\n" \
 		"nordvpn_easy.main.nordvpn_token='token-secret'" \
 		"network.wg0.private_key='private-secret'" \
-		"network.wg0.preshared_key='psk-secret'" |
+		"network.wg0.preshared_key='psk-secret'" \
+		'{"nordlynx_private_key":"nordlynx-secret","access_token":"access-secret"}' \
+		'Authorization: Bearer bearer-secret' |
 		nordvpn_easy_sanitize_diagnostics_stream
 )"
 
 case "$SANITIZED" in
-	*token-secret*|*private-secret*|*psk-secret*)
+	*token-secret*|*private-secret*|*psk-secret*|*nordlynx-secret*|*access-secret*|*bearer-secret*)
 		printf '%s\n' 'FAIL: diagnostics sanitizer leaked a secret' >&2
 		exit 1
 		;;
@@ -83,6 +85,8 @@ case "$SANITIZED" in
 		exit 1
 		;;
 esac
+
+assert_eq 'HTTP error response' "$(nordvpn_easy_curl_rc_meaning 22)" 'curl rc 22 is explained'
 
 VPN_IF='wg0'
 WIREGUARD_PERSISTENT_KEEPALIVE='15'
@@ -99,12 +103,46 @@ nordvpn_easy_find_firewall_zone_section() {
 }
 
 wg() {
+	if [ "$1" = 'show' ] && [ "$2" = 'wg0' ] && [ "${3:-}" = 'peers' ]; then
+		printf '%s\n' 'peer-public-key'
+		return 0
+	fi
 	printf '%s\n' 'interface: wg0'
 	printf '%s\n' '  public key: public-only'
 }
 
 uci() {
+	if [ "$1" = '-q' ]; then
+		shift
+		uci "$@"
+		return $?
+	fi
+
 	case "$*" in
+		'get network.wg0.proto')
+			printf '%s\n' 'wireguard'
+			;;
+		'get network.wg0.disabled')
+			printf '%s\n' '0'
+			;;
+		'get network.wg0.private_key')
+			printf '%s\n' 'private-secret'
+			;;
+		'get network.wg0server.endpoint_host')
+			printf '%s\n' 'it12.nordvpn.com'
+			;;
+		'get network.wg0server.public_key')
+			printf '%s\n' 'public-only'
+			;;
+		'get network.wg0server.allowed_ips')
+			printf '%s\n' '0.0.0.0/0'
+			;;
+		'get network.wg0server.route_allowed_ips')
+			printf '%s\n' '1'
+			;;
+		'show network')
+			printf "%s\n" "network.wg0server=wireguard_wg0"
+			;;
 		'show nordvpn_easy')
 			printf "%s\n" "nordvpn_easy.main.nordvpn_token='token-secret'"
 			;;
@@ -140,6 +178,15 @@ case "$DIAGNOSTICS_OUTPUT" in
 		;;
 	*)
 		printf '%s\n' 'FAIL: diagnostics export should include WireGuard and firewall transport state' >&2
+		exit 1
+		;;
+esac
+
+case "$DIAGNOSTICS_OUTPUT" in
+	*'Health summary'*'peer_section_found=yes'*'required_peer_keys_missing=none'*'probable_issue=none detected'*)
+		;;
+	*)
+		printf '%s\n' 'FAIL: diagnostics export should include a useful health summary' >&2
 		exit 1
 		;;
 esac
