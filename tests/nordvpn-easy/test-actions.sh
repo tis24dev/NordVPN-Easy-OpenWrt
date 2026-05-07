@@ -72,6 +72,7 @@ RESOLVED_COUNTRY_CODE=''
 
 VPN_COUNTRY='IT'
 VPN_IF='wg0'
+VPN_CONFIGURED_RC=0
 SERVER_RECOMMENDATIONS_URL_BASE='https://example.invalid/recommendations'
 CURRENT_SERVER_VALUE='it0'
 COMMIT_NETWORK_COUNT=0
@@ -102,7 +103,7 @@ nordvpn_easy_ping_interface() {
 nordvpn_easy_ping_wan() { return 0; }
 nordvpn_easy_get_servers_list() { return 0; }
 nordvpn_easy_server_selection_is_manual() { [ "${SERVER_SELECTION_MODE:-auto}" = 'manual' ]; }
-nordvpn_easy_vpn_is_configured() { return 0; }
+nordvpn_easy_vpn_is_configured() { return "$VPN_CONFIGURED_RC"; }
 nordvpn_easy_preferred_server_matches_current() {
 	[ -n "$PREFERRED_SERVER_STATION" ] || return 1
 	[ "$(nordvpn_easy_current_server_station)" = "$PREFERRED_SERVER_STATION" ]
@@ -348,5 +349,110 @@ POST_RESTART_DELAY=10
 nordvpn_easy_check_once
 
 assert_eq '1' "$TRY_FALLBACK_COUNT" 'manual health check tries the configured fallback server at the rotation threshold'
+
+VPN_CONFIGURED_RC=1
+BOOTSTRAP_REPAIR_RC=0
+BOOTSTRAP_REPAIR_COUNT=0
+BOOTSTRAP_CONFIGURE_COUNT=0
+BOOTSTRAP_ENABLE_COUNT=0
+BOOTSTRAP_TRANSPORT_COUNT=0
+BOOTSTRAP_ZONE_COUNT=0
+BOOTSTRAP_PRESENT_COUNT=0
+VPN_COUNTRY=''
+SERVER_SELECTION_MODE='auto'
+NORDVPN_EASY_UCI_CHANGED=0
+
+refresh_countries_cache() { return 0; }
+nordvpn_easy_repair_missing_wireguard_peer() {
+	BOOTSTRAP_REPAIR_COUNT=$((BOOTSTRAP_REPAIR_COUNT + 1))
+	return "$BOOTSTRAP_REPAIR_RC"
+}
+nordvpn_easy_configure_vpn_interface() {
+	BOOTSTRAP_CONFIGURE_COUNT=$((BOOTSTRAP_CONFIGURE_COUNT + 1))
+	return 0
+}
+nordvpn_easy_ensure_vpn_interface_enabled() {
+	BOOTSTRAP_ENABLE_COUNT=$((BOOTSTRAP_ENABLE_COUNT + 1))
+	return 0
+}
+nordvpn_easy_apply_wireguard_transport_settings() {
+	BOOTSTRAP_TRANSPORT_COUNT=$((BOOTSTRAP_TRANSPORT_COUNT + 1))
+	return 0
+}
+nordvpn_easy_ensure_vpn_in_wan_zone() {
+	BOOTSTRAP_ZONE_COUNT=$((BOOTSTRAP_ZONE_COUNT + 1))
+	return 0
+}
+nordvpn_easy_ensure_vpn_interface_present() {
+	BOOTSTRAP_PRESENT_COUNT=$((BOOTSTRAP_PRESENT_COUNT + 1))
+	return 0
+}
+
+nordvpn_easy_bootstrap_if_needed
+
+assert_eq '1' "$BOOTSTRAP_REPAIR_COUNT" 'bootstrap tries missing peer repair before full create'
+assert_eq '0' "$BOOTSTRAP_CONFIGURE_COUNT" 'successful missing peer repair avoids full create'
+assert_eq '1' "$BOOTSTRAP_ZONE_COUNT" 'bootstrap continues after missing peer repair'
+assert_eq '1' "$BOOTSTRAP_PRESENT_COUNT" 'bootstrap validates interface after missing peer repair'
+
+BOOTSTRAP_REPAIR_RC=1
+BOOTSTRAP_REPAIR_COUNT=0
+BOOTSTRAP_CONFIGURE_COUNT=0
+BOOTSTRAP_ZONE_COUNT=0
+BOOTSTRAP_PRESENT_COUNT=0
+
+nordvpn_easy_bootstrap_if_needed
+
+assert_eq '1' "$BOOTSTRAP_REPAIR_COUNT" 'bootstrap attempts repair for incomplete WireGuard configuration'
+assert_eq '1' "$BOOTSTRAP_CONFIGURE_COUNT" 'bootstrap falls back to full create when missing peer repair fails'
+assert_eq '1' "$BOOTSTRAP_ZONE_COUNT" 'bootstrap continues after full create fallback'
+assert_eq '1' "$BOOTSTRAP_PRESENT_COUNT" 'bootstrap validates interface after full create fallback'
+
+NORDVPN_EASY_RUN_DIR="$TMP_DIR/run"
+NETWORK_RELOAD_COUNT_FILE="$TMP_DIR/network-reload-count"
+NORDVPN_EASY_NETWORK_INIT="$TMP_DIR/network-ok.sh"
+cat > "$NORDVPN_EASY_NETWORK_INIT" <<EOF
+#!/bin/sh
+count="\$(cat "$NETWORK_RELOAD_COUNT_FILE" 2>/dev/null || printf '%s' '0')"
+printf '%s\n' "\$((count + 1))" > "$NETWORK_RELOAD_COUNT_FILE"
+exit 0
+EOF
+chmod +x "$NORDVPN_EASY_NETWORK_INIT"
+
+VPN_CONFIGURED_RC=0
+BOOTSTRAP_REPAIR_COUNT=0
+BOOTSTRAP_CONFIGURE_COUNT=0
+BOOTSTRAP_ENABLE_COUNT=0
+BOOTSTRAP_TRANSPORT_COUNT=0
+BOOTSTRAP_ZONE_COUNT=0
+BOOTSTRAP_PRESENT_COUNT=0
+mkdir -p "$NORDVPN_EASY_RUN_DIR"
+printf '%s\n' 'reason=unit-test pending reload' > "$(nordvpn_easy_pending_network_reload_marker_path)"
+
+nordvpn_easy_bootstrap_if_needed
+
+assert_eq '1' "$(cat "$NETWORK_RELOAD_COUNT_FILE")" 'bootstrap retries a pending network reload before skipping repair'
+assert_eq '0' "$BOOTSTRAP_REPAIR_COUNT" 'configured bootstrap does not run missing peer repair after pending reload retry'
+assert_eq '1' "$BOOTSTRAP_ENABLE_COUNT" 'configured bootstrap continues after pending reload retry'
+if [ -f "$(nordvpn_easy_pending_network_reload_marker_path)" ]; then
+	printf '%s\n' 'FAIL: successful pending reload retry should clear marker' >&2
+	exit 1
+fi
+
+NORDVPN_EASY_NETWORK_INIT="$TMP_DIR/network-fail.sh"
+cat > "$NORDVPN_EASY_NETWORK_INIT" <<'EOF'
+#!/bin/sh
+printf '%s\n' 'reload exploded' >&2
+exit 7
+EOF
+chmod +x "$NORDVPN_EASY_NETWORK_INIT"
+
+RELOAD_RC=0
+nordvpn_easy_reload_network_for_wireguard 'unit test reload failure' || RELOAD_RC=$?
+assert_eq '1' "$RELOAD_RC" 'network reload helper fails when network reload fails'
+if [ ! -f "$(nordvpn_easy_pending_network_reload_marker_path)" ]; then
+	printf '%s\n' 'FAIL: failed network reload should leave pending marker' >&2
+	exit 1
+fi
 
 printf '%s\n' 'test-actions.sh: ok'

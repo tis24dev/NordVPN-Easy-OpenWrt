@@ -33,6 +33,8 @@ assert_eq() {
 
 log() { :; }
 
+UCI_PROTO=''
+UCI_PEER_SECTION=0
 UCI_ENDPOINT_HOST=''
 UCI_ENDPOINT_PORT=''
 UCI_KEEPALIVE=''
@@ -49,7 +51,8 @@ uci() {
 			;;
 		get)
 				case "$2" in
-					network.wg0server.endpoint_host) printf '%s\n' "$UCI_ENDPOINT_HOST" ;;
+					network.wg0.proto) [ -n "$UCI_PROTO" ] || return 1; printf '%s\n' "$UCI_PROTO" ;;
+					network.wg0server.endpoint_host) [ -n "$UCI_ENDPOINT_HOST" ] || return 1; printf '%s\n' "$UCI_ENDPOINT_HOST" ;;
 					network.wg0server.endpoint_port) printf '%s\n' "$UCI_ENDPOINT_PORT" ;;
 					network.wg0server.persistent_keepalive) printf '%s\n' "$UCI_KEEPALIVE" ;;
 					network.wg0.mtu)
@@ -63,10 +66,17 @@ uci() {
 				network.wg0server.nordvpn_hostname) printf '%s\n' "$UCI_HOSTNAME" ;;
 				*) return 1 ;;
 			esac
-			return 0
-			;;
+				return 0
+				;;
+			show)
+				[ "$2" = 'network' ] || return 1
+				[ "$UCI_PEER_SECTION" -eq 1 ] || return 0
+				printf '%s\n' "network.wg0server=wireguard_wg0"
+				return 0
+				;;
 			set)
 				case "${2%%=*}" in
+					network.wg0server) UCI_PEER_SECTION=1 ;;
 					network.wg0server.endpoint_host) UCI_ENDPOINT_HOST="${2#*=}" ;;
 					network.wg0server.endpoint_port) UCI_ENDPOINT_PORT="${2#*=}" ;;
 					network.wg0server.persistent_keepalive) UCI_KEEPALIVE="${2#*=}" ;;
@@ -120,6 +130,20 @@ VPN_PORT='51820'
 WIREGUARD_PERSISTENT_KEEPALIVE='15'
 WIREGUARD_MTU=''
 POST_RESTART_DELAY='5'
+
+UCI_PROTO='wireguard'
+UCI_PEER_SECTION=0
+UCI_ENDPOINT_HOST=''
+if nordvpn_easy_vpn_is_configured; then
+	printf '%s\n' 'FAIL: WireGuard interface without a peer section is not configured' >&2
+	exit 1
+fi
+
+UCI_PEER_SECTION=1
+if ! nordvpn_easy_vpn_is_configured; then
+	printf '%s\n' 'FAIL: WireGuard interface with a peer section is configured' >&2
+	exit 1
+fi
 
 printf '%s\n' '100' > "$FAKE_NOW_FILE"
 SLEEP_CALLS=''

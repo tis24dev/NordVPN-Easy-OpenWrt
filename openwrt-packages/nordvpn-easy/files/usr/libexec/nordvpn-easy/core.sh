@@ -257,6 +257,26 @@ curl_config_escape () {
 }
 
 fetch_credentials_json () {
+  local credentials_temp_dir=''
+  local credentials_body_file=''
+  local credentials_stderr_file=''
+  local credentials_http_file=''
+  local credentials_curl_rc=0
+
+  CREDENTIALS_JSON=''
+  NORDVPN_EASY_CREDENTIALS_CURL_RC=''
+  NORDVPN_EASY_CREDENTIALS_HTTP_CODE=''
+  NORDVPN_EASY_CREDENTIALS_CURL_ERROR=''
+
+  nordvpn_easy_mktemp_dir 'credentials' credentials_temp_dir || {
+    NORDVPN_EASY_CREDENTIALS_CURL_RC='1'
+    NORDVPN_EASY_CREDENTIALS_CURL_ERROR='could not create credentials request temp directory'
+    return 1
+  }
+  credentials_body_file="$(nordvpn_easy_temp_file_path "$credentials_temp_dir" 'credentials.json')"
+  credentials_stderr_file="$(nordvpn_easy_temp_file_path "$credentials_temp_dir" 'credentials.stderr')"
+  credentials_http_file="$(nordvpn_easy_temp_file_path "$credentials_temp_dir" 'credentials.http')"
+
   {
     printf '%s\n' 'silent'
     printf '%s\n' 'show-error'
@@ -266,14 +286,45 @@ fetch_credentials_json () {
     printf 'url = "%s"\n' "$(curl_config_escape "$CREDENTIALS_URL")"
 
     printf 'user = "token:%s"\n' "$(curl_config_escape "$NORDVPN_TOKEN")"
-  } | curl --config -
+  } | curl --config - -o "$credentials_body_file" -w '%{http_code}' > "$credentials_http_file" 2> "$credentials_stderr_file"
+  credentials_curl_rc=$?
+
+  NORDVPN_EASY_CREDENTIALS_CURL_RC="$credentials_curl_rc"
+  NORDVPN_EASY_CREDENTIALS_HTTP_CODE="$(cat "$credentials_http_file" 2>/dev/null || printf '%s' '000')"
+  [ -n "$NORDVPN_EASY_CREDENTIALS_HTTP_CODE" ] || NORDVPN_EASY_CREDENTIALS_HTTP_CODE='000'
+  NORDVPN_EASY_CREDENTIALS_CURL_ERROR="$(
+    sed -n '1,3p' "$credentials_stderr_file" 2>/dev/null |
+      tr '\r\n' '  ' |
+      nordvpn_easy_sanitize_diagnostics_stream
+  )"
+
+  if [ "$credentials_curl_rc" -ne 0 ]; then
+    rm -rf -- "$credentials_temp_dir"
+    return "$credentials_curl_rc"
+  fi
+
+  CREDENTIALS_JSON="$(cat "$credentials_body_file" 2>/dev/null)" || {
+    rm -rf -- "$credentials_temp_dir"
+    NORDVPN_EASY_CREDENTIALS_CURL_RC='1'
+    NORDVPN_EASY_CREDENTIALS_CURL_ERROR='could not read credentials response body'
+    return 1
+  }
+
+  rm -rf -- "$credentials_temp_dir"
 }
 
 get_private_key () {
+  local credentials_message=''
+  local credentials_response_bytes='0'
+
   if [ -n "$NORDVPN_TOKEN" ]; then
     log 'apply: requesting NordLynx private key from NordVPN API'
-    CREDENTIALS_JSON=$(fetch_credentials_json) || {
-      nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" 'could not retrieve NordLynx private key from NordVPN API'
+    fetch_credentials_json || {
+      credentials_message="could not retrieve NordLynx private key from NordVPN API (curl_rc=${NORDVPN_EASY_CREDENTIALS_CURL_RC:-1}: $(curl_rc_meaning "${NORDVPN_EASY_CREDENTIALS_CURL_RC:-1}"), http_code=${NORDVPN_EASY_CREDENTIALS_HTTP_CODE:-000}"
+      [ -n "${NORDVPN_EASY_CREDENTIALS_CURL_ERROR:-}" ] && credentials_message="${credentials_message}, curl_error=${NORDVPN_EASY_CREDENTIALS_CURL_ERROR}"
+      credentials_message="${credentials_message})"
+      nordvpn_easy_record_last_error "$credentials_message"
+      nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "$credentials_message"
       return 1
     }
   else
@@ -282,9 +333,12 @@ get_private_key () {
   fi
 
   PRIVATE_KEY=$(printf '%s' "$CREDENTIALS_JSON" | jq -er '.nordlynx_private_key // empty' 2>/dev/null)
+  credentials_response_bytes="$(printf '%s' "$CREDENTIALS_JSON" | wc -c | awk '{ print $1 }')"
   CREDENTIALS_JSON=''
   [ -n "$PRIVATE_KEY" ] || {
-    nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" 'invalid NordLynx private key response received from NordVPN API'
+    credentials_message="invalid NordLynx private key response received from NordVPN API (http_code=${NORDVPN_EASY_CREDENTIALS_HTTP_CODE:-000}, response_bytes=${credentials_response_bytes:-0})"
+    nordvpn_easy_record_last_error "$credentials_message"
+    nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "$credentials_message"
     return 1
   }
 
@@ -444,6 +498,7 @@ nordvpn_easy_write_runtime_cache_value () {
 
 nordvpn_easy_record_last_error () {
   nordvpn_easy_write_runtime_cache_value "${NORDVPN_EASY_LAST_ERROR_CACHE:-/tmp/run/nordvpn-easy/last_error}" "$*" >/dev/null 2>&1 || true
+  NORDVPN_EASY_LAST_ERROR_RECORDED=1
 }
 
 get_public_ip () {
@@ -932,6 +987,7 @@ case "$ACTION" in
 esac
 
 load_config || exit 1
+NORDVPN_EASY_LAST_ERROR_RECORDED=0
 
 if [ "$ACTION" = 'public_ip' ]; then
   PUBLIC_LOOKUP_LOG_MODE="${1:-verbose}"
@@ -1106,7 +1162,9 @@ if [ "$ACTION_RC" -eq 0 ]; then
   nordvpn_easy_write_runtime_cache_value "${NORDVPN_EASY_LAST_ERROR_CACHE:-/tmp/run/nordvpn-easy/last_error}" '' >/dev/null 2>&1 || true
   log "action '$ACTION' completed successfully (duration=${ACTION_DURATION}s, public_country_verified=${PUBLIC_COUNTRY_VERIFIED:-0})"
 else
-  nordvpn_easy_record_last_error "action '$ACTION' failed (rc=$ACTION_RC)"
+  if [ "${NORDVPN_EASY_LAST_ERROR_RECORDED:-0}" -ne 1 ]; then
+    nordvpn_easy_record_last_error "action '$ACTION' failed (rc=$ACTION_RC)"
+  fi
   nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "action '$ACTION' failed (duration=${ACTION_DURATION}s, rc=$ACTION_RC)"
 fi
 

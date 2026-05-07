@@ -466,6 +466,22 @@ nordvpn_easy_change_manual_server() {
 	return 1
 }
 
+nordvpn_easy_build_wireguard_peer_section() {
+	local peer_section="${VPN_IF}server"
+
+	uci -q delete "network.${peer_section}" || true
+	uci set "network.${peer_section}"="wireguard_${VPN_IF}" || return 1
+	nordvpn_easy_apply_wireguard_transport_settings "$peer_section" || return 1
+	uci set "network.${peer_section}.route_allowed_ips"='1' || return 1
+	uci add_list "network.${peer_section}.allowed_ips"='0.0.0.0/0' || return 1
+
+	if nordvpn_easy_server_selection_is_manual; then
+		nordvpn_easy_apply_preferred_server_from_catalog || return 1
+	else
+		nordvpn_easy_set_first_server_from_list || return 1
+	fi
+}
+
 nordvpn_easy_configure_vpn_interface() {
 	nordvpn_easy_require_core_action_helpers get_private_key || return 1
 	log "apply: $VPN_IF is not configured and will be created"
@@ -503,17 +519,7 @@ nordvpn_easy_configure_vpn_interface() {
 	uci set "network.${VPN_IF}.delegate"='0'
 	uci set "network.${VPN_IF}.force_link"='1'
 
-	uci -q delete "network.${VPN_IF}server"
-	uci set "network.${VPN_IF}server"="wireguard_${VPN_IF}"
-	nordvpn_easy_apply_wireguard_transport_settings "${VPN_IF}server" || return 1
-	uci set "network.${VPN_IF}server.route_allowed_ips"='1'
-	uci add_list "network.${VPN_IF}server.allowed_ips"='0.0.0.0/0'
-
-	if nordvpn_easy_server_selection_is_manual; then
-		nordvpn_easy_apply_preferred_server_from_catalog || return 1
-	else
-		nordvpn_easy_set_first_server_from_list || return 1
-	fi
+	nordvpn_easy_build_wireguard_peer_section || return 1
 
 	uci set "network.${WAN_IF}.metric"='1024'
 	log "apply: committing network configuration for $VPN_IF"
@@ -532,6 +538,106 @@ nordvpn_easy_configure_vpn_interface() {
 	nordvpn_easy_log_vpn_interface_state 'after-create'
 }
 
+nordvpn_easy_pending_network_reload_marker_path() {
+	printf '%s/network-reload-pending-%s\n' "${NORDVPN_EASY_RUN_DIR:-/tmp/run/nordvpn-easy}" "${VPN_IF:-wg0}"
+}
+
+nordvpn_easy_mark_network_reload_pending() {
+	local reason="$1"
+	local marker_path=''
+	local marker_dir=''
+
+	marker_path="$(nordvpn_easy_pending_network_reload_marker_path)"
+	marker_dir="${marker_path%/*}"
+	mkdir -p "$marker_dir" 2>/dev/null || {
+		nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "could not create pending reload marker directory $marker_dir for $VPN_IF"
+		return 1
+	}
+
+	{
+		printf 'vpn_if=%s\n' "$VPN_IF"
+		printf 'created_at=%s\n' "$(date +%s 2>/dev/null || printf '%s' '0')"
+		printf 'reason=%s\n' "$reason"
+	} > "$marker_path" || {
+		nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "could not write pending reload marker $marker_path for $VPN_IF"
+		return 1
+	}
+}
+
+nordvpn_easy_network_reload_is_pending() {
+	[ -f "$(nordvpn_easy_pending_network_reload_marker_path)" ]
+}
+
+nordvpn_easy_clear_pending_network_reload() {
+	rm -f "$(nordvpn_easy_pending_network_reload_marker_path)" 2>/dev/null || true
+}
+
+nordvpn_easy_reload_network_for_wireguard() {
+	local context="$1"
+	local network_init="${NORDVPN_EASY_NETWORK_INIT:-/etc/init.d/network}"
+	local reload_output=''
+	local reload_rc=0
+	local marker_path=''
+
+	reload_output="$("$network_init" reload 2>&1)" || {
+		reload_rc=$?
+		reload_output="$(printf '%s' "$reload_output" | sed -n '1p')"
+		marker_path="$(nordvpn_easy_pending_network_reload_marker_path)"
+		nordvpn_easy_mark_network_reload_pending "$context failed with rc=$reload_rc" || true
+		nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "network reload failed for $VPN_IF while $context (rc=$reload_rc, output=${reload_output:-none}, pending_marker=$marker_path)"
+		return 1
+	}
+
+	nordvpn_easy_clear_pending_network_reload
+}
+
+nordvpn_easy_retry_pending_network_reload() {
+	local marker_path=''
+	local marker_reason=''
+
+	nordvpn_easy_network_reload_is_pending || return 0
+	marker_path="$(nordvpn_easy_pending_network_reload_marker_path)"
+	marker_reason="$(sed -n 's/^reason=//p' "$marker_path" 2>/dev/null | sed -n '1p')"
+	log "runtime: retrying pending network reload for $VPN_IF (${marker_reason:-reason unavailable})"
+	nordvpn_easy_reload_network_for_wireguard 'retrying pending WireGuard peer reload'
+}
+
+nordvpn_easy_repair_missing_wireguard_peer() {
+	local existing_private_key=''
+
+	nordvpn_easy_vpn_interface_has_wireguard_proto "$VPN_IF" || return 1
+	if nordvpn_easy_vpn_has_peer_section "$VPN_IF"; then
+		return 1
+	fi
+
+	existing_private_key="$(uci -q get "network.${VPN_IF}.private_key" 2>/dev/null || true)"
+	[ -n "$existing_private_key" ] || {
+		log "runtime: interface $VPN_IF is missing its WireGuard peer and private key; full create is required"
+		return 1
+	}
+
+	log "runtime: interface $VPN_IF is missing its WireGuard peer; rebuilding peer section"
+
+	if nordvpn_easy_server_selection_is_manual; then
+		nordvpn_easy_require_core_action_helpers fetch_server_catalog || return 1
+		nordvpn_easy_require_manual_server_preference || return 1
+		fetch_server_catalog 0 "$VPN_COUNTRY" || return 1
+	else
+		nordvpn_easy_get_servers_list || return 1
+	fi
+
+	nordvpn_easy_build_wireguard_peer_section || return 1
+
+	uci commit network || {
+		nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" 'could not commit network configuration while repairing missing WireGuard peer'
+		return 1
+	}
+
+	nordvpn_easy_reload_network_for_wireguard 'repairing missing WireGuard peer' || return 1
+
+	log "runtime: rebuilt missing WireGuard peer section for $VPN_IF"
+}
+
 nordvpn_easy_bootstrap_if_needed() {
 	nordvpn_easy_require_core_action_helpers refresh_countries_cache || return 1
 	log "runtime: bootstrap starting for interface $VPN_IF (mode=${SERVER_SELECTION_MODE:-auto}, country=${VPN_COUNTRY:-automatic})"
@@ -543,9 +649,12 @@ nordvpn_easy_bootstrap_if_needed() {
 	fi
 
 	if ! nordvpn_easy_vpn_is_configured; then
-		log "runtime: interface $VPN_IF is not configured; entering create path"
-		nordvpn_easy_configure_vpn_interface || return 1
+		if ! nordvpn_easy_repair_missing_wireguard_peer; then
+			log "runtime: interface $VPN_IF is not configured; entering create path"
+			nordvpn_easy_configure_vpn_interface || return 1
+		fi
 	else
+		nordvpn_easy_retry_pending_network_reload || return 1
 		log "runtime: interface $VPN_IF is already configured; ensuring it is enabled and present"
 		nordvpn_easy_ensure_vpn_interface_enabled || return 1
 		nordvpn_easy_apply_wireguard_transport_settings "${VPN_IF}server" || return 1

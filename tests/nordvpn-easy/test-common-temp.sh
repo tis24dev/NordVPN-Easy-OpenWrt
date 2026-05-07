@@ -4,6 +4,7 @@ set -eu
 
 ROOT_DIR="$(CDPATH='' cd -- "$(dirname "$0")/../.." && pwd)"
 COMMON_LIB="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/common.sh"
+WIREGUARD_LIB="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/wireguard.sh"
 ORIG_PATH="${PATH:-}"
 
 cleanup() {
@@ -14,6 +15,8 @@ trap cleanup EXIT HUP INT TERM
 
 # shellcheck disable=SC1090
 . "$COMMON_LIB"
+# shellcheck disable=SC1090
+. "$WIREGUARD_LIB"
 
 assert_eq() {
 	expected="$1"
@@ -60,16 +63,31 @@ nordvpn_easy_mktemp_dir 'missing-mktemp' >/dev/null 2>&1 || mktemp_rc=$?
 assert_eq '1' "$mktemp_rc" 'missing mktemp reports blocker'
 PATH="$ORIG_PATH"
 
+LAST_ERROR_MESSAGE=''
+NORDVPN_EASY_LAST_ERROR_RECORDED=0
+nordvpn_easy_record_last_error() {
+	LAST_ERROR_MESSAGE="$*"
+	NORDVPN_EASY_LAST_ERROR_RECORDED=1
+}
+
+nordvpn_easy_log_blocker 'runtime' 'specific blocker message'
+assert_eq 'specific blocker message' "$LAST_ERROR_MESSAGE" 'blocker records the first last error'
+assert_eq '1' "$NORDVPN_EASY_LAST_ERROR_RECORDED" 'blocker marks last error as recorded'
+nordvpn_easy_log_blocker 'runtime' 'generic blocker message'
+assert_eq 'specific blocker message' "$LAST_ERROR_MESSAGE" 'later blockers do not overwrite a recorded last error'
+
 SANITIZED="$(
 	printf "%s\n" \
 		"nordvpn_easy.main.nordvpn_token='token-secret'" \
 		"network.wg0.private_key='private-secret'" \
-		"network.wg0.preshared_key='psk-secret'" |
+		"network.wg0.preshared_key='psk-secret'" \
+		'{"nordlynx_private_key":"nordlynx-secret","access_token":"access-secret"}' \
+		'Authorization: Bearer bearer-secret' |
 		nordvpn_easy_sanitize_diagnostics_stream
 )"
 
 case "$SANITIZED" in
-	*token-secret*|*private-secret*|*psk-secret*)
+	*token-secret*|*private-secret*|*psk-secret*|*nordlynx-secret*|*access-secret*|*bearer-secret*)
 		printf '%s\n' 'FAIL: diagnostics sanitizer leaked a secret' >&2
 		exit 1
 		;;
@@ -83,6 +101,8 @@ case "$SANITIZED" in
 		exit 1
 		;;
 esac
+
+assert_eq 'HTTP error response' "$(nordvpn_easy_curl_rc_meaning 22)" 'curl rc 22 is explained'
 
 VPN_IF='wg0'
 WIREGUARD_PERSISTENT_KEEPALIVE='15'
@@ -99,12 +119,46 @@ nordvpn_easy_find_firewall_zone_section() {
 }
 
 wg() {
+	if [ "$1" = 'show' ] && [ "$2" = 'wg0' ] && [ "${3:-}" = 'peers' ]; then
+		printf '%s\n' 'peer-public-key'
+		return 0
+	fi
 	printf '%s\n' 'interface: wg0'
 	printf '%s\n' '  public key: public-only'
 }
 
 uci() {
+	if [ "$1" = '-q' ]; then
+		shift
+		uci "$@"
+		return $?
+	fi
+
 	case "$*" in
+		'get network.wg0.proto')
+			printf '%s\n' 'wireguard'
+			;;
+		'get network.wg0.disabled')
+			printf '%s\n' '0'
+			;;
+		'get network.wg0.private_key')
+			printf '%s\n' 'private-secret'
+			;;
+		'get network.wg0server.endpoint_host')
+			printf '%s\n' 'it12.nordvpn.com'
+			;;
+		'get network.wg0server.public_key')
+			printf '%s\n' 'public-only'
+			;;
+		'get network.wg0server.allowed_ips')
+			printf '%s\n' '0.0.0.0/0'
+			;;
+		'get network.wg0server.route_allowed_ips')
+			printf '%s\n' '1'
+			;;
+		'show network')
+			printf "%s\n" "network.wg0server=wireguard_wg0"
+			;;
 		'show nordvpn_easy')
 			printf "%s\n" "nordvpn_easy.main.nordvpn_token='token-secret'"
 			;;
@@ -140,6 +194,15 @@ case "$DIAGNOSTICS_OUTPUT" in
 		;;
 	*)
 		printf '%s\n' 'FAIL: diagnostics export should include WireGuard and firewall transport state' >&2
+		exit 1
+		;;
+esac
+
+case "$DIAGNOSTICS_OUTPUT" in
+	*'Health summary'*'convention_peer_section=wg0server'*'peer_section_found=yes'*'required_peer_keys_missing=none'*'probable_issue=none detected'*)
+		;;
+	*)
+		printf '%s\n' 'FAIL: diagnostics export should include a useful health summary' >&2
 		exit 1
 		;;
 esac
