@@ -4,6 +4,7 @@ set -eu
 
 ROOT_DIR="$(CDPATH='' cd -- "$(dirname "$0")/../.." && pwd)"
 COMMON_LIB="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/common.sh"
+WIREGUARD_LIB="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/wireguard.sh"
 ORIG_PATH="${PATH:-}"
 
 cleanup() {
@@ -14,6 +15,8 @@ trap cleanup EXIT HUP INT TERM
 
 # shellcheck disable=SC1090
 . "$COMMON_LIB"
+# shellcheck disable=SC1090
+. "$WIREGUARD_LIB"
 
 assert_eq() {
 	expected="$1"
@@ -59,6 +62,19 @@ mktemp_rc=0
 nordvpn_easy_mktemp_dir 'missing-mktemp' >/dev/null 2>&1 || mktemp_rc=$?
 assert_eq '1' "$mktemp_rc" 'missing mktemp reports blocker'
 PATH="$ORIG_PATH"
+
+LAST_ERROR_MESSAGE=''
+NORDVPN_EASY_LAST_ERROR_RECORDED=0
+nordvpn_easy_record_last_error() {
+	LAST_ERROR_MESSAGE="$*"
+	NORDVPN_EASY_LAST_ERROR_RECORDED=1
+}
+
+nordvpn_easy_log_blocker 'runtime' 'specific blocker message'
+assert_eq 'specific blocker message' "$LAST_ERROR_MESSAGE" 'blocker records the first last error'
+assert_eq '1' "$NORDVPN_EASY_LAST_ERROR_RECORDED" 'blocker marks last error as recorded'
+nordvpn_easy_log_blocker 'runtime' 'generic blocker message'
+assert_eq 'specific blocker message' "$LAST_ERROR_MESSAGE" 'later blockers do not overwrite a recorded last error'
 
 SANITIZED="$(
 	printf "%s\n" \
@@ -183,7 +199,7 @@ case "$DIAGNOSTICS_OUTPUT" in
 esac
 
 case "$DIAGNOSTICS_OUTPUT" in
-	*'Health summary'*'peer_section_found=yes'*'required_peer_keys_missing=none'*'probable_issue=none detected'*)
+	*'Health summary'*'convention_peer_section=wg0server'*'peer_section_found=yes'*'required_peer_keys_missing=none'*'probable_issue=none detected'*)
 		;;
 	*)
 		printf '%s\n' 'FAIL: diagnostics export should include a useful health summary' >&2

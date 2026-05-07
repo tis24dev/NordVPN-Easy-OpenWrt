@@ -29,9 +29,17 @@ nordvpn_easy_log_phase() {
 
 nordvpn_easy_log_blocker() {
 	local phase="${1:-runtime}"
+	local message=''
 	shift
 
-	nordvpn_easy_log_phase "$phase" "BLOCKER: $*"
+	message="$*"
+	if [ -n "$message" ] &&
+		[ "${NORDVPN_EASY_LAST_ERROR_RECORDED:-0}" -ne 1 ] &&
+		command -v nordvpn_easy_record_last_error >/dev/null 2>&1; then
+		nordvpn_easy_record_last_error "$message"
+	fi
+
+	nordvpn_easy_log_phase "$phase" "BLOCKER: $message"
 }
 
 nordvpn_easy_install_exit_trap() {
@@ -419,7 +427,7 @@ nordvpn_easy_diagnostics_csv_append() {
 	fi
 }
 
-nordvpn_easy_diagnostics_peer_section_name() {
+nordvpn_easy_wireguard_peer_section_name() {
 	local vpn_if="${1:-${VPN_IF:-wg0}}"
 	local peer_section=''
 
@@ -438,6 +446,18 @@ nordvpn_easy_diagnostics_peer_section_name() {
 	)"
 	[ -n "$peer_section" ] || return 1
 	printf '%s\n' "$peer_section"
+}
+
+nordvpn_easy_peer_section_name() {
+	local vpn_if="${1:-${VPN_IF:-wg0}}"
+
+	nordvpn_easy_wireguard_peer_section_name "$vpn_if"
+}
+
+nordvpn_easy_diagnostics_peer_section_name() {
+	local vpn_if="${1:-${VPN_IF:-wg0}}"
+
+	nordvpn_easy_wireguard_peer_section_name "$vpn_if"
 }
 
 nordvpn_easy_print_diagnostics_health_summary() {
@@ -522,7 +542,7 @@ nordvpn_easy_print_diagnostics_health_summary() {
 	printf 'vpn_proto=%s\n' "$vpn_proto"
 	printf 'interface_disabled=%s\n' "$interface_disabled"
 	printf 'private_key=%s\n' "$private_key_state"
-	printf 'expected_peer_section=%sserver\n' "$vpn_if"
+	printf 'convention_peer_section=%sserver\n' "$vpn_if"
 	printf 'peer_section_found=%s\n' "$peer_section_found"
 	printf 'peer_section=%s\n' "${peer_section:-none}"
 	printf 'wireguard_peer_sections=%s\n' "$peer_sections"

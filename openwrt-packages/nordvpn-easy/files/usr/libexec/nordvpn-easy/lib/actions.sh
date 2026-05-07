@@ -466,6 +466,22 @@ nordvpn_easy_change_manual_server() {
 	return 1
 }
 
+nordvpn_easy_build_wireguard_peer_section() {
+	local peer_section="${VPN_IF}server"
+
+	uci -q delete "network.${peer_section}" || true
+	uci set "network.${peer_section}"="wireguard_${VPN_IF}" || return 1
+	nordvpn_easy_apply_wireguard_transport_settings "$peer_section" || return 1
+	uci set "network.${peer_section}.route_allowed_ips"='1' || return 1
+	uci add_list "network.${peer_section}.allowed_ips"='0.0.0.0/0' || return 1
+
+	if nordvpn_easy_server_selection_is_manual; then
+		nordvpn_easy_apply_preferred_server_from_catalog || return 1
+	else
+		nordvpn_easy_set_first_server_from_list || return 1
+	fi
+}
+
 nordvpn_easy_configure_vpn_interface() {
 	nordvpn_easy_require_core_action_helpers get_private_key || return 1
 	log "apply: $VPN_IF is not configured and will be created"
@@ -503,17 +519,7 @@ nordvpn_easy_configure_vpn_interface() {
 	uci set "network.${VPN_IF}.delegate"='0'
 	uci set "network.${VPN_IF}.force_link"='1'
 
-	uci -q delete "network.${VPN_IF}server" || true
-	uci set "network.${VPN_IF}server"="wireguard_${VPN_IF}"
-	nordvpn_easy_apply_wireguard_transport_settings "${VPN_IF}server" || return 1
-	uci set "network.${VPN_IF}server.route_allowed_ips"='1'
-	uci add_list "network.${VPN_IF}server.allowed_ips"='0.0.0.0/0'
-
-	if nordvpn_easy_server_selection_is_manual; then
-		nordvpn_easy_apply_preferred_server_from_catalog || return 1
-	else
-		nordvpn_easy_set_first_server_from_list || return 1
-	fi
+	nordvpn_easy_build_wireguard_peer_section || return 1
 
 	uci set "network.${WAN_IF}.metric"='1024'
 	log "apply: committing network configuration for $VPN_IF"
@@ -600,7 +606,9 @@ nordvpn_easy_repair_missing_wireguard_peer() {
 	local existing_private_key=''
 
 	nordvpn_easy_vpn_interface_has_wireguard_proto "$VPN_IF" || return 1
-	! nordvpn_easy_vpn_has_peer_section "$VPN_IF" || return 1
+	if nordvpn_easy_vpn_has_peer_section "$VPN_IF"; then
+		return 1
+	fi
 
 	existing_private_key="$(uci -q get "network.${VPN_IF}.private_key" 2>/dev/null || true)"
 	[ -n "$existing_private_key" ] || {
@@ -618,17 +626,7 @@ nordvpn_easy_repair_missing_wireguard_peer() {
 		nordvpn_easy_get_servers_list || return 1
 	fi
 
-	uci -q delete "network.${VPN_IF}server" || true
-	uci set "network.${VPN_IF}server"="wireguard_${VPN_IF}" || return 1
-	nordvpn_easy_apply_wireguard_transport_settings "${VPN_IF}server" || return 1
-	uci set "network.${VPN_IF}server.route_allowed_ips"='1' || return 1
-	uci add_list "network.${VPN_IF}server.allowed_ips"='0.0.0.0/0' || return 1
-
-	if nordvpn_easy_server_selection_is_manual; then
-		nordvpn_easy_apply_preferred_server_from_catalog || return 1
-	else
-		nordvpn_easy_set_first_server_from_list || return 1
-	fi
+	nordvpn_easy_build_wireguard_peer_section || return 1
 
 	uci commit network || {
 		nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" 'could not commit network configuration while repairing missing WireGuard peer'
