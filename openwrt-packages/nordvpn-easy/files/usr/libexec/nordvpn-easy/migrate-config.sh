@@ -22,7 +22,7 @@ trap cleanup EXIT HUP INT TERM
 . "$SCHEMA_LIB" || exit 1
 
 read_existing_option() {
-	uci -q get "${UCI_CONFIG}.${UCI_SECTION}.${1}" 2>/dev/null || printf '%s' ''
+	uci -q get "${UCI_CONFIG}.${UCI_SECTION}.${1}" || printf '%s' ''
 }
 
 snapshot_existing_config() {
