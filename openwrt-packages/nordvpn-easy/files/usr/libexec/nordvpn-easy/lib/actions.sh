@@ -220,17 +220,27 @@ nordvpn_easy_use_cached_server_list_if_available() {
 nordvpn_easy_get_servers_list() {
 	local temp_dir=''
 	local server_list_tmp=''
+	local server_list_stderr=''
+	local curl_rc=0
+	local curl_error=''
+	local failure_reason=''
 	SERVER_RECOMMENDATIONS_URL=$(nordvpn_easy_build_server_recommendations_url) || return 1
 
 	nordvpn_easy_mktemp_dir 'server-list' temp_dir || return 1
 	server_list_tmp="$(nordvpn_easy_temp_file_path "$temp_dir" 'recommendations.json')"
+	server_list_stderr="$(nordvpn_easy_temp_file_path "$temp_dir" 'curl-stderr.log')"
 
 	log "apply: downloading recommended VPN server list to $server_list_tmp"
 
-	curl -g -fsS --connect-timeout 15 --max-time 30 -o "$server_list_tmp" "$SERVER_RECOMMENDATIONS_URL" || {
+	curl -g -fsS --connect-timeout 15 --max-time 30 -o "$server_list_tmp" "$SERVER_RECOMMENDATIONS_URL" 2>"$server_list_stderr" || {
+		curl_rc=$?
+		curl_error="$(nordvpn_easy_curl_error_summary "$server_list_stderr")"
+		failure_reason="could not retrieve VPN servers (curl_rc=$curl_rc: $(nordvpn_easy_curl_rc_meaning "$curl_rc")"
+		[ -n "$curl_error" ] && failure_reason="$failure_reason, curl_error=$curl_error"
+		failure_reason="$failure_reason)"
 		rm -rf -- "$temp_dir"
-		nordvpn_easy_use_cached_server_list_if_available 'could not retrieve VPN servers' && return 0
-		log 'ERROR: COULD NOT RETRIEVE VPN SERVERS'
+		nordvpn_easy_use_cached_server_list_if_available "$failure_reason" && return 0
+		log "ERROR: COULD NOT RETRIEVE VPN SERVERS (curl_rc=$curl_rc: $(nordvpn_easy_curl_rc_meaning "$curl_rc")$([ -n "$curl_error" ] && printf ', curl_error=%s' "$curl_error"))"
 		return 1
 	}
 
@@ -639,6 +649,9 @@ nordvpn_easy_repair_missing_wireguard_peer() {
 }
 
 nordvpn_easy_bootstrap_if_needed() {
+	local base_settings_changed=0
+	local transport_settings_changed=0
+
 	nordvpn_easy_require_core_action_helpers refresh_countries_cache || return 1
 	log "runtime: bootstrap starting for interface $VPN_IF (mode=${SERVER_SELECTION_MODE:-auto}, country=${VPN_COUNTRY:-automatic})"
 	nordvpn_easy_log_vpn_interface_state 'bootstrap-start'
@@ -657,17 +670,17 @@ nordvpn_easy_bootstrap_if_needed() {
 		nordvpn_easy_retry_pending_network_reload || return 1
 		log "runtime: interface $VPN_IF is already configured; ensuring it is enabled and present"
 		nordvpn_easy_ensure_vpn_interface_enabled || return 1
+		nordvpn_easy_repair_wireguard_interface_base_settings || return 1
+		base_settings_changed="${NORDVPN_EASY_UCI_CHANGED:-0}"
 		nordvpn_easy_apply_wireguard_transport_settings "${VPN_IF}server" || return 1
-		if [ "${NORDVPN_EASY_UCI_CHANGED:-0}" -eq 1 ]; then
-			log "runtime: repaired WireGuard transport settings for $VPN_IF (keepalive=${WIREGUARD_PERSISTENT_KEEPALIVE:-15}, mtu=${WIREGUARD_MTU:-auto})"
+		transport_settings_changed="${NORDVPN_EASY_UCI_CHANGED:-0}"
+		if [ "$base_settings_changed" -eq 1 ] || [ "$transport_settings_changed" -eq 1 ]; then
+			log "runtime: repaired WireGuard settings for $VPN_IF (base=${base_settings_changed}, transport=${transport_settings_changed}, keepalive=${WIREGUARD_PERSISTENT_KEEPALIVE:-15}, mtu=${WIREGUARD_MTU:-auto})"
 			uci commit network || {
-				nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" 'could not commit network configuration while repairing WireGuard transport settings'
+				nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" 'could not commit network configuration while repairing WireGuard settings'
 				return 1
 			}
-			/etc/init.d/network reload || {
-				log "ERROR: NETWORK RELOAD FAILED WHILE REPAIRING WIREGUARD TRANSPORT SETTINGS ON $VPN_IF"
-				return 1
-			}
+			nordvpn_easy_reload_network_for_wireguard 'repairing WireGuard settings' || return 1
 		fi
 	fi
 

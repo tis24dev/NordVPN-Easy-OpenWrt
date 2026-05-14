@@ -144,6 +144,18 @@ uci() {
 		'get network.wg0.private_key')
 			printf '%s\n' 'private-secret'
 			;;
+		'get network.wg0.addresses')
+			printf '%s\n' '10.5.0.2/32'
+			;;
+		'get network.wg0.peerdns')
+			printf '%s\n' '0'
+			;;
+		'get network.wg0.delegate')
+			printf '%s\n' '0'
+			;;
+		'get network.wg0.force_link')
+			printf '%s\n' '1'
+			;;
 		'get network.wg0server.endpoint_host')
 			printf '%s\n' 'it12.nordvpn.com'
 			;;
@@ -189,6 +201,20 @@ logread() {
 
 DIAGNOSTICS_OUTPUT="$(nordvpn_easy_export_diagnostics_log 'nordvpn-easy')"
 
+assert_diagnostics_contains() {
+	needle="$1"
+	message="$2"
+
+	case "$DIAGNOSTICS_OUTPUT" in
+		*"$needle"*)
+			;;
+		*)
+			printf '%s\n' "$message" >&2
+			exit 1
+			;;
+	esac
+}
+
 case "$DIAGNOSTICS_OUTPUT" in
 	*'WireGuard status'*'persistent_keepalive'*'mtu_fix'*)
 		;;
@@ -198,14 +224,12 @@ case "$DIAGNOSTICS_OUTPUT" in
 		;;
 esac
 
-case "$DIAGNOSTICS_OUTPUT" in
-	*'Health summary'*'convention_peer_section=wg0server'*'peer_section_found=yes'*'required_peer_keys_missing=none'*'probable_issue=none detected'*)
-		;;
-	*)
-		printf '%s\n' 'FAIL: diagnostics export should include a useful health summary' >&2
-		exit 1
-		;;
-esac
+assert_diagnostics_contains 'Health summary' 'FAIL: diagnostics export should include a useful health summary'
+assert_diagnostics_contains 'convention_peer_section=wg0server' 'FAIL: diagnostics export should include a useful health summary'
+assert_diagnostics_contains 'peer_section_found=yes' 'FAIL: diagnostics export should include a useful health summary'
+assert_diagnostics_contains 'required_interface_keys_missing=none' 'FAIL: diagnostics export should include a useful health summary'
+assert_diagnostics_contains 'required_peer_keys_missing=none' 'FAIL: diagnostics export should include a useful health summary'
+assert_diagnostics_contains 'probable_issue=none detected' 'FAIL: diagnostics export should include a useful health summary'
 
 case "$DIAGNOSTICS_OUTPUT" in
 	*token-secret*|*private-secret*)

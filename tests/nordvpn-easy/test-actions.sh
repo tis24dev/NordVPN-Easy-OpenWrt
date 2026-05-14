@@ -101,6 +101,26 @@ nordvpn_easy_ping_interface() {
 	[ "$PING_COUNT" -gt "$PING_FAIL_UNTIL" ]
 }
 nordvpn_easy_ping_wan() { return 0; }
+CACHED_VPN_COUNTRY="$VPN_COUNTRY"
+VPN_COUNTRY=''
+CURL_CALL_COUNT=0
+# shellcheck disable=SC2317
+curl() {
+	CURL_CALL_COUNT=$((CURL_CALL_COUNT + 1))
+	printf '%s\n' 'curl: (28) Operation timed out' >&2
+	return 28
+}
+
+nordvpn_easy_get_servers_list || {
+	printf '%s\n' 'FAIL: server list refresh should fall back to the existing cache after API failure' >&2
+	exit 1
+}
+
+assert_eq '1' "$CURL_CALL_COUNT" 'server list refresh attempts API before cache fallback'
+assert_eq 'it123' "$(jq -r '.[0].station' "$SERVER_LIST_FILE")" 'server list cache is kept when API fails'
+unset -f curl 2>/dev/null || true
+VPN_COUNTRY="$CACHED_VPN_COUNTRY"
+
 nordvpn_easy_get_servers_list() { return 0; }
 nordvpn_easy_server_selection_is_manual() { [ "${SERVER_SELECTION_MODE:-auto}" = 'manual' ]; }
 nordvpn_easy_vpn_is_configured() { return "$VPN_CONFIGURED_RC"; }
@@ -355,6 +375,8 @@ BOOTSTRAP_REPAIR_RC=0
 BOOTSTRAP_REPAIR_COUNT=0
 BOOTSTRAP_CONFIGURE_COUNT=0
 BOOTSTRAP_ENABLE_COUNT=0
+BOOTSTRAP_BASE_COUNT=0
+BOOTSTRAP_BASE_CHANGED=0
 BOOTSTRAP_TRANSPORT_COUNT=0
 BOOTSTRAP_ZONE_COUNT=0
 BOOTSTRAP_PRESENT_COUNT=0
@@ -373,6 +395,11 @@ nordvpn_easy_configure_vpn_interface() {
 }
 nordvpn_easy_ensure_vpn_interface_enabled() {
 	BOOTSTRAP_ENABLE_COUNT=$((BOOTSTRAP_ENABLE_COUNT + 1))
+	return 0
+}
+nordvpn_easy_repair_wireguard_interface_base_settings() {
+	BOOTSTRAP_BASE_COUNT=$((BOOTSTRAP_BASE_COUNT + 1))
+	NORDVPN_EASY_UCI_CHANGED="$BOOTSTRAP_BASE_CHANGED"
 	return 0
 }
 nordvpn_easy_apply_wireguard_transport_settings() {
@@ -423,6 +450,8 @@ VPN_CONFIGURED_RC=0
 BOOTSTRAP_REPAIR_COUNT=0
 BOOTSTRAP_CONFIGURE_COUNT=0
 BOOTSTRAP_ENABLE_COUNT=0
+BOOTSTRAP_BASE_COUNT=0
+BOOTSTRAP_BASE_CHANGED=0
 BOOTSTRAP_TRANSPORT_COUNT=0
 BOOTSTRAP_ZONE_COUNT=0
 BOOTSTRAP_PRESENT_COUNT=0
@@ -434,6 +463,8 @@ nordvpn_easy_bootstrap_if_needed
 assert_eq '1' "$(cat "$NETWORK_RELOAD_COUNT_FILE")" 'bootstrap retries a pending network reload before skipping repair'
 assert_eq '0' "$BOOTSTRAP_REPAIR_COUNT" 'configured bootstrap does not run missing peer repair after pending reload retry'
 assert_eq '1' "$BOOTSTRAP_ENABLE_COUNT" 'configured bootstrap continues after pending reload retry'
+assert_eq '1' "$BOOTSTRAP_BASE_COUNT" 'configured bootstrap repairs base WireGuard interface settings'
+assert_eq '1' "$BOOTSTRAP_TRANSPORT_COUNT" 'configured bootstrap repairs WireGuard transport settings'
 if [ -f "$(nordvpn_easy_pending_network_reload_marker_path)" ]; then
 	printf '%s\n' 'FAIL: successful pending reload retry should clear marker' >&2
 	exit 1

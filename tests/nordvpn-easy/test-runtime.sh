@@ -177,4 +177,9 @@ STATUS_JSON_MISSING_STATION="$(nordvpn_easy_emit_status_json)"
 
 assert_eq '' "$(printf '%s' "$STATUS_JSON_MISSING_STATION" | jq -r '.current_server_station')" 'status json does not expose endpoint hostname as station when station metadata is missing'
 
+DIAG_SUMMARY="$(nordvpn_easy_print_diagnostics_health_summary wg0)"
+
+assert_eq 'private_key,addresses,peerdns,delegate,force_link' "$(printf '%s\n' "$DIAG_SUMMARY" | sed -n 's/^required_interface_keys_missing=//p')" 'diagnostics report incomplete WireGuard interface keys separately'
+assert_eq 'wireguard interface is incomplete (private_key,addresses,peerdns,delegate,force_link)' "$(printf '%s\n' "$DIAG_SUMMARY" | sed -n 's/^probable_issue=//p')" 'diagnostics prioritize incomplete interface before runtime peer symptoms'
+
 printf '%s\n' 'test-runtime.sh: ok'
