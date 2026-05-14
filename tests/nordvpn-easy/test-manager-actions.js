@@ -994,10 +994,12 @@ function buildHandleSaveApplyHarness(options) {
 			changes: {
 				apply() {
 					calls.apply++;
-					Promise.resolve().then(function() {
-						if (uciAppliedHandler)
-							uciAppliedHandler();
-					});
+					if (opts.emitUciApplied !== false) {
+						Promise.resolve().then(function() {
+							if (uciAppliedHandler)
+								uciAppliedHandler();
+						});
+					}
 					return Promise.resolve();
 				}
 			}
@@ -1016,6 +1018,8 @@ function buildHandleSaveApplyHarness(options) {
 			},
 			load() {
 				calls.uciLoad++;
+				if (opts.uciLoadReject)
+					return Promise.reject(opts.uciLoadReject);
 				return Promise.resolve();
 			}
 		},
@@ -1028,7 +1032,12 @@ function buildHandleSaveApplyHarness(options) {
 				if (name === 'uci-applied' && uciAppliedHandler === handler)
 					uciAppliedHandler = null;
 			}
-		}
+		},
+		setTimeout: opts.timeoutMs
+			? function(callback) {
+				return setTimeout(callback, opts.timeoutMs);
+			}
+			: setTimeout
 	}).managerActions;
 	const state = Object.assign({
 		pollingSuspended: false,
@@ -1138,6 +1147,54 @@ async function testHandleSaveApplyCancellationStopsRuntimeChange() {
 	assert.deepEqual(harness.pollingTransitions, [], 'cancelled confirmation leaves polling untouched');
 }
 
+async function testHandleSaveApplyContinuesWhenUciAppliedEventIsMissing() {
+	const harness = buildHandleSaveApplyHarness({
+		previousEnabled: false,
+		currentEnabled: true,
+		currentMode: 'auto',
+		currentCountry: '',
+		savedEnabled: '1',
+		savedCountry: '',
+		emitUciApplied: false,
+		timeoutMs: 25
+	});
+
+	await harness.actions.handleSaveApply(harness.viewState, harness.state, {}, '1');
+	await Promise.resolve();
+
+	assert.equal(harness.calls.handleSave, 1, 'enable flow saves the form once');
+	assert.equal(harness.calls.apply, 1, 'enable flow applies LuCI changes once');
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'connect' ] ], 'enable flow queues connect after apply promise resolves without uci-applied event');
+	assert.equal(harness.state.pendingOperationLabel, '', 'enable flow clears pending state after runtime completion without uci-applied event');
+	assert.equal(harness.pollingTransitions[harness.pollingTransitions.length - 1], 'resume', 'enable flow resumes polling without uci-applied event');
+}
+
+async function testHandleSaveApplyClearsBusyStateWhenPostApplySyncFails() {
+	const syncError = new Error('uci reload failed');
+	const harness = buildHandleSaveApplyHarness({
+		previousEnabled: true,
+		currentEnabled: true,
+		currentMode: 'auto',
+		currentCountry: 'UY',
+		uciLoadReject: syncError,
+		timeoutMs: 25
+	});
+	let rejected = null;
+
+	await harness.actions.handleSaveApply(harness.viewState, harness.state, {}, '1').catch(function(err) {
+		rejected = err;
+	});
+	await Promise.resolve();
+	await Promise.resolve();
+
+	assert.equal(rejected, syncError, 'post-apply sync failure rejects with the original error');
+	assert.equal(harness.state.pendingOperationLabel, '', 'post-apply sync failure clears the applying label');
+	assert.equal(harness.pollingTransitions[harness.pollingTransitions.length - 1], 'resume', 'post-apply sync failure resumes polling');
+	assert.ok(harness.serviceCalls.indexOf('status_json') !== -1, 'post-apply sync failure refreshes local status');
+	assert.ok(harness.serviceCalls.indexOf('public_ip') !== -1, 'post-apply sync failure refreshes public IP state');
+	assert.match(harness.notifications[harness.notifications.length - 1].message, /Automatic runtime sync failed: uci reload failed/, 'post-apply sync failure reports a readable notification');
+}
+
 async function testHandleSaveApplyAutoModeClearsManualSelectionAndReconnects() {
 	const harness = buildHandleSaveApplyHarness({
 		previousEnabled: true,
@@ -1190,6 +1247,8 @@ Promise.resolve().then(async function() {
 	await testHandleSaveApplyRejectsManualModeWithoutCountry();
 	await testHandleSaveApplyRejectsManualModeWithoutCatalogServer();
 	await testHandleSaveApplyCancellationStopsRuntimeChange();
+	await testHandleSaveApplyContinuesWhenUciAppliedEventIsMissing();
+	await testHandleSaveApplyClearsBusyStateWhenPostApplySyncFails();
 	await testHandleSaveApplyAutoModeClearsManualSelectionAndReconnects();
 	console.log('test-manager-actions.js: ok');
 }).catch(function(err) {

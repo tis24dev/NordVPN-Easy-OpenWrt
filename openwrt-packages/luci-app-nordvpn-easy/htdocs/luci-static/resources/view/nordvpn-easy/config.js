@@ -26,8 +26,25 @@ function statusPayloadIsBusy(payload) {
 		String(status.operation_lock_state || 'none') === 'held';
 }
 
-function countriesCacheHasEntries(countriesRaw) {
-	return managerData.parseCountries(countriesRaw).length > 0;
+function refreshCountriesInBackground(selectEl, currentCountry) {
+	if (!selectEl)
+		return Promise.resolve();
+
+	return service.execService('refresh_countries').then(function(res) {
+		if (!res || res.code !== 0)
+			return null;
+
+		return fs.read(COUNTRIES_CACHE_PATH);
+	}).then(function(countriesRaw) {
+		if (countriesRaw == null)
+			return;
+
+		managerUI.renderCountryChoices(
+			selectEl,
+			managerData.parseCountries(countriesRaw),
+			managerData.normalizeCountryCode(currentCountry || selectEl.value || '')
+		);
+	}).catch(function() {});
 }
 
 const CountrySelectValue = form.ListValue.extend({
@@ -195,21 +212,13 @@ return view.extend({
 			const statusResult = results[2];
 			const statusPayload = service.parseExecJsonResponse(statusResult, null);
 			const runtimeBusy = statusPayloadIsBusy(statusPayload);
-			const countriesReady = (!countriesCacheHasEntries(countriesRaw) && !runtimeBusy)
-				? L.resolveDefault(service.execService('refresh_countries'), null).then(function() {
-					return L.resolveDefault(fs.read(COUNTRIES_CACHE_PATH), countriesRaw);
-				})
-				: Promise.resolve(countriesRaw);
+			const configuredCountry = managerData.normalizeCountryCode(uci.get('nordvpn_easy', 'main', 'vpn_country') || '');
+			const currentMode = String(uci.get('nordvpn_easy', 'main', 'server_selection_mode') || 'auto');
+			const catalogPromise = managerStore.shouldLoadCatalog(currentMode, configuredCountry) && !runtimeBusy
+				? L.resolveDefault(service.execService('server_catalog', [ configuredCountry ]), null)
+				: Promise.resolve(null);
 
-			return countriesReady.then(function(finalCountriesRaw) {
-				const configuredCountry = managerData.normalizeCountryCode(uci.get('nordvpn_easy', 'main', 'vpn_country') || '');
-				const currentMode = String(uci.get('nordvpn_easy', 'main', 'server_selection_mode') || 'auto');
-				const catalogPromise = managerStore.shouldLoadCatalog(currentMode, configuredCountry) && !runtimeBusy
-					? L.resolveDefault(service.execService('server_catalog', [ configuredCountry ]), null)
-					: Promise.resolve(null);
-	
-				return Promise.all([ Promise.resolve(finalCountriesRaw), Promise.resolve(statusResult), catalogPromise ]);
-			});
+			return Promise.all([ Promise.resolve(countriesRaw), Promise.resolve(statusResult), catalogPromise ]);
 		});
 	},
 
@@ -323,6 +332,9 @@ return view.extend({
 
 			managerUI.renderServerChoices(managerUI.getSelectElement(managerUI.ids.SERVER_FIELD_ID), state.currentServerCatalog, currentPreferredStation);
 			managerActions.renderLocalStatusSnapshot(state, state.currentLocalStatus);
+			if (!countries.length && !statusPayloadIsBusy(initialStatusPayload))
+				refreshCountriesInBackground(countrySelect, currentCountry);
+
 			if (!state.currentLocalStatusFresh)
 				managerActions.updateLocalStatus(state, { force: true });
 

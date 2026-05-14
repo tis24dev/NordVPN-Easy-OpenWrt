@@ -661,6 +661,10 @@ verify_public_country_selection () {
     return 0
   }
 
+  nordvpn_easy_write_runtime_cache_value "$NORDVPN_EASY_PUBLIC_IP_CACHE" "${PUBLIC_IP:-}" >/dev/null 2>&1 || true
+  nordvpn_easy_write_runtime_cache_value "$NORDVPN_EASY_PUBLIC_COUNTRY_CACHE" "${PUBLIC_COUNTRY:-}" >/dev/null 2>&1 || true
+  nordvpn_easy_write_runtime_cache_value "$NORDVPN_EASY_LAST_ERROR_CACHE" '' >/dev/null 2>&1 || true
+
   if [ -z "$VPN_COUNTRY" ]; then
     log "Public IP verification: $PUBLIC_IP geolocates to $PUBLIC_COUNTRY with automatic country selection"
     return 0

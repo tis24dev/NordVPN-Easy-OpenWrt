@@ -1,5 +1,5 @@
 'use strict';
-/* global baseclass, managerData, managerFormat, managerStore, managerUI, service, ui, uci, document, setTimeout, clearTimeout, E, _ */
+/* global baseclass, managerData, managerFormat, managerStore, managerUI, service, ui, uci, setTimeout, clearTimeout, E, _ */
 'require baseclass';
 'require nordvpn-easy/manager-data as managerData';
 'require nordvpn-easy/manager-format as managerFormat';
@@ -693,16 +693,12 @@ function handleSaveApply(viewState, state, ev, mode) {
 			let settled = false;
 			let timeoutId = null;
 
-			const cleanup = function() {
-				if (timeoutId !== null) {
-					clearTimeout(timeoutId);
-					timeoutId = null;
-				}
-				if (viewState._uciAppliedHandler) {
-					document.removeEventListener('uci-applied', viewState._uciAppliedHandler);
-					viewState._uciAppliedHandler = null;
-				}
-			};
+				const cleanup = function() {
+					if (timeoutId !== null) {
+						clearTimeout(timeoutId);
+						timeoutId = null;
+					}
+				};
 
 			const finishResolve = function(value) {
 				if (settled)
@@ -733,8 +729,8 @@ function handleSaveApply(viewState, state, ev, mode) {
 			cleanup();
 
 			Promise.resolve(viewState.handleSave(ev)).then(function() {
-				viewState._uciAppliedHandler = function() {
-					Promise.resolve().then(function() {
+				const continueAfterUciApply = function() {
+					return Promise.resolve().then(function() {
 						uci.unload('nordvpn_easy');
 						return uci.load('nordvpn_easy');
 					}).then(function() {
@@ -799,14 +795,17 @@ function handleSaveApply(viewState, state, ev, mode) {
 							updateLocalStatus(state, { force: true });
 							updatePublicIp(state, { force: true });
 						});
-					}).catch(function(err) {
-						const message = (err && err.message) ? err.message : String(err);
+						}).catch(function(err) {
+							const message = (err && err.message) ? err.message : String(err);
 
-						managerStore.setError(state, err);
-						managerStore.resumePolling(state);
-						service.notifyError(new Error(_('Automatic runtime sync failed: ') + message));
-						finishReject(err);
-					});
+							managerStore.setError(state, err);
+							state.pendingOperationLabel = '';
+							managerStore.resumePolling(state);
+							updateLocalStatus(state, { force: true });
+							updatePublicIp(state, { force: true });
+							service.notifyError(new Error(_('Automatic runtime sync failed: ') + message));
+							finishReject(err);
+						});
 				};
 
 				timeoutId = setTimeout(function() {
@@ -819,12 +818,11 @@ function handleSaveApply(viewState, state, ev, mode) {
 					finishReject(timeoutError);
 				}, 60000);
 
-				document.addEventListener('uci-applied', viewState._uciAppliedHandler);
 				state.pendingOperationLabel = _('configuration');
 				state.currentOperationStatus = 'busy:configuration';
 				managerStore.setPhase(state, managerStore.PHASES.SAVING);
 				updateLocalStatus(state, { force: true });
-				Promise.resolve(ui.changes.apply(mode === '0')).catch(function(err) {
+				Promise.resolve(ui.changes.apply(mode === '0')).then(continueAfterUciApply).catch(function(err) {
 					managerStore.setError(state, err);
 					state.pendingOperationLabel = '';
 					managerStore.resumePolling(state);

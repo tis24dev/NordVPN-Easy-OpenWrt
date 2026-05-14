@@ -258,6 +258,7 @@ function loadConfigView(options) {
 		fsRead: [],
 		uciLoad: [],
 		renderServerChoices: [],
+		renderCountryChoices: [],
 		renderLocalStatusSnapshot: [],
 		updateLocalStatus: [],
 		updatePublicIp: [],
@@ -378,7 +379,13 @@ function loadConfigView(options) {
 			getInputElement() {
 				return null;
 			},
-			renderCountryChoices() {},
+			renderCountryChoices(selectEl, countries, currentCountry) {
+				calls.renderCountryChoices.push({
+					id: selectEl ? selectEl.id : '',
+					countries: normalizeValue(countries),
+					currentCountry: currentCountry
+				});
+			},
 			renderServerChoices(selectEl, catalog, currentStation) {
 				calls.renderServerChoices.push({
 					id: selectEl ? selectEl.id : '',
@@ -484,11 +491,10 @@ function loadConfigView(options) {
 	};
 }
 
-async function testLoadRefreshesCountriesAndLoadsManualCatalogWhenIdle() {
+async function testLoadUsesCachedCountriesAndLoadsManualCatalogWhenIdle() {
 	const harness = loadConfigView({
 		fsReadResponses: [
-			'[]',
-			JSON.stringify([ { name: 'Uruguay', code: 'UY' } ])
+			'[]'
 		],
 		uciValues: {
 			vpn_country: 'UY',
@@ -502,17 +508,16 @@ async function testLoadRefreshesCountriesAndLoadsManualCatalogWhenIdle() {
 	});
 	const data = await harness.view.load();
 
-	assert.equal(data[0], JSON.stringify([ { name: 'Uruguay', code: 'UY' } ]), 'empty country cache is refreshed before render data is returned');
+	assert.equal(data[0], '[]', 'empty country cache does not block initial render');
 	assert.deepEqual(
 		normalizeValue(harness.calls.service.map(function(call) {
 			return [ call.action, call.args ];
 		})),
 		[
 			[ 'status_json', [] ],
-			[ 'refresh_countries', [] ],
 			[ 'server_catalog', [ 'UY' ] ]
 		],
-		'idle manual configuration refreshes countries and loads the selected-country server catalog'
+		'idle manual configuration loads status and selected-country server catalog without blocking on country refresh'
 	);
 	assert.equal(data[2].code, 0, 'manual server catalog response is returned to render');
 }
@@ -625,10 +630,62 @@ async function testRenderWiresInitialStateAndLiveHandlers() {
 	assert.equal(harness.calls.onModeChanged, 1, 'mode select change delegates to manager-actions');
 }
 
+async function testRenderRefreshesEmptyCountryCacheInBackground() {
+	const statusResult = {
+		code: 0,
+		stdout: JSON.stringify({
+			desired_enabled: true,
+			runtime_disabled: false,
+			interface_disabled: false,
+			runtime_configured: false,
+			selected_country: '',
+			server_selection_mode: 'auto',
+			operation_status: 'idle'
+		}),
+		stderr: ''
+	};
+	const harness = loadConfigView({
+		fsReadResponses: [
+			JSON.stringify([ { name: 'Belize', code: 'BZ' } ])
+		],
+		uciValues: {
+			enabled: '1',
+			vpn_country: '',
+			server_selection_mode: 'auto',
+			preferred_server_station: ''
+		}
+	});
+
+	await harness.view.render([ '[]', statusResult, null ]);
+	await Promise.resolve();
+	await Promise.resolve();
+	await Promise.resolve();
+
+	assert.deepEqual(
+		normalizeValue(harness.calls.service.map(function(call) {
+			return [ call.action, call.args ];
+		})),
+		[ [ 'refresh_countries', [] ] ],
+		'empty country cache refreshes in the background after render'
+	);
+	assert.deepEqual(
+		harness.calls.renderCountryChoices,
+		[
+			{
+				id: 'cbid.nordvpn_easy.main.vpn_country',
+				countries: [ { name: 'Belize', code: 'BZ' } ],
+				currentCountry: ''
+			}
+		],
+		'background country refresh repopulates the rendered country selector'
+	);
+}
+
 Promise.resolve().then(async function() {
-	await testLoadRefreshesCountriesAndLoadsManualCatalogWhenIdle();
+	await testLoadUsesCachedCountriesAndLoadsManualCatalogWhenIdle();
 	await testLoadSkipsRefreshesWhenRuntimeBusy();
 	await testRenderWiresInitialStateAndLiveHandlers();
+	await testRenderRefreshesEmptyCountryCacheInBackground();
 	console.log('test-config.js: ok');
 }).catch(function(err) {
 	console.error(err);
