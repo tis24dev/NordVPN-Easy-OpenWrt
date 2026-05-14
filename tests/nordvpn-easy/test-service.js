@@ -49,13 +49,18 @@ function loadServiceModule() {
 				declare(spec) {
 					return function() {
 						const args = Array.prototype.slice.call(arguments);
-						calls.push({ spec: spec, args: args });
-						return Promise.resolve(responses.length ? responses.shift() : {
+						const response = responses.length ? responses.shift() : {
 							code: 0,
 							success: true,
 							stdout: JSON.stringify({ method: spec.method, args: args }),
 							stderr: ''
-					});
+						};
+
+						calls.push({ spec: spec, args: args });
+						if (response instanceof Error)
+							return Promise.reject(response);
+
+						return Promise.resolve(response);
 				};
 			}
 		},
@@ -127,6 +132,16 @@ Promise.resolve().then(async function() {
 	assert.equal(busyResult.skipped, true, 'busy result preserves skipped flag');
 	assert.equal(busyResult.holder_action, 'setup', 'busy result preserves lock holder action');
 	assert.match(busyError.message, /already running setup/, 'busy result renders an operation-in-progress error');
+
+	const missingRpc = loadServiceModule();
+	missingRpc.responses.push(
+		new Error('RPC call to nordvpn.easy/refresh_countries failed with error -32000: Object not found')
+	);
+	await assert.rejects(
+		missingRpc.service.execService('refresh_countries_force'),
+		/backend RPC object is not registered/,
+		'missing rpcd object renders an actionable backend registration error'
+	);
 
 	await assert.rejects(
 		loaded.service.execService('unsupported_action'),

@@ -32,6 +32,47 @@ printf '%s' "$UNKNOWN_JSON" | jq -er '
 	.message == "unknown method: unknown"
 ' >/dev/null
 
+REFRESH_INIT="$TMP_DIR/init-refresh"
+REFRESH_CAPTURE="$TMP_DIR/refresh-calls"
+cat > "$REFRESH_INIT" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$REFRESH_CAPTURE"
+exit 0
+EOF
+chmod 755 "$REFRESH_INIT"
+
+REFRESH_FORCE_JSON="$(
+	printf '{"force":true}' |
+		NORDVPN_EASY_LIB_DIR="$LIB_DIR" \
+		NORDVPN_EASY_INIT_SCRIPT="$REFRESH_INIT" \
+		sh "$RPCD_SCRIPT" call refresh_countries
+)"
+printf '%s' "$REFRESH_FORCE_JSON" | jq -er '
+	.success == true and
+	.action == "refresh_countries_force"
+' >/dev/null
+assert_refresh_call="$(tail -n 1 "$REFRESH_CAPTURE")"
+[ "$assert_refresh_call" = 'refresh_countries_force' ] || {
+	printf '%s\n' 'FAIL: rpc refresh_countries force=true should invoke refresh_countries_force' >&2
+	exit 1
+}
+
+REFRESH_DEFAULT_JSON="$(
+	printf '{}' |
+		NORDVPN_EASY_LIB_DIR="$LIB_DIR" \
+		NORDVPN_EASY_INIT_SCRIPT="$REFRESH_INIT" \
+		sh "$RPCD_SCRIPT" call refresh_countries
+)"
+printf '%s' "$REFRESH_DEFAULT_JSON" | jq -er '
+	.success == true and
+	.action == "refresh_countries"
+' >/dev/null
+assert_refresh_call="$(tail -n 1 "$REFRESH_CAPTURE")"
+[ "$assert_refresh_call" = 'refresh_countries' ] || {
+	printf '%s\n' 'FAIL: rpc refresh_countries default should invoke refresh_countries' >&2
+	exit 1
+}
+
 FAKE_INIT="$TMP_DIR/init"
 RUN_DIR="$TMP_DIR/run"
 mkdir -p "$RUN_DIR"

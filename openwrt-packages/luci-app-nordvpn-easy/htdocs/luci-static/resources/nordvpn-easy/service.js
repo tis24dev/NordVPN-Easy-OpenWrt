@@ -87,6 +87,22 @@ const callRefreshServers = rpc.declare({
 	params: [ 'country', 'force' ]
 });
 
+function rpcErrorMessage(err) {
+	return (err && err.message) ? String(err.message) : String(err);
+}
+
+function normalizeRpcError(err) {
+	const message = rpcErrorMessage(err);
+
+	if (message.indexOf('Object not found') !== -1) {
+		return new Error(
+			_('NordVPN Easy backend RPC object is not registered. Reinstall or upgrade luci-app-nordvpn-easy, reload rpcd, then refresh LuCI.')
+		);
+	}
+
+	return err;
+}
+
 function parseJson(raw, fallback) {
 	try {
 		return JSON.parse(raw || '');
@@ -236,6 +252,8 @@ function execService(action, extraArgs) {
 
 	return request.then(function(payload) {
 		return normalizeExecResult(action, payload);
+	}).catch(function(err) {
+		throw normalizeRpcError(err);
 	});
 }
 

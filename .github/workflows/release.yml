@@ -322,6 +322,9 @@ jobs:
             "${VERIFY_DIR}/etc/config/nordvpn_easy" \
             "${VERIFY_DIR}/etc/init.d/nordvpn-easy" \
             "${VERIFY_DIR}/usr/libexec/nordvpn-easy/core.sh" \
+            "${VERIFY_DIR}/usr/libexec/nordvpn-easy/lib/config-context.sh" \
+            "${VERIFY_DIR}/usr/libexec/nordvpn-easy/lib/runtime.sh" \
+            "${VERIFY_DIR}/usr/libexec/rpcd/nordvpn.easy" \
             "${VERIFY_DIR}/www/luci-static/resources/view/nordvpn-easy/config.js"
           do
             if [ ! -f "$required_path" ]; then
@@ -335,7 +338,8 @@ jobs:
             "name: luci-app-nordvpn-easy.conffiles" \
             "name: luci-app-nordvpn-easy.conffiles_static" \
             "post-install: |" \
-            "post-upgrade: |"
+            "post-upgrade: |" \
+            "post-deinstall: |"
           do
             if ! grep -Fq "$required_metadata" "$ADB_DUMP"; then
               echo "::error::Built APK is missing required metadata marker: $required_metadata"
@@ -541,6 +545,13 @@ jobs:
           install -d -m0755 "${LUCI_ROOT}/usr/libexec/nordvpn-easy"
           install -m0755 "${BACKEND_FILES}/usr/libexec/nordvpn-easy/core.sh" \
             "${LUCI_ROOT}/usr/libexec/nordvpn-easy/core.sh"
+          install -d -m0755 "${LUCI_ROOT}/usr/libexec/nordvpn-easy/lib"
+          cp -R "${BACKEND_FILES}/usr/libexec/nordvpn-easy/lib/." \
+            "${LUCI_ROOT}/usr/libexec/nordvpn-easy/lib/"
+
+          install -d -m0755 "${LUCI_ROOT}/usr/libexec/rpcd"
+          install -m0755 "${BACKEND_FILES}/usr/libexec/rpcd/nordvpn.easy" \
+            "${LUCI_ROOT}/usr/libexec/rpcd/nordvpn.easy"
 
       - name: Initialize OpenWrt SDK configuration
         run: |
@@ -667,6 +678,9 @@ jobs:
             "${VERIFY_DIR}/data/etc/config/nordvpn_easy" \
             "${VERIFY_DIR}/data/etc/init.d/nordvpn-easy" \
             "${VERIFY_DIR}/data/usr/libexec/nordvpn-easy/core.sh" \
+            "${VERIFY_DIR}/data/usr/libexec/nordvpn-easy/lib/config-context.sh" \
+            "${VERIFY_DIR}/data/usr/libexec/nordvpn-easy/lib/runtime.sh" \
+            "${VERIFY_DIR}/data/usr/libexec/rpcd/nordvpn.easy" \
             "${VERIFY_DIR}/data/www/luci-static/resources/view/nordvpn-easy/config.js"
           do
             if [ ! -f "$required_path" ]; then
@@ -689,6 +703,11 @@ jobs:
 
           if [ ! -f "${VERIFY_DIR}/control/postinst" ]; then
             echo "::error::Built IPK is missing postinst script"
+            exit 1
+          fi
+
+          if [ ! -f "${VERIFY_DIR}/control/postrm" ]; then
+            echo "::error::Built IPK is missing postrm script"
             exit 1
           fi
 

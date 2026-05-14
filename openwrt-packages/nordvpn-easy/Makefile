@@ -40,7 +40,22 @@ define Package/nordvpn-easy/prerm
 [ -n "$${IPKG_INSTROOT}" ] && exit 0
 [ "$${PKG_UPGRADE:-0}" = "1" ] && exit 0
 
-case "$${1:-}" in
+case "$${1:-remove}" in
+	remove|purge)
+		rm -f /etc/config/nordvpn_easy /etc/config/nordvpn_easy-opkg
+		;;
+esac
+
+exit 0
+endef
+
+define Package/nordvpn-easy/postrm
+#!/bin/sh
+
+[ -n "$${IPKG_INSTROOT}" ] && exit 0
+[ "$${PKG_UPGRADE:-0}" = "1" ] && exit 0
+
+case "$${1:-remove}" in
 	remove|purge)
 		rm -f /etc/config/nordvpn_easy /etc/config/nordvpn_easy-opkg
 		;;
