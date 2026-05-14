@@ -279,6 +279,60 @@ nordvpn_easy_delete_uci_option_if_present() {
 	NORDVPN_EASY_UCI_CHANGED=1
 }
 
+nordvpn_easy_set_uci_list_if_changed() {
+	local key="$1"
+	local current=''
+	local expected=''
+	local value=''
+
+	shift
+	current="$(uci -q get "$key" 2>/dev/null || true)"
+	expected="$*"
+	[ "$current" = "$expected" ] && return 0
+
+	uci -q delete "$key" 2>/dev/null || true
+	for value in "$@"; do
+		[ -n "$value" ] || continue
+		uci add_list "${key}=${value}" || return 1
+	done
+	NORDVPN_EASY_UCI_CHANGED=1
+}
+
+nordvpn_easy_repair_wireguard_interface_base_settings() {
+	local dns_values=''
+
+	# Read by actions.sh after base interface settings are repaired.
+	# shellcheck disable=SC2034
+	NORDVPN_EASY_UCI_CHANGED=0
+
+	[ -n "${VPN_ADDR:-}" ] || {
+		nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "VPN address is missing; cannot repair WireGuard interface $VPN_IF"
+		return 1
+	}
+
+	nordvpn_easy_set_uci_option_if_changed "network.${VPN_IF}.proto" 'wireguard' || return 1
+	nordvpn_easy_set_uci_list_if_changed "network.${VPN_IF}.addresses" "$VPN_ADDR" || return 1
+
+	if ! uci -q get "network.${VPN_IF}.private_key" >/dev/null 2>&1; then
+		nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "WireGuard interface $VPN_IF is missing its private key; full setup is required"
+		return 1
+	fi
+
+	if [ -n "${VPN_DNS1:-}" ] || [ -n "${VPN_DNS2:-}" ]; then
+		nordvpn_easy_set_uci_option_if_changed "network.${VPN_IF}.peerdns" '0' || return 1
+		[ -n "${VPN_DNS1:-}" ] && dns_values="$VPN_DNS1"
+		[ -n "${VPN_DNS2:-}" ] && dns_values="${dns_values:+$dns_values }$VPN_DNS2"
+		# shellcheck disable=SC2086 # DNS values are normalized single-token IPs.
+		nordvpn_easy_set_uci_list_if_changed "network.${VPN_IF}.dns" $dns_values || return 1
+	else
+		nordvpn_easy_set_uci_option_if_changed "network.${VPN_IF}.peerdns" '1' || return 1
+		nordvpn_easy_delete_uci_option_if_present "network.${VPN_IF}.dns" || return 1
+	fi
+
+	nordvpn_easy_set_uci_option_if_changed "network.${VPN_IF}.delegate" '0' || return 1
+	nordvpn_easy_set_uci_option_if_changed "network.${VPN_IF}.force_link" '1' || return 1
+}
+
 nordvpn_easy_wireguard_keepalive_value() {
 	case "${WIREGUARD_PERSISTENT_KEEPALIVE:-15}" in
 		''|*[!0-9]*)

@@ -155,6 +155,14 @@ nordvpn_easy_curl_rc_meaning() {
 	esac
 }
 
+nordvpn_easy_curl_error_summary() {
+	local error_file="$1"
+
+	sed -n '1,3p' "$error_file" 2>/dev/null |
+		tr '\r\n' '  ' |
+		nordvpn_easy_sanitize_diagnostics_stream
+}
+
 nordvpn_easy_json_escape() {
 	printf '%s' "$1" | sed ':a;N;$!ba;s/\\/\\\\/g;s/"/\\"/g;s/\n/\\n/g;s/\r/\\r/g'
 }
@@ -471,6 +479,7 @@ nordvpn_easy_print_diagnostics_health_summary() {
 	local link_present='unknown'
 	local routes_via_vpn='unknown'
 	local wg_peer_count='unknown'
+	local missing_interface=''
 	local missing_required=''
 	local probable_issue='none detected'
 	local value=''
@@ -484,6 +493,14 @@ nordvpn_easy_print_diagnostics_health_summary() {
 			private_key_state='present'
 		else
 			private_key_state='missing'
+		fi
+
+		if [ "$vpn_proto" = 'wireguard' ]; then
+			for value in private_key addresses peerdns delegate force_link; do
+				if ! uci -q get "network.${vpn_if}.${value}" >/dev/null 2>&1; then
+					missing_interface="$(nordvpn_easy_diagnostics_csv_append "$missing_interface" "$value")"
+				fi
+			done
 		fi
 
 		peer_sections="$(
@@ -527,7 +544,9 @@ nordvpn_easy_print_diagnostics_health_summary() {
 		wg_peer_count="$(wg show "$vpn_if" peers 2>/dev/null | awk 'NF { count++ } END { print count + 0 }')"
 	fi
 
-	if [ "$vpn_proto" = 'wireguard' ] && [ "$peer_section_found" != 'yes' ]; then
+	if [ "$vpn_proto" = 'wireguard' ] && [ -n "$missing_interface" ]; then
+		probable_issue="wireguard interface is incomplete (${missing_interface})"
+	elif [ "$vpn_proto" = 'wireguard' ] && [ "$peer_section_found" != 'yes' ]; then
 		probable_issue='wireguard interface exists but peer section is missing'
 	elif [ "$vpn_proto" = 'wireguard' ] && [ -n "$missing_required" ]; then
 		probable_issue="wireguard peer section is incomplete (${missing_required})"
@@ -542,6 +561,7 @@ nordvpn_easy_print_diagnostics_health_summary() {
 	printf 'vpn_proto=%s\n' "$vpn_proto"
 	printf 'interface_disabled=%s\n' "$interface_disabled"
 	printf 'private_key=%s\n' "$private_key_state"
+	printf 'required_interface_keys_missing=%s\n' "${missing_interface:-none}"
 	printf 'convention_peer_section=%sserver\n' "$vpn_if"
 	printf 'peer_section_found=%s\n' "$peer_section_found"
 	printf 'peer_section=%s\n' "${peer_section:-none}"

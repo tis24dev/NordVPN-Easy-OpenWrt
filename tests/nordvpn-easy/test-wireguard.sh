@@ -41,6 +41,12 @@ UCI_KEEPALIVE=''
 UCI_MTU=''
 UCI_STATION=''
 UCI_HOSTNAME=''
+UCI_PRIVATE_KEY=''
+UCI_ADDRESSES=''
+UCI_PEERDNS=''
+UCI_DNS=''
+UCI_DELEGATE=''
+UCI_FORCE_LINK=''
 
 uci() {
 	case "$1" in
@@ -52,6 +58,12 @@ uci() {
 		get)
 				case "$2" in
 					network.wg0.proto) [ -n "$UCI_PROTO" ] || return 1; printf '%s\n' "$UCI_PROTO" ;;
+					network.wg0.private_key) [ -n "$UCI_PRIVATE_KEY" ] || return 1; printf '%s\n' "$UCI_PRIVATE_KEY" ;;
+					network.wg0.addresses) [ -n "$UCI_ADDRESSES" ] || return 1; printf '%s\n' "$UCI_ADDRESSES" ;;
+					network.wg0.peerdns) [ -n "$UCI_PEERDNS" ] || return 1; printf '%s\n' "$UCI_PEERDNS" ;;
+					network.wg0.dns) [ -n "$UCI_DNS" ] || return 1; printf '%s\n' "$UCI_DNS" ;;
+					network.wg0.delegate) [ -n "$UCI_DELEGATE" ] || return 1; printf '%s\n' "$UCI_DELEGATE" ;;
+					network.wg0.force_link) [ -n "$UCI_FORCE_LINK" ] || return 1; printf '%s\n' "$UCI_FORCE_LINK" ;;
 					network.wg0server.endpoint_host) [ -n "$UCI_ENDPOINT_HOST" ] || return 1; printf '%s\n' "$UCI_ENDPOINT_HOST" ;;
 					network.wg0server.endpoint_port) printf '%s\n' "$UCI_ENDPOINT_PORT" ;;
 					network.wg0server.persistent_keepalive) printf '%s\n' "$UCI_KEEPALIVE" ;;
@@ -76,6 +88,11 @@ uci() {
 				;;
 			set)
 				case "${2%%=*}" in
+					network.wg0.proto) UCI_PROTO="${2#*=}" ;;
+					network.wg0.private_key) UCI_PRIVATE_KEY="${2#*=}" ;;
+					network.wg0.peerdns) UCI_PEERDNS="${2#*=}" ;;
+					network.wg0.delegate) UCI_DELEGATE="${2#*=}" ;;
+					network.wg0.force_link) UCI_FORCE_LINK="${2#*=}" ;;
 					network.wg0server) UCI_PEER_SECTION=1 ;;
 					network.wg0server.endpoint_host) UCI_ENDPOINT_HOST="${2#*=}" ;;
 					network.wg0server.endpoint_port) UCI_ENDPOINT_PORT="${2#*=}" ;;
@@ -86,8 +103,21 @@ uci() {
 				esac
 				return 0
 				;;
+			add_list)
+				case "${2%%=*}" in
+					network.wg0.addresses)
+						UCI_ADDRESSES="${UCI_ADDRESSES:+$UCI_ADDRESSES }${2#*=}"
+						;;
+					network.wg0.dns)
+						UCI_DNS="${UCI_DNS:+$UCI_DNS }${2#*=}"
+						;;
+				esac
+				return 0
+				;;
 			delete)
 				case "$2" in
+					network.wg0.addresses) UCI_ADDRESSES='' ;;
+					network.wg0.dns) UCI_DNS='' ;;
 					network.wg0.mtu) UCI_MTU='' ;;
 				esac
 				return 0
@@ -129,6 +159,9 @@ VPN_IF='wg0'
 VPN_PORT='51820'
 WIREGUARD_PERSISTENT_KEEPALIVE='15'
 WIREGUARD_MTU=''
+VPN_ADDR='10.5.0.2/32'
+VPN_DNS1='103.86.99.99'
+VPN_DNS2='103.86.96.96'
 POST_RESTART_DELAY='5'
 
 UCI_PROTO='wireguard'
@@ -190,5 +223,27 @@ assert_eq '443' "$UCI_ENDPOINT_PORT" 'transport repair applies explicit endpoint
 WIREGUARD_MTU=''
 nordvpn_easy_apply_wireguard_transport_settings 'wg0server'
 assert_eq '' "$UCI_MTU" 'transport repair removes MTU when automatic is selected'
+
+UCI_PRIVATE_KEY='PRIVATE'
+UCI_ADDRESSES=''
+UCI_PEERDNS=''
+UCI_DNS='1.1.1.1'
+UCI_DELEGATE=''
+UCI_FORCE_LINK=''
+NORDVPN_EASY_UCI_CHANGED=0
+
+nordvpn_easy_repair_wireguard_interface_base_settings
+
+assert_eq '1' "$NORDVPN_EASY_UCI_CHANGED" 'base interface repair reports changed UCI'
+assert_eq 'wireguard' "$UCI_PROTO" 'base interface repair preserves WireGuard proto'
+assert_eq '10.5.0.2/32' "$UCI_ADDRESSES" 'base interface repair restores configured address'
+assert_eq '0' "$UCI_PEERDNS" 'base interface repair disables peer DNS when NordVPN DNS is configured'
+assert_eq '103.86.99.99 103.86.96.96' "$UCI_DNS" 'base interface repair replaces stale DNS list'
+assert_eq '0' "$UCI_DELEGATE" 'base interface repair disables IPv6 delegation'
+assert_eq '1' "$UCI_FORCE_LINK" 'base interface repair forces link creation'
+
+nordvpn_easy_repair_wireguard_interface_base_settings
+
+assert_eq '0' "$NORDVPN_EASY_UCI_CHANGED" 'base interface repair is idempotent once settings match'
 
 printf '%s\n' 'test-wireguard.sh: ok'

@@ -364,8 +364,13 @@ countries_cache_is_fresh () {
 refresh_countries_cache () {
   FORCE_REFRESH="${1:-0}"
   COUNTRIES_TEMP_DIR=''
+  COUNTRIES_RAW_TMP=''
   COUNTRIES_CACHE_TMP=''
   COUNTRIES_TS_TMP=''
+  COUNTRIES_CURL_STDERR=''
+  COUNTRIES_CURL_RC=0
+  COUNTRIES_CURL_ERROR=''
+  COUNTRIES_FAILURE_REASON=''
 
   if [ "$FORCE_REFRESH" -ne 1 ] && countries_cache_is_fresh; then
     log "Using cached NordVPN country list from $COUNTRIES_CACHE_FILE"
@@ -379,9 +384,28 @@ refresh_countries_cache () {
   fi
 
   nordvpn_easy_mktemp_dir 'countries-cache' COUNTRIES_TEMP_DIR || return 1
+  COUNTRIES_RAW_TMP="$(nordvpn_easy_temp_file_path "$COUNTRIES_TEMP_DIR" 'countries-api.json')"
   COUNTRIES_CACHE_TMP="$(nordvpn_easy_temp_file_path "$COUNTRIES_TEMP_DIR" 'countries.json')"
   COUNTRIES_TS_TMP="$(nordvpn_easy_temp_file_path "$COUNTRIES_TEMP_DIR" 'countries.timestamp')"
-  curl -fsS --connect-timeout 15 --max-time 30 "$COUNTRIES_URL" | jq -ce '
+  COUNTRIES_CURL_STDERR="$(nordvpn_easy_temp_file_path "$COUNTRIES_TEMP_DIR" 'curl-stderr.log')"
+
+  curl -fsS --connect-timeout 15 --max-time 30 -o "$COUNTRIES_RAW_TMP" "$COUNTRIES_URL" 2>"$COUNTRIES_CURL_STDERR" || {
+    COUNTRIES_CURL_RC=$?
+    COUNTRIES_CURL_ERROR="$(nordvpn_easy_curl_error_summary "$COUNTRIES_CURL_STDERR")"
+    COUNTRIES_FAILURE_REASON="country list refresh failed (curl_rc=$COUNTRIES_CURL_RC: $(curl_rc_meaning "$COUNTRIES_CURL_RC")"
+    [ -n "$COUNTRIES_CURL_ERROR" ] && COUNTRIES_FAILURE_REASON="$COUNTRIES_FAILURE_REASON, curl_error=$COUNTRIES_CURL_ERROR"
+    COUNTRIES_FAILURE_REASON="$COUNTRIES_FAILURE_REASON)"
+    rm -rf -- "$COUNTRIES_TEMP_DIR"
+    if [ -f "$COUNTRIES_CACHE_FILE" ]; then
+      log "WARNING: $COUNTRIES_FAILURE_REASON; using existing cache"
+      return 0
+    fi
+    nordvpn_easy_record_last_error "could not refresh country list cache ($COUNTRIES_FAILURE_REASON)"
+    log "ERROR: COULD NOT REFRESH COUNTRY LIST CACHE ($COUNTRIES_FAILURE_REASON)"
+    return 1
+  }
+
+  jq -ce '
     [ .[] | select(
         (.id != null) and
         ((.name // "") != "") and
@@ -392,13 +416,14 @@ refresh_countries_cache () {
         code: .code
       }
     ] | sort_by(.name | ascii_downcase)
-  ' > "$COUNTRIES_CACHE_TMP" 2>/dev/null || {
+  ' "$COUNTRIES_RAW_TMP" > "$COUNTRIES_CACHE_TMP" 2>/dev/null || {
     rm -rf -- "$COUNTRIES_TEMP_DIR"
     if [ -f "$COUNTRIES_CACHE_FILE" ]; then
-      log 'WARNING: country list refresh failed; using existing cache'
+      log 'WARNING: country list refresh produced invalid JSON; using existing cache'
       return 0
     fi
-    log 'ERROR: COULD NOT REFRESH COUNTRY LIST CACHE'
+    nordvpn_easy_record_last_error 'country list refresh produced invalid JSON and no existing cache is available'
+    log 'ERROR: COULD NOT REFRESH COUNTRY LIST CACHE (invalid JSON response)'
     return 1
   }
 
