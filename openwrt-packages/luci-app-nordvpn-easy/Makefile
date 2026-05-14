@@ -17,19 +17,45 @@ LUCI_PKGARCH:=all
 LUCI_URL:=$(NORDVPN_EASY_PACKAGE_URL)
 LUCI_MAINTAINER:=$(NORDVPN_EASY_PACKAGE_MAINTAINER)
 
-define Package/$(PKG_NAME)/conffiles
-/etc/config/nordvpn_easy
-endef
-
 define Package/$(PKG_NAME)/postrm
 #!/bin/sh
+
+nordvpn_easy_backend_installed() {
+	if command -v opkg >/dev/null 2>&1 && opkg status nordvpn-easy >/dev/null 2>&1; then
+		return 0
+	fi
+
+	if command -v apk >/dev/null 2>&1 && apk info -e nordvpn-easy >/dev/null 2>&1; then
+		return 0
+	fi
+
+	return 1
+}
+
+nordvpn_easy_cleanup_files() {
+	rm -f /etc/config/nordvpn_easy /etc/config/nordvpn_easy-opkg
+	rm -f /etc/cron.d/nordvpn-easy /etc/hotplug.d/iface/95-nordvpn-easy
+	rm -f /var/etc/nordvpn-easy.conf
+	rm -f /tmp/nordvpn.json \
+		/tmp/nordvpn-easy-countries.json \
+		/tmp/nordvpn-easy-countries.timestamp \
+		/tmp/nordvpn-easy-servers.json \
+		/tmp/nordvpn-easy-servers.timestamp
+	rm -rf /tmp/nordvpn-easy.lock /tmp/run/nordvpn-easy
+	rm -f /usr/share/nordvpn-easy/defaults/nordvpn_easy
+	rm -f /usr/libexec/nordvpn-easy/migrate-config.sh
+	rmdir /usr/share/nordvpn-easy/defaults /usr/share/nordvpn-easy 2>/dev/null || true
+}
 
 [ -n "$${IPKG_INSTROOT}" ] && exit 0
 [ "$${PKG_UPGRADE:-0}" = "1" ] && exit 0
 
 case "$${1:-remove}" in
 	remove|purge)
-		rm -f /etc/config/nordvpn_easy /etc/config/nordvpn_easy-opkg
+		if nordvpn_easy_backend_installed; then
+			exit 0
+		fi
+		nordvpn_easy_cleanup_files
 		;;
 esac
 
@@ -41,9 +67,18 @@ define Package/$(PKG_NAME)/postinst
 
 [ -n "$${IPKG_INSTROOT}" ] && exit 0
 
-if uci -q get nordvpn_easy.main.nordvpn_basic_token >/dev/null 2>&1; then
-	uci -q delete nordvpn_easy.main.nordvpn_basic_token
-	uci -q commit nordvpn_easy
+MIGRATOR='/usr/libexec/nordvpn-easy/migrate-config.sh'
+[ -x "$$MIGRATOR" ] || {
+	printf "%s\n" "nordvpn-easy: missing executable config migrator $$MIGRATOR" >&2
+	exit 1
+}
+
+MIGRATION_OUTPUT="$$( "$$MIGRATOR" 2>&1 )"
+MIGRATION_STATUS=$$?
+if [ "$$MIGRATION_STATUS" -ne 0 ]; then
+	printf "%s\n" "nordvpn-easy: config migration failed with exit code $$MIGRATION_STATUS" >&2
+	[ -n "$$MIGRATION_OUTPUT" ] && printf "%s\n" "$$MIGRATION_OUTPUT" >&2
+	exit "$$MIGRATION_STATUS"
 fi
 
 rm -f /tmp/luci-indexcache.*
@@ -72,16 +107,17 @@ exit 0
 endef
 
 define Build/Prepare/$(PKG_NAME)
-	$(INSTALL_DIR) $(PKG_BUILD_DIR)/root/etc/config
-	$(INSTALL_CONF) $(CURDIR)/../nordvpn-easy/files/etc/config/nordvpn_easy $(PKG_BUILD_DIR)/root/etc/config/nordvpn_easy
 	$(INSTALL_DIR) $(PKG_BUILD_DIR)/root/etc/init.d
 	$(INSTALL_BIN) $(CURDIR)/../nordvpn-easy/files/etc/init.d/nordvpn-easy $(PKG_BUILD_DIR)/root/etc/init.d/nordvpn-easy
 	$(INSTALL_DIR) $(PKG_BUILD_DIR)/root/usr/libexec/nordvpn-easy
 	$(INSTALL_BIN) $(CURDIR)/../nordvpn-easy/files/usr/libexec/nordvpn-easy/core.sh $(PKG_BUILD_DIR)/root/usr/libexec/nordvpn-easy/core.sh
+	$(INSTALL_BIN) $(CURDIR)/../nordvpn-easy/files/usr/libexec/nordvpn-easy/migrate-config.sh $(PKG_BUILD_DIR)/root/usr/libexec/nordvpn-easy/migrate-config.sh
 	$(INSTALL_DIR) $(PKG_BUILD_DIR)/root/usr/libexec/nordvpn-easy/lib
 	$(CP) $(CURDIR)/../nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/. $(PKG_BUILD_DIR)/root/usr/libexec/nordvpn-easy/lib/
 	$(INSTALL_DIR) $(PKG_BUILD_DIR)/root/usr/libexec/rpcd
 	$(INSTALL_BIN) $(CURDIR)/../nordvpn-easy/files/usr/libexec/rpcd/nordvpn.easy $(PKG_BUILD_DIR)/root/usr/libexec/rpcd/nordvpn.easy
+	$(INSTALL_DIR) $(PKG_BUILD_DIR)/root/usr/share/nordvpn-easy/defaults
+	$(INSTALL_CONF) $(CURDIR)/../nordvpn-easy/files/usr/share/nordvpn-easy/defaults/nordvpn_easy $(PKG_BUILD_DIR)/root/usr/share/nordvpn-easy/defaults/nordvpn_easy
 endef
 
 include $(TOPDIR)/feeds/luci/luci.mk

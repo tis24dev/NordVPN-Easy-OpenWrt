@@ -30,10 +30,6 @@ define Package/nordvpn-easy/description
   used by the LuCI frontend package.
 endef
 
-define Package/nordvpn-easy/conffiles
-/etc/config/nordvpn_easy
-endef
-
 define Package/nordvpn-easy/postrm
 #!/bin/sh
 
@@ -49,6 +45,21 @@ luci_app_installed() {
 	return 1
 }
 
+nordvpn_easy_cleanup_files() {
+	rm -f /etc/config/nordvpn_easy /etc/config/nordvpn_easy-opkg
+	rm -f /etc/cron.d/nordvpn-easy /etc/hotplug.d/iface/95-nordvpn-easy
+	rm -f /var/etc/nordvpn-easy.conf
+	rm -f /tmp/nordvpn.json \
+		/tmp/nordvpn-easy-countries.json \
+		/tmp/nordvpn-easy-countries.timestamp \
+		/tmp/nordvpn-easy-servers.json \
+		/tmp/nordvpn-easy-servers.timestamp
+	rm -rf /tmp/nordvpn-easy.lock /tmp/run/nordvpn-easy
+	rm -f /usr/share/nordvpn-easy/defaults/nordvpn_easy
+	rm -f /usr/libexec/nordvpn-easy/migrate-config.sh
+	rmdir /usr/share/nordvpn-easy/defaults /usr/share/nordvpn-easy 2>/dev/null || true
+}
+
 [ -n "$${IPKG_INSTROOT}" ] && exit 0
 [ "$${PKG_UPGRADE:-0}" = "1" ] && exit 0
 
@@ -57,9 +68,31 @@ case "$${1:-remove}" in
 		if luci_app_installed; then
 			exit 0
 		fi
-		rm -f /etc/config/nordvpn_easy /etc/config/nordvpn_easy-opkg
+		nordvpn_easy_cleanup_files
 		;;
 esac
+
+exit 0
+endef
+
+define Package/nordvpn-easy/postinst
+#!/bin/sh
+
+[ -n "$${IPKG_INSTROOT}" ] && exit 0
+
+MIGRATOR='/usr/libexec/nordvpn-easy/migrate-config.sh'
+[ -x "$$MIGRATOR" ] || {
+	printf "%s\n" "nordvpn-easy: missing executable config migrator $$MIGRATOR" >&2
+	exit 1
+}
+
+MIGRATION_OUTPUT="$$( "$$MIGRATOR" 2>&1 )"
+MIGRATION_STATUS=$$?
+if [ "$$MIGRATION_STATUS" -ne 0 ]; then
+	printf "%s\n" "nordvpn-easy: config migration failed with exit code $$MIGRATION_STATUS" >&2
+	[ -n "$$MIGRATION_OUTPUT" ] && printf "%s\n" "$$MIGRATION_OUTPUT" >&2
+	exit "$$MIGRATION_STATUS"
+fi
 
 exit 0
 endef
@@ -70,12 +103,13 @@ endef
 define Package/nordvpn-easy/install
 	$(INSTALL_DIR) $(1)/usr/libexec/nordvpn-easy
 	$(INSTALL_BIN) ./files/usr/libexec/nordvpn-easy/core.sh $(1)/usr/libexec/nordvpn-easy/core.sh
+	$(INSTALL_BIN) ./files/usr/libexec/nordvpn-easy/migrate-config.sh $(1)/usr/libexec/nordvpn-easy/migrate-config.sh
 	$(INSTALL_DIR) $(1)/usr/libexec/nordvpn-easy/lib
 	$(CP) ./files/usr/libexec/nordvpn-easy/lib/. $(1)/usr/libexec/nordvpn-easy/lib/
 	$(INSTALL_DIR) $(1)/usr/libexec/rpcd
 	$(INSTALL_BIN) ./files/usr/libexec/rpcd/nordvpn.easy $(1)/usr/libexec/rpcd/nordvpn.easy
-	$(INSTALL_DIR) $(1)/etc/config
-	$(INSTALL_CONF) ./files/etc/config/nordvpn_easy $(1)/etc/config/nordvpn_easy
+	$(INSTALL_DIR) $(1)/usr/share/nordvpn-easy/defaults
+	$(INSTALL_CONF) ./files/usr/share/nordvpn-easy/defaults/nordvpn_easy $(1)/usr/share/nordvpn-easy/defaults/nordvpn_easy
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) ./files/etc/init.d/nordvpn-easy $(1)/etc/init.d/nordvpn-easy
 endef
