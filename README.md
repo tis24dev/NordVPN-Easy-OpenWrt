@@ -90,7 +90,7 @@ health-check and recovery logic.
 
 The runtime model is service-driven and one-shot based:
 
-- `/etc/config/nordvpn_easy` stores user configuration
+- `/etc/config/nordvpn_easy` stores user configuration generated from the packaged template
 - `/etc/init.d/nordvpn-easy` manages setup and recurring hooks
 - `/usr/libexec/nordvpn-easy/core.sh` contains setup, check and rotation logic
 - `cron` runs periodic checks
@@ -115,7 +115,11 @@ that loops forever.
 ## Configuration highlights
 
 The packaged service is configured through UCI in `/etc/config/nordvpn_easy`.
-Key settings include:
+The package ships its defaults as `/usr/share/nordvpn-easy/defaults/nordvpn_easy`
+and creates or migrates the live UCI file during install/upgrade, preserving
+existing user values without installing `/etc/config/nordvpn_easy` as an opkg
+conffile. Removing the package purges the generated config, stale `*-opkg`
+files and NordVPN Easy runtime/cache residues. Key settings include:
 
 - `nordvpn_token`
 - `wan_if`
@@ -159,6 +163,7 @@ does not expose that key in LuCI, logs, status JSON or diagnostics export.
 
 - package names are fixed: `nordvpn-easy` and `luci-app-nordvpn-easy`
 - LuCI reads and writes UCI config `nordvpn_easy`
+- install/upgrade uses a template-backed config migrator to avoid opkg conffile conflicts
 - the backend shell core is already wired into the package layout
 - the runtime model is already `service + one-shot checks`
 - the main missing work is validation on real OpenWrt targets and final feed
