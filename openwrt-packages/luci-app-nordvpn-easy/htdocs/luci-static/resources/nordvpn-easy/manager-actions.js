@@ -795,14 +795,17 @@ function handleSaveApply(viewState, state, ev, mode) {
 							updateLocalStatus(state, { force: true });
 							updatePublicIp(state, { force: true });
 						});
-					}).catch(function(err) {
-						const message = (err && err.message) ? err.message : String(err);
+						}).catch(function(err) {
+							const message = (err && err.message) ? err.message : String(err);
 
-						managerStore.setError(state, err);
-						managerStore.resumePolling(state);
-						service.notifyError(new Error(_('Automatic runtime sync failed: ') + message));
-						finishReject(err);
-					});
+							managerStore.setError(state, err);
+							state.pendingOperationLabel = '';
+							managerStore.resumePolling(state);
+							updateLocalStatus(state, { force: true });
+							updatePublicIp(state, { force: true });
+							service.notifyError(new Error(_('Automatic runtime sync failed: ') + message));
+							finishReject(err);
+						});
 				};
 
 				timeoutId = setTimeout(function() {
