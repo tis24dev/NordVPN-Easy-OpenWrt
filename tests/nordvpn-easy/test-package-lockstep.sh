@@ -79,6 +79,9 @@ luci_postrm="define Package/\$(PKG_NAME)/postrm"
 backend_luci_presence_helper='luci_app_installed()'
 backend_opkg_presence_check='opkg status luci-app-nordvpn-easy >/dev/null 2>&1'
 backend_apk_presence_check='apk info -e luci-app-nordvpn-easy >/dev/null 2>&1'
+luci_backend_presence_helper='nordvpn_easy_backend_installed()'
+luci_backend_opkg_presence_check='opkg status nordvpn-easy >/dev/null 2>&1'
+luci_backend_apk_presence_check='apk info -e nordvpn-easy >/dev/null 2>&1'
 migrator_runtime_path='/usr/libexec/nordvpn-easy/migrate-config.sh'
 
 assert_eq "$backend_version" "$luci_version" 'backend and LuCI packages share default version'
@@ -282,6 +285,21 @@ grep -F "$backend_apk_presence_check" "$BACKEND_MAKEFILE" >/dev/null 2>&1 || {
 
 grep -F "$luci_postrm" "$LUCI_MAKEFILE" >/dev/null 2>&1 || {
 	printf '%s\n' 'FAIL: LuCI package must define postrm cleanup for generated config and residual files' >&2
+	exit 1
+}
+
+grep -F "$luci_backend_presence_helper" "$LUCI_MAKEFILE" >/dev/null 2>&1 || {
+	printf '%s\n' 'FAIL: LuCI postrm must define a backend-package presence helper' >&2
+	exit 1
+}
+
+grep -F "$luci_backend_opkg_presence_check" "$LUCI_MAKEFILE" >/dev/null 2>&1 || {
+	printf '%s\n' 'FAIL: LuCI postrm must keep shared files while nordvpn-easy backend is installed' >&2
+	exit 1
+}
+
+grep -F "$luci_backend_apk_presence_check" "$LUCI_MAKEFILE" >/dev/null 2>&1 || {
+	printf '%s\n' 'FAIL: LuCI postrm must support APK backend package presence checks' >&2
 	exit 1
 }
 

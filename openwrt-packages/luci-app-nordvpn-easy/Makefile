@@ -20,6 +20,18 @@ LUCI_MAINTAINER:=$(NORDVPN_EASY_PACKAGE_MAINTAINER)
 define Package/$(PKG_NAME)/postrm
 #!/bin/sh
 
+nordvpn_easy_backend_installed() {
+	if command -v opkg >/dev/null 2>&1 && opkg status nordvpn-easy >/dev/null 2>&1; then
+		return 0
+	fi
+
+	if command -v apk >/dev/null 2>&1 && apk info -e nordvpn-easy >/dev/null 2>&1; then
+		return 0
+	fi
+
+	return 1
+}
+
 nordvpn_easy_cleanup_files() {
 	rm -f /etc/config/nordvpn_easy /etc/config/nordvpn_easy-opkg
 	rm -f /etc/cron.d/nordvpn-easy /etc/hotplug.d/iface/95-nordvpn-easy
@@ -40,6 +52,9 @@ nordvpn_easy_cleanup_files() {
 
 case "$${1:-remove}" in
 	remove|purge)
+		if nordvpn_easy_backend_installed; then
+			exit 0
+		fi
 		nordvpn_easy_cleanup_files
 		;;
 esac
