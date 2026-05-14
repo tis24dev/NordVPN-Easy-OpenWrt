@@ -51,8 +51,13 @@ release_ipk_runtime="\${VERIFY_DIR}/data/usr/libexec/nordvpn-easy/lib/runtime.sh
 release_apk_postrm='post-deinstall: |'
 release_ipk_postrm="\${VERIFY_DIR}/control/postrm"
 config_cleanup='rm -f /etc/config/nordvpn_easy /etc/config/nordvpn_easy-opkg'
+backend_prerm='define Package/nordvpn-easy/prerm'
 backend_postrm='define Package/nordvpn-easy/postrm'
+luci_prerm="define Package/\$(PKG_NAME)/prerm"
 luci_postrm="define Package/\$(PKG_NAME)/postrm"
+backend_luci_presence_helper='luci_app_installed()'
+backend_opkg_presence_check='opkg status luci-app-nordvpn-easy >/dev/null 2>&1'
+backend_apk_presence_check='apk info -e luci-app-nordvpn-easy >/dev/null 2>&1'
 
 assert_eq "$backend_version" "$luci_version" 'backend and LuCI packages share default version'
 assert_eq "$backend_release" "$luci_release" 'backend and LuCI packages share default release'
@@ -127,18 +132,36 @@ done
 backend_cleanup_count="$(grep -F -c "$config_cleanup" "$BACKEND_MAKEFILE" || true)"
 luci_cleanup_count="$(grep -F -c "$config_cleanup" "$LUCI_MAKEFILE" || true)"
 
-[ "$backend_cleanup_count" -ge 2 ] || {
-	printf '%s\n' 'FAIL: backend package must remove UCI config in both prerm and postrm' >&2
+assert_eq '1' "$backend_cleanup_count" 'backend package must remove UCI config from a single uninstall hook'
+assert_eq '1' "$luci_cleanup_count" 'LuCI package must remove UCI config from a single uninstall hook'
+
+grep -F "$backend_prerm" "$BACKEND_MAKEFILE" >/dev/null 2>&1 && {
+	printf '%s\n' 'FAIL: backend package must not remove UCI config from prerm' >&2
 	exit 1
 }
 
-[ "$luci_cleanup_count" -ge 2 ] || {
-	printf '%s\n' 'FAIL: LuCI package must remove UCI config in both prerm and postrm' >&2
+grep -F "$luci_prerm" "$LUCI_MAKEFILE" >/dev/null 2>&1 && {
+	printf '%s\n' 'FAIL: LuCI package must not remove UCI config from prerm' >&2
 	exit 1
 }
 
 grep -F "$backend_postrm" "$BACKEND_MAKEFILE" >/dev/null 2>&1 || {
 	printf '%s\n' 'FAIL: backend package must define postrm cleanup for opkg-preserved conffiles' >&2
+	exit 1
+}
+
+grep -F "$backend_luci_presence_helper" "$BACKEND_MAKEFILE" >/dev/null 2>&1 || {
+	printf '%s\n' 'FAIL: backend postrm must define a shared-package presence helper' >&2
+	exit 1
+}
+
+grep -F "$backend_opkg_presence_check" "$BACKEND_MAKEFILE" >/dev/null 2>&1 || {
+	printf '%s\n' 'FAIL: backend postrm must keep shared UCI config while luci-app-nordvpn-easy is installed' >&2
+	exit 1
+}
+
+grep -F "$backend_apk_presence_check" "$BACKEND_MAKEFILE" >/dev/null 2>&1 || {
+	printf '%s\n' 'FAIL: backend postrm must support APK package presence checks' >&2
 	exit 1
 }
 

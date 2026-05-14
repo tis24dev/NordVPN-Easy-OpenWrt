@@ -34,29 +34,29 @@ define Package/nordvpn-easy/conffiles
 /etc/config/nordvpn_easy
 endef
 
-define Package/nordvpn-easy/prerm
-#!/bin/sh
-
-[ -n "$${IPKG_INSTROOT}" ] && exit 0
-[ "$${PKG_UPGRADE:-0}" = "1" ] && exit 0
-
-case "$${1:-remove}" in
-	remove|purge)
-		rm -f /etc/config/nordvpn_easy /etc/config/nordvpn_easy-opkg
-		;;
-esac
-
-exit 0
-endef
-
 define Package/nordvpn-easy/postrm
 #!/bin/sh
 
+luci_app_installed() {
+	if command -v opkg >/dev/null 2>&1 && opkg status luci-app-nordvpn-easy >/dev/null 2>&1; then
+		return 0
+	fi
+
+	if command -v apk >/dev/null 2>&1 && apk info -e luci-app-nordvpn-easy >/dev/null 2>&1; then
+		return 0
+	fi
+
+	return 1
+}
+
 [ -n "$${IPKG_INSTROOT}" ] && exit 0
 [ "$${PKG_UPGRADE:-0}" = "1" ] && exit 0
 
 case "$${1:-remove}" in
 	remove|purge)
+		if luci_app_installed; then
+			exit 0
+		fi
 		rm -f /etc/config/nordvpn_easy /etc/config/nordvpn_easy-opkg
 		;;
 esac
