@@ -522,13 +522,13 @@ async function testLoadUsesCachedCountriesWithoutBlockingOnManualCatalog() {
 		normalizeValue(harness.calls.service.map(function(call) {
 			return [ call.action, call.args ];
 		})),
-			[
-				[ 'status_json', [] ]
-			],
-			'idle manual configuration loads status without blocking on server catalog refresh'
-		);
-		assert.equal(data[2], null, 'manual server catalog is loaded after render');
-}
+		[
+			[ 'status_json', [] ]
+		],
+		'idle manual configuration loads status without blocking initial render on server catalog data'
+	);
+	assert.equal(data[2], null, 'manual server catalog is loaded after render');
+	}
 
 async function testLoadSkipsRefreshesWhenRuntimeBusy() {
 	const harness = loadConfigView({
