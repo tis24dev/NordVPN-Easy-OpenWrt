@@ -179,6 +179,10 @@ current_server_station () {
   nordvpn_easy_current_server_station "$@"
 }
 
+current_server_country () {
+  nordvpn_easy_current_server_country "$@"
+}
+
 set_server_preference_in_uci () {
   nordvpn_easy_set_server_preference_in_uci "$@"
 }

@@ -1,5 +1,5 @@
 'use strict';
-/* global baseclass, managerData, managerFormat, managerStore, managerUI, service, ui, uci, setTimeout, clearTimeout, E, _ */
+/* global baseclass, managerData, managerFormat, managerStore, managerUI, service, ui, uci, Date, setTimeout, clearTimeout, E, _ */
 'require baseclass';
 'require nordvpn-easy/manager-data as managerData';
 'require nordvpn-easy/manager-format as managerFormat';
@@ -8,6 +8,8 @@
 'require nordvpn-easy/service as service';
 'require ui';
 'require uci';
+
+const AUTO_RECONCILE_RETRY_DELAY_MS = 5 * 60 * 1000;
 
 function formatDebugValue(value, fallback) {
 	const normalized = String(value != null ? value : '').trim();
@@ -81,6 +83,132 @@ function runtimeNeedsReconciliation(runtimeStatus) {
 		return true;
 
 	return !!(runtimeStatus.runtime_disabled || runtimeStatus.interface_disabled || runtimeStatus.runtime_configured === false);
+}
+
+function deriveServerSelectionDrift(state, status) {
+	const runtimeStatus = status || (state && state.currentLocalStatus) || {};
+	const mode = normalizeSelectionMode(runtimeStatus.server_selection_mode || 'auto');
+	const rawSelectedCountry = Object.prototype.hasOwnProperty.call(runtimeStatus, 'selected_country')
+		? runtimeStatus.selected_country
+		: ((state && state.appliedCountryCode) || '');
+	const selectedCountry = managerData.normalizeCountryCode(rawSelectedCountry || '');
+	const currentServerCountry = managerData.normalizeCountryCode(runtimeStatus.current_server_country || '');
+	const preferredStation = String(runtimeStatus.preferred_server_station || '');
+	const currentStation = String(runtimeStatus.current_server_station || '');
+
+	if (mode === 'manual') {
+		if (!preferredStation || !currentStation || preferredStation === currentStation)
+			return null;
+
+		return {
+			key: [ 'manual', preferredStation, currentStation ].join(':'),
+			reason: _('manual server drift'),
+			mode: mode,
+			selectedCountry: selectedCountry,
+			currentServerCountry: currentServerCountry,
+			preferredStation: preferredStation,
+			currentStation: currentStation
+		};
+	}
+
+	if (!selectedCountry || !currentServerCountry || selectedCountry === currentServerCountry)
+		return null;
+
+	return {
+		key: [ 'auto', selectedCountry, currentServerCountry ].join(':'),
+		reason: _('country drift'),
+		mode: mode,
+		selectedCountry: selectedCountry,
+		currentServerCountry: currentServerCountry,
+		preferredStation: preferredStation,
+		currentStation: currentStation
+	};
+}
+
+function autoReconcileIsAllowed(state, status, drift) {
+	const runtimeStatus = status || (state && state.currentLocalStatus) || {};
+
+	return !!drift &&
+		!!state &&
+		!!state.appliedEnabled &&
+		!!runtimeStatus.desired_enabled &&
+		!!runtimeStatus.runtime_configured &&
+		!runtimeStatus.runtime_disabled &&
+		!runtimeStatus.interface_disabled &&
+		!runtimeOperationIsBusy(state, runtimeStatus) &&
+		!managerUI.isDisableRequested(state);
+}
+
+function autoReconcileFailureIsThrottled(state, drift) {
+	const failedAt = Number((state && state.lastAutoReconcileFailureAt) || 0);
+
+	return !!(state && drift &&
+		state.lastAutoReconcileFailureKey === drift.key &&
+		failedAt > 0 &&
+		(Date.now() - failedAt) < AUTO_RECONCILE_RETRY_DELAY_MS);
+}
+
+function autoReconcileDebugLines(drift) {
+	return [
+		_('Reason: %s').format(drift.reason),
+		_('Mode: %s').format(drift.mode),
+		_('Selected country: %s').format(formatDebugValue(drift.selectedCountry)),
+		_('Current server country: %s').format(formatDebugValue(drift.currentServerCountry, _('Unknown'))),
+		_('Preferred station: %s').format(formatDebugValue(drift.preferredStation)),
+		_('Current station: %s').format(formatDebugValue(drift.currentStation, _('Unknown')))
+	];
+}
+
+function maybeAutoReconcileSelectionDrift(state, status) {
+	const runtimeStatus = status || (state && state.currentLocalStatus) || {};
+	const drift = deriveServerSelectionDrift(state, runtimeStatus);
+
+	if (!autoReconcileIsAllowed(state, runtimeStatus, drift) || autoReconcileFailureIsThrottled(state, drift))
+		return Promise.resolve(false);
+
+	return managerStore.runExclusive(state, 'autoReconcile', function() {
+		const latestStatus = state.currentLocalStatus || runtimeStatus;
+		const latestDrift = deriveServerSelectionDrift(state, latestStatus);
+
+		if (!autoReconcileIsAllowed(state, latestStatus, latestDrift) || autoReconcileFailureIsThrottled(state, latestDrift))
+			return Promise.resolve(false);
+
+		state.pendingOperationLabel = 'reconcile';
+		state.currentOperationStatus = 'busy:reconcile';
+		managerStore.setPhase(state, managerStore.PHASES.RUNTIME_BUSY);
+		renderLocalStatusSnapshot(state, latestStatus);
+		notifyDebugBlock(_('Automatic runtime sync queued'), autoReconcileDebugLines(latestDrift));
+
+		return service.runActions([ 'reconcile' ]).then(function() {
+			return refreshAfterSaveApply(state, true, { suppressAutoReconcile: true }).then(function() {
+				const remainingDrift = deriveServerSelectionDrift(state, state.currentLocalStatus);
+				let unchangedError;
+
+				if (remainingDrift && remainingDrift.key === latestDrift.key) {
+					unchangedError = new Error(_('Automatic runtime sync completed but server selection is still out of sync.'));
+					state.lastAutoReconcileFailureKey = latestDrift.key;
+					state.lastAutoReconcileFailureAt = Date.now();
+					managerStore.setError(state, unchangedError);
+					service.notifyError(unchangedError);
+					return false;
+				}
+
+				state.lastAutoReconcileFailureKey = '';
+				state.lastAutoReconcileFailureAt = 0;
+				return true;
+			});
+		}).catch(function(err) {
+			const message = (err && err.message) ? err.message : String(err);
+
+			state.lastAutoReconcileFailureKey = latestDrift.key;
+			state.lastAutoReconcileFailureAt = Date.now();
+			managerStore.setError(state, err);
+			return refreshAfterSaveApply(state, true, { suppressAutoReconcile: true }).then(function() {
+				service.notifyError(new Error(_('Automatic runtime sync failed: ') + message));
+				return false;
+			});
+		});
+	});
 }
 
 function isLocalStatusPayload(value) {
@@ -500,7 +628,10 @@ function updateLocalStatus(state, options) {
 			state.currentOperationStatus = String(status.operation_status || 'idle');
 			state.appliedEnabled = desiredEnabled;
 			state.appliedCountryCode = managerData.normalizeCountryCode(status.selected_country || state.appliedCountryCode);
-			return renderLocalStatusSnapshot(state, status);
+			renderLocalStatusSnapshot(state, status);
+			if (localStatusSnapshot.fresh && !opts.suppressAutoReconcile)
+				void maybeAutoReconcileSelectionDrift(state, status);
+			return status;
 		}).catch(function(err) {
 			state.currentLocalStatusFresh = false;
 			state.currentLocalStatusLastUpdated = 0;
@@ -613,11 +744,16 @@ function rememberSavedRuntimeConfig(viewState, state, savedConfig) {
 	state.appliedCountryCode = savedConfig.country;
 }
 
-function refreshAfterSaveApply(state, refreshPublicIp) {
+function refreshAfterSaveApply(state, refreshPublicIp, options) {
+	const opts = options || {};
+
 	state.pendingOperationLabel = '';
 	managerStore.resumePolling(state);
 
-	return updateLocalStatus(state, { force: true }).then(function() {
+	return updateLocalStatus(state, {
+		force: true,
+		suppressAutoReconcile: !!opts.suppressAutoReconcile
+	}).then(function() {
 		if (refreshPublicIp)
 			return updatePublicIp(state, { force: true });
 
@@ -858,6 +994,8 @@ function handleSaveApply(viewState, state, ev, mode) {
 
 	return baseclass.extend({
 		hasServerSelectionChanged: hasServerSelectionChanged,
+		deriveServerSelectionDrift: deriveServerSelectionDrift,
+		maybeAutoReconcileSelectionDrift: maybeAutoReconcileSelectionDrift,
 		deriveRuntimeActionPlan: deriveRuntimeActionPlan,
 		runtimeOperationIsBusy: runtimeOperationIsBusy,
 		loadServerCatalog: loadServerCatalog,

@@ -324,6 +324,8 @@ const TokenValue = form.Value.extend({
 
 			managerUI.renderServerChoices(managerUI.getSelectElement(managerUI.ids.SERVER_FIELD_ID), state.currentServerCatalog, currentPreferredStation);
 			managerActions.renderLocalStatusSnapshot(state, state.currentLocalStatus);
+			if (state.currentLocalStatusFresh)
+				managerActions.maybeAutoReconcileSelectionDrift(state, state.currentLocalStatus);
 			if (!countries.length && !statusPayloadIsBusy(initialStatusPayload))
 				refreshCountriesInBackground(countrySelect, currentCountry);
 

@@ -101,6 +101,93 @@ nordvpn_easy_preferred_server_matches_current() {
 	[ "$(nordvpn_easy_current_server_station)" = "$PREFERRED_SERVER_STATION" ]
 }
 
+nordvpn_easy_normalize_country_code() {
+	printf '%s' "${1:-}" | tr '[:lower:]' '[:upper:]'
+}
+
+nordvpn_easy_selected_country_code() {
+	local country_query="${VPN_COUNTRY:-}"
+
+	[ -n "$country_query" ] || return 1
+
+	case "$country_query" in
+		[A-Za-z][A-Za-z])
+			nordvpn_easy_normalize_country_code "$country_query"
+			return 0
+			;;
+	esac
+
+	nordvpn_easy_require_core_action_helpers resolve_country_filter || return 1
+	resolve_country_filter || return 1
+	[ -n "${RESOLVED_COUNTRY_CODE:-}" ] || return 1
+	# resolve_country_filter currently sets RESOLVED_COUNTRY_CODE from the uppercase cache;
+	# keep normalizing defensively in case future inputs change.
+	nordvpn_easy_normalize_country_code "$RESOLVED_COUNTRY_CODE"
+}
+
+nordvpn_easy_server_selection_drift_reason() {
+	local current_station=''
+	local current_country=''
+	local selected_country=''
+
+	NORDVPN_EASY_SELECTION_DRIFT_REASON=''
+
+	current_station="$(nordvpn_easy_current_server_station)"
+
+	if nordvpn_easy_server_selection_is_manual; then
+		[ -n "${PREFERRED_SERVER_STATION:-}" ] || return 1
+		[ -n "$current_station" ] || return 1
+		[ "$current_station" != "$PREFERRED_SERVER_STATION" ] || return 1
+		NORDVPN_EASY_SELECTION_DRIFT_REASON="mode=manual, preferred_station=$PREFERRED_SERVER_STATION, current_station=$current_station, selected_country=${VPN_COUNTRY:-automatic}"
+		return 0
+	fi
+
+	[ -n "${VPN_COUNTRY:-}" ] || return 1
+	selected_country="$(nordvpn_easy_selected_country_code)" || return 1
+	current_country="$(nordvpn_easy_normalize_country_code "$(nordvpn_easy_current_server_country)")"
+	[ -n "$current_country" ] || return 1
+	[ "$current_country" != "$selected_country" ] || return 1
+
+	NORDVPN_EASY_SELECTION_DRIFT_REASON="mode=auto, selected_country=$selected_country, current_server_country=$current_country, current_station=${current_station:-unknown}"
+	return 0
+}
+
+nordvpn_easy_log_server_selection_drift() {
+	local phase="${1:-runtime}"
+
+	if nordvpn_easy_server_selection_drift_reason; then
+		log "$phase: server selection drift detected ($NORDVPN_EASY_SELECTION_DRIFT_REASON)"
+		return 0
+	fi
+
+	return 1
+}
+
+nordvpn_easy_reconcile_explicit_server_selection_drift() {
+	local phase="${1:-healthcheck}"
+	local drift_reason=''
+	local sync_rc=0
+
+	if ! nordvpn_easy_vpn_is_configured; then
+		return 0
+	fi
+
+	if ! nordvpn_easy_server_selection_drift_reason; then
+		return 0
+	fi
+
+	drift_reason="$NORDVPN_EASY_SELECTION_DRIFT_REASON"
+	log "$phase: server selection drift detected ($NORDVPN_EASY_SELECTION_DRIFT_REASON); synchronizing runtime"
+	nordvpn_easy_sync_server_selection
+	sync_rc=$?
+	if [ "$sync_rc" -eq 0 ]; then
+		return 0
+	fi
+
+	log "WARNING: $phase: server selection drift sync failed (rc=$sync_rc, $drift_reason); continuing health-check recovery"
+	return 0
+}
+
 nordvpn_easy_apply_preferred_server_from_catalog() {
 	nordvpn_easy_find_preferred_server_in_catalog || return 1
 	nordvpn_easy_apply_catalog_server_line_to_uci "$CATALOG_MATCHED_SERVER_LINE" 'preferred'
@@ -347,6 +434,7 @@ nordvpn_easy_sync_server_selection() {
 nordvpn_easy_reconcile_action() {
 	log 'apply: reconcile action started'
 	nordvpn_easy_bootstrap_if_needed || return 1
+	nordvpn_easy_log_server_selection_drift 'reconcile' || true
 	nordvpn_easy_sync_server_selection || return 1
 	nordvpn_easy_check_once
 }
@@ -721,6 +809,7 @@ nordvpn_easy_check_once() {
 	local backoff_steps
 
 	log "healthcheck: starting VPN health-check on interface $VPN_IF (failure_retry_delay=${FAILURE_RETRY_DELAY:-unset}, rotate_threshold=${SERVER_ROTATE_THRESHOLD:-unset}, restart_threshold=${INTERFACE_RESTART_THRESHOLD:-unset}, max_restarts=${max_interface_restarts})"
+	nordvpn_easy_reconcile_explicit_server_selection_drift 'healthcheck' || return 1
 	if ! nordvpn_easy_server_selection_is_manual; then
 		[ -f "$SERVER_LIST_FILE" ] || nordvpn_easy_get_servers_list || true
 	fi

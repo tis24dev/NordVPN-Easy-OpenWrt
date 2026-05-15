@@ -75,6 +75,7 @@ VPN_IF='wg0'
 VPN_CONFIGURED_RC=0
 SERVER_RECOMMENDATIONS_URL_BASE='https://example.invalid/recommendations'
 CURRENT_SERVER_VALUE='it0'
+CURRENT_COUNTRY_VALUE='IT'
 COMMIT_NETWORK_COUNT=0
 COMMIT_PREF_COUNT=0
 APPLY_COUNT=0
@@ -94,6 +95,7 @@ log() { :; }
 fetch_server_catalog() { return 0; }
 nordvpn_easy_require_manual_server_preference() { return 0; }
 nordvpn_easy_current_server_station() { printf '%s\n' "$CURRENT_SERVER_VALUE"; }
+nordvpn_easy_current_server_country() { printf '%s\n' "$CURRENT_COUNTRY_VALUE"; }
 nordvpn_easy_set_vpn_server_in_uci() { LAST_SET_SERVER="$1|$2"; LAST_SET_PUBLIC_KEY="$3"; SET_SEQUENCE="${SET_SEQUENCE}$1|$2;"; return 0; }
 nordvpn_easy_set_server_preference_in_uci() { SAVED_PREFERENCE="$1|$2"; }
 nordvpn_easy_ping_interface() {
@@ -388,6 +390,94 @@ POST_RESTART_DELAY=10
 nordvpn_easy_check_once
 
 assert_eq '1' "$TRY_FALLBACK_COUNT" 'manual health check tries the configured fallback server at the rotation threshold'
+
+TRY_FALLBACK_COUNT=0
+PING_COUNT=0
+PING_FAIL_UNTIL=0
+SERVER_SELECTION_MODE='auto'
+VPN_COUNTRY='IT'
+CURRENT_SERVER_VALUE='bm3'
+CURRENT_COUNTRY_VALUE='BM'
+FALLBACK_SERVER_STATION=''
+APPLY_COUNT=0
+COMMIT_NETWORK_COUNT=0
+LAST_SET_SERVER=''
+SERVER_ROTATE_THRESHOLD=99
+INTERFACE_RESTART_THRESHOLD=99
+
+nordvpn_easy_check_once
+
+assert_eq '1' "$APPLY_COUNT" 'health check reconciles an explicit selected-country drift before ping recovery'
+assert_eq 'it12.nordvpn.com|it123' "$LAST_SET_SERVER" 'health check country drift applies a server for the selected country'
+assert_eq '1' "$PING_COUNT" 'health check validates connectivity after selected-country drift reconciliation'
+
+PING_COUNT=0
+PING_FAIL_UNTIL=0
+SERVER_SELECTION_MODE='manual'
+VPN_COUNTRY='IT'
+CURRENT_SERVER_VALUE='bm3'
+CURRENT_COUNTRY_VALUE='BM'
+PREFERRED_SERVER_HOSTNAME='it12.nordvpn.com'
+PREFERRED_SERVER_STATION='it123'
+FALLBACK_SERVER_STATION=''
+APPLY_COUNT=0
+COMMIT_NETWORK_COUNT=0
+LAST_SET_SERVER=''
+
+nordvpn_easy_check_once
+
+assert_eq '1' "$APPLY_COUNT" 'health check reconciles explicit manual preferred-server drift'
+assert_eq 'it12.nordvpn.com|it123' "$LAST_SET_SERVER" 'health check manual drift applies the preferred server'
+assert_eq '1' "$PING_COUNT" 'health check validates connectivity after manual drift reconciliation'
+
+PING_COUNT=0
+PING_FAIL_UNTIL=0
+SERVER_SELECTION_MODE='auto'
+VPN_COUNTRY='IT'
+CURRENT_SERVER_VALUE='bz1'
+CURRENT_COUNTRY_VALUE='IT'
+APPLY_COUNT=0
+COMMIT_NETWORK_COUNT=0
+LAST_SET_SERVER=''
+
+nordvpn_easy_check_once
+
+assert_eq '0' "$APPLY_COUNT" 'health check does not rotate a healthy same-country server just because it is outside current recommendations'
+assert_eq '1' "$PING_COUNT" 'health check still validates a healthy same-country server'
+
+PING_COUNT=0
+PING_FAIL_UNTIL=0
+SERVER_SELECTION_MODE='auto'
+VPN_COUNTRY=''
+CURRENT_SERVER_VALUE='bz1'
+CURRENT_COUNTRY_VALUE='BM'
+APPLY_COUNT=0
+COMMIT_NETWORK_COUNT=0
+LAST_SET_SERVER=''
+
+nordvpn_easy_check_once
+
+assert_eq '0' "$APPLY_COUNT" 'health check does not rotate a healthy automatic-country server just because it is outside current recommendations'
+assert_eq '1' "$PING_COUNT" 'health check still validates a healthy automatic-country server'
+
+nordvpn_easy_get_servers_list() { return 1; }
+
+PING_COUNT=0
+PING_FAIL_UNTIL=0
+SERVER_SELECTION_MODE='auto'
+VPN_COUNTRY='IT'
+CURRENT_SERVER_VALUE='bm3'
+CURRENT_COUNTRY_VALUE='BM'
+APPLY_COUNT=0
+COMMIT_NETWORK_COUNT=0
+LAST_SET_SERVER=''
+
+nordvpn_easy_check_once
+
+assert_eq '0' "$APPLY_COUNT" 'health check treats drift sync failure as non-fatal before ping recovery'
+assert_eq '1' "$PING_COUNT" 'health check continues after a selected-country drift sync failure'
+
+nordvpn_easy_get_servers_list() { return 0; }
 
 VPN_CONFIGURED_RC=1
 BOOTSTRAP_REPAIR_RC=0
