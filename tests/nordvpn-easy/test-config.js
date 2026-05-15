@@ -552,7 +552,7 @@ async function testLoadSkipsRefreshesWhenRuntimeBusy() {
 		[ [ 'status_json', [] ] ],
 		'busy runtime skips country refresh and server catalog loading'
 	);
-	assert.equal(data[2], null, 'busy runtime returns no server catalog response');
+	assert.equal(data[2], null, 'load never returns a synchronous server catalog response');
 }
 
 async function testRenderWiresInitialStateAndLiveHandlers() {
