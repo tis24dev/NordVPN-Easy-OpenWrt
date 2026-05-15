@@ -221,6 +221,8 @@ const TokenValue = form.Value.extend({
 		const initialStatusPayload = service.parseExecJsonResponse(data[1], null);
 		const initialStatusFresh = !!(initialStatusPayload && typeof initialStatusPayload === 'object' && !Array.isArray(initialStatusPayload));
 		const initialStatus = initialStatusFresh ? managerData.parseLocalStatus(JSON.stringify(initialStatusPayload)) : managerData.parseLocalStatus('{}');
+		// render keeps managerData.parseServerCatalog(data[2]) for external callers and
+		// testRenderWiresInitialStateAndLiveHandlers; load returns null in this slot.
 		const initialCatalog = managerData.parseServerCatalog(data[2] && data[2].code === 0 ? data[2].stdout || '{}' : '{}');
 		const currentCountry = managerData.normalizeCountryCode(uci.get('nordvpn_easy', 'main', 'vpn_country') || '');
 		const currentMode = String(uci.get('nordvpn_easy', 'main', 'server_selection_mode') || 'auto');

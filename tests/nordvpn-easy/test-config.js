@@ -331,22 +331,22 @@ function loadConfigView(options) {
 				});
 				return Promise.resolve();
 			},
-				updatePublicIp(renderState, updateOptions) {
-					calls.updatePublicIp.push({
-						state: renderState,
-						options: normalizeValue(updateOptions)
-					});
-					return Promise.resolve();
-				},
-				loadServerCatalog(renderState, country, forceRefresh) {
-					calls.loadServerCatalog.push({
-						state: renderState,
-						country: country,
-						forceRefresh: forceRefresh
-					});
-					return Promise.resolve();
-				},
-				onCountryChanged() {
+			updatePublicIp(renderState, updateOptions) {
+				calls.updatePublicIp.push({
+					state: renderState,
+					options: normalizeValue(updateOptions)
+				});
+				return Promise.resolve();
+			},
+			loadServerCatalog(renderState, country, forceRefresh) {
+				calls.loadServerCatalog.push({
+					state: renderState,
+					country: country,
+					forceRefresh: forceRefresh
+				});
+				return Promise.resolve();
+			},
+			onCountryChanged() {
 				calls.onCountryChanged++;
 			},
 			onModeChanged() {
