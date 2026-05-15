@@ -344,6 +344,13 @@ nordvpn_easy_sync_server_selection() {
 	nordvpn_easy_change_vpn_server reload
 }
 
+nordvpn_easy_reconcile_action() {
+	log 'apply: reconcile action started'
+	nordvpn_easy_bootstrap_if_needed || return 1
+	nordvpn_easy_sync_server_selection || return 1
+	nordvpn_easy_check_once
+}
+
 nordvpn_easy_change_vpn_server() {
 	CURRENT_SERVER=$(nordvpn_easy_current_server_station)
 	local temp_dir=''

@@ -38,6 +38,7 @@ eval "$(extract_function start)"
 cfg_enabled=1
 RUN_CORE_ACTION_FAILURE_LOG_MODE=''
 SOFT_FAIL_MODE_CAPTURE="$TMP_DIR/failure-mode.txt"
+CORE_ACTION_CAPTURE="$TMP_DIR/core-action.txt"
 START_OUTPUT_FILE="$TMP_DIR/start-output.txt"
 START_LOG_FILE="$TMP_DIR/start-log.txt"
 
@@ -46,18 +47,20 @@ disable_vpn_runtime() { :; }
 install_hooks() { :; }
 log_service_info() { printf '%s\n' "$1" >> "$START_LOG_FILE"; }
 run_core_action() {
+	printf '%s\n' "$1" > "$CORE_ACTION_CAPTURE"
 	printf '%s\n' "${RUN_CORE_ACTION_FAILURE_LOG_MODE:-unset}" > "$SOFT_FAIL_MODE_CAPTURE"
 	return 1
 }
 
 start >"$START_OUTPUT_FILE"
 
-assert_eq 'info' "$(cat "$SOFT_FAIL_MODE_CAPTURE")" 'start downgrades initial check failures to info logging'
-assert_eq '' "$(cat "$START_OUTPUT_FILE")" 'start does not emit retryable check failure to stdout'
+assert_eq 'reconcile' "$(cat "$CORE_ACTION_CAPTURE")" 'start performs an initial runtime reconcile'
+assert_eq 'info' "$(cat "$SOFT_FAIL_MODE_CAPTURE")" 'start downgrades initial reconcile failures to info logging'
+assert_eq '' "$(cat "$START_OUTPUT_FILE")" 'start does not emit retryable reconcile failure to stdout'
 assert_eq '' "${RUN_CORE_ACTION_FAILURE_LOG_MODE}" 'start restores previous failure log mode'
 
-grep -q 'initial check failed; hooks are installed and future cron/hotplug runs will retry' "$START_LOG_FILE" || {
-	printf '%s\n' 'FAIL: start should log retryable initial check failure' >&2
+grep -q 'initial reconcile failed; hooks are installed and future cron/hotplug runs will retry' "$START_LOG_FILE" || {
+	printf '%s\n' 'FAIL: start should log retryable initial reconcile failure' >&2
 	exit 1
 }
 

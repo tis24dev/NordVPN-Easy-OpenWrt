@@ -480,8 +480,8 @@ start() {
 	install_hooks || return 1
 
 	RUN_CORE_ACTION_FAILURE_LOG_MODE='info'
-	if ! run_core_action check; then
-		log_service_info 'service: initial check failed; hooks are installed and future cron/hotplug runs will retry'
+	if ! run_core_action reconcile; then
+		log_service_info 'service: initial reconcile failed; hooks are installed and future cron/hotplug runs will retry'
 	fi
 	RUN_CORE_ACTION_FAILURE_LOG_MODE="$previous_failure_log_mode"
 }
@@ -569,7 +569,7 @@ reconcile() {
 	fi
 
 	RUN_CORE_ACTION_FAILURE_LOG_MODE='info'
-	if run_core_action check; then
+	if run_core_action reconcile; then
 		RUN_CORE_ACTION_FAILURE_LOG_MODE="$previous_failure_log_mode"
 		install_hooks
 		return $?
@@ -582,7 +582,7 @@ reconcile() {
 		return "$rc"
 	fi
 
-	log_service_info 'reconcile: health check did not validate the runtime; running reconnect'
+	log_service_info 'reconcile: runtime reconciliation did not validate the runtime; running reconnect'
 	reconnect
 }
 
