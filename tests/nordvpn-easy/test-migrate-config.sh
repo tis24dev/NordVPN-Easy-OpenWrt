@@ -245,6 +245,27 @@ assert_file_has_line "	option wireguard_mtu '1412'" "$FAKE_UCI_CONFIG_FILE" 'leg
 reset_fake_uci
 set_store_value '__section__' 'nordvpn_easy'
 set_store_value 'enabled' '1'
+set_store_value 'vpn_country' ''
+cat > "$FAKE_LEGACY_CONFIG_FILE" <<'EOF'
+config nordvpn_easy 'main'
+	option vpn_country 'BM'
+	option nordvpn_token 'mixed-source-token'
+EOF
+
+run_migrator
+
+assert_file_has_line "	option enabled '1'" "$FAKE_UCI_CONFIG_FILE" 'mixed source preserves active enabled flag'
+assert_file_has_line "	option vpn_country 'BM'" "$FAKE_UCI_CONFIG_FILE" 'mixed source recovers legacy country when active country is default'
+assert_file_has_line "	option nordvpn_token 'mixed-source-token'" "$FAKE_UCI_CONFIG_FILE" 'mixed source recovers legacy token when active token is missing'
+
+[ ! -e "$FAKE_LEGACY_CONFIG_FILE" ] || {
+	printf '%s\n' 'FAIL: migrator did not remove mixed-source legacy config file' >&2
+	exit 1
+}
+
+reset_fake_uci
+set_store_value '__section__' 'nordvpn_easy'
+set_store_value 'enabled' '1'
 set_store_value 'nordvpn_token' 'active-secret-token'
 set_store_value 'vpn_country' 'CH'
 cat > "$FAKE_LEGACY_CONFIG_FILE" <<'EOF'

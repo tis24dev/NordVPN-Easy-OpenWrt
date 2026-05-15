@@ -75,52 +75,28 @@ read_legacy_option() {
 	read_uci_file_option "$LEGACY_CONFIG_FILE" "$1"
 }
 
-source_has_custom_values() {
-	local source="$1"
-	local option value normalized_value default_value
-
-	for option in $(nordvpn_easy_uci_options); do
-		[ "$option" = 'config_schema_version' ] && continue
-
-		case "$source" in
-			active)
-				active_option_exists "$option" || continue
-				value="$(read_active_option "$option")"
-				;;
-			legacy)
-				value="$(read_legacy_option "$option")" || continue
-				;;
-			*)
-				return 1
-				;;
-		esac
-
-		normalized_value="$(nordvpn_easy_normalize_value "$option" "$value")"
-		default_value="$(nordvpn_easy_default "$option" 2>/dev/null || printf '%s' '')"
-		[ "$normalized_value" != "$default_value" ] && return 0
-	done
-
-	return 1
-}
-
 read_snapshot_option() {
 	local option="$1"
-	local active_has_custom="$2"
-	local legacy_has_custom="$3"
-	local value
+	local active_value legacy_value normalized_value default_value
 
-	if [ "$legacy_has_custom" -eq 1 ] && [ "$active_has_custom" -eq 0 ] && value="$(read_legacy_option "$option")"; then
-		printf '%s' "$value"
+	default_value="$(nordvpn_easy_default "$option" 2>/dev/null || printf '%s' '')"
+
+	if active_option_exists "$option"; then
+		active_value="$(read_active_option "$option")"
+		normalized_value="$(nordvpn_easy_normalize_value "$option" "$active_value")"
+		if [ "$option" = 'config_schema_version' ] || [ "$normalized_value" != "$default_value" ]; then
+			printf '%s' "$active_value"
+			return 0
+		fi
+	fi
+
+	if legacy_value="$(read_legacy_option "$option")"; then
+		printf '%s' "$legacy_value"
 		return 0
 	fi
 
 	if active_option_exists "$option"; then
-		read_active_option "$option"
-		return 0
-	fi
-
-	if value="$(read_legacy_option "$option")"; then
-		printf '%s' "$value"
+		printf '%s' "$active_value"
 		return 0
 	fi
 
@@ -129,14 +105,9 @@ read_snapshot_option() {
 
 snapshot_existing_config() {
 	local option old_value normalized_value
-	local active_has_custom=0
-	local legacy_has_custom=0
-
-	source_has_custom_values active && active_has_custom=1
-	source_has_custom_values legacy && legacy_has_custom=1
 
 	for option in $(nordvpn_easy_uci_options); do
-		old_value="$(read_snapshot_option "$option" "$active_has_custom" "$legacy_has_custom")"
+		old_value="$(read_snapshot_option "$option")"
 		normalized_value="$(nordvpn_easy_normalize_value "$option" "$old_value")"
 		eval "snapshot_${option}='$(nordvpn_easy_shell_quote "$normalized_value")'"
 	done
