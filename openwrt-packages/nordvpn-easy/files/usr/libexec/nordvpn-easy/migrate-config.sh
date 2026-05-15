@@ -5,7 +5,8 @@ set -eu
 UCI_CONFIG="${NORDVPN_EASY_UCI_CONFIG:-nordvpn_easy}"
 UCI_SECTION="${NORDVPN_EASY_UCI_SECTION:-main}"
 CONFIG_FILE="${NORDVPN_EASY_CONFIG_FILE:-/etc/config/nordvpn_easy}"
-OPKG_CONFIG_FILE="${NORDVPN_EASY_OPKG_CONFIG_FILE:-/etc/config/nordvpn_easy-opkg}"
+# Keep the old OPKG variable as a compatibility alias for existing test harnesses or local scripts.
+LEGACY_CONFIG_FILE="${NORDVPN_EASY_LEGACY_CONFIG_FILE:-${NORDVPN_EASY_OPKG_CONFIG_FILE:-/etc/config/nordvpn_easy-opkg}}"
 TEMPLATE_FILE="${NORDVPN_EASY_TEMPLATE_FILE:-/usr/share/nordvpn-easy/defaults/nordvpn_easy}"
 LIB_DIR="${NORDVPN_EASY_LIB_DIR:-/usr/libexec/nordvpn-easy/lib}"
 SCHEMA_LIB="${LIB_DIR}/schema.sh"
@@ -70,12 +71,8 @@ read_uci_file_option() {
 	' "$file_path"
 }
 
-read_opkg_option() {
-	read_uci_file_option "$OPKG_CONFIG_FILE" "$1"
-}
-
-opkg_option_exists() {
-	read_opkg_option "$1" >/dev/null 2>&1
+read_legacy_option() {
+	read_uci_file_option "$LEGACY_CONFIG_FILE" "$1"
 }
 
 source_has_custom_values() {
@@ -90,8 +87,8 @@ source_has_custom_values() {
 				active_option_exists "$option" || continue
 				value="$(read_active_option "$option")"
 				;;
-			opkg)
-				value="$(read_opkg_option "$option")" || continue
+			legacy)
+				value="$(read_legacy_option "$option")" || continue
 				;;
 			*)
 				return 1
@@ -109,10 +106,10 @@ source_has_custom_values() {
 read_snapshot_option() {
 	local option="$1"
 	local active_has_custom="$2"
-	local opkg_has_custom="$3"
+	local legacy_has_custom="$3"
 	local value
 
-	if [ "$opkg_has_custom" -eq 1 ] && [ "$active_has_custom" -eq 0 ] && value="$(read_opkg_option "$option")"; then
+	if [ "$legacy_has_custom" -eq 1 ] && [ "$active_has_custom" -eq 0 ] && value="$(read_legacy_option "$option")"; then
 		printf '%s' "$value"
 		return 0
 	fi
@@ -122,7 +119,7 @@ read_snapshot_option() {
 		return 0
 	fi
 
-	if value="$(read_opkg_option "$option")"; then
+	if value="$(read_legacy_option "$option")"; then
 		printf '%s' "$value"
 		return 0
 	fi
@@ -133,13 +130,13 @@ read_snapshot_option() {
 snapshot_existing_config() {
 	local option old_value normalized_value
 	local active_has_custom=0
-	local opkg_has_custom=0
+	local legacy_has_custom=0
 
 	source_has_custom_values active && active_has_custom=1
-	source_has_custom_values opkg && opkg_has_custom=1
+	source_has_custom_values legacy && legacy_has_custom=1
 
 	for option in $(nordvpn_easy_uci_options); do
-		old_value="$(read_snapshot_option "$option" "$active_has_custom" "$opkg_has_custom")"
+		old_value="$(read_snapshot_option "$option" "$active_has_custom" "$legacy_has_custom")"
 		normalized_value="$(nordvpn_easy_normalize_value "$option" "$old_value")"
 		eval "snapshot_${option}='$(nordvpn_easy_shell_quote "$normalized_value")'"
 	done
@@ -182,4 +179,4 @@ apply_snapshot_to_uci() {
 snapshot_existing_config
 install_template_config
 apply_snapshot_to_uci
-rm -f -- "$OPKG_CONFIG_FILE"
+rm -f -- "$LEGACY_CONFIG_FILE"
