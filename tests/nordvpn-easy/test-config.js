@@ -261,9 +261,9 @@ function loadConfigView(options) {
 		renderCountryChoices: [],
 		renderLocalStatusSnapshot: [],
 		updateLocalStatus: [],
-			updatePublicIp: [],
-			loadServerCatalog: [],
-			updateServerSelectionState: [],
+		updatePublicIp: [],
+		loadServerCatalog: [],
+		updateServerSelectionState: [],
 		onCountryChanged: 0,
 		onModeChanged: 0,
 		pollingStart: []
