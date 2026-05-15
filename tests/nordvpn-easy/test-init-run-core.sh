@@ -235,6 +235,30 @@ chmod +x "$TMP_DIR/core.sh"
 
 CORE_SCRIPT="$TMP_DIR/core.sh"
 
+cfg_enabled=1
+cfg_nordvpn_token='token-secret'
+cfg_vpn_if='wg0'
+NETWORK_PROTO='wireguard'
+NETWORK_DISABLED=''
+INSTALL_HOOKS_COUNT=0
+CORE_EXIT_RC='0'
+rm -f "$CORE_CAPTURE"
+: > "$INFO_CAPTURE"
+: > "$ERROR_CAPTURE"
+RC=0
+reconcile || RC=$?
+assert_eq '0' "$RC" 'reconcile succeeds through core reconcile when runtime is already configured'
+CORE_ARGS="$(cat "$CORE_CAPTURE")"
+case "$CORE_ARGS" in
+	"reconcile --config $TMP_DIR"/action.*"/nordvpn-easy.reconcile.conf")
+		;;
+	*)
+		printf '%s\n' "FAIL: configured reconcile should run the core reconcile action: $CORE_ARGS" >&2
+		exit 1
+		;;
+esac
+assert_eq '1' "$INSTALL_HOOKS_COUNT" 'configured reconcile installs hooks after successful runtime sync'
+
 : > "$INFO_CAPTURE"
 : > "$ERROR_CAPTURE"
 run_core_action status_json

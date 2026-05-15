@@ -86,10 +86,11 @@ curl_rc_meaning () {
 
 usage () {
   cat <<EOF
-Usage: $0 [check|setup|rotate|refresh_countries|refresh_countries_force|server_catalog|public_ip|public_country|operation_status|vpn_status|status_json|diagnostics_log|run|help] [--config config_file] [extra_args]
+Usage: $0 [check|reconcile|setup|rotate|refresh_countries|refresh_countries_force|server_catalog|public_ip|public_country|operation_status|vpn_status|status_json|diagnostics_log|run|help] [--config config_file] [extra_args]
 
 Commands:
   check   Run one VPN health-check cycle (default)
+  reconcile  Synchronize runtime state with the selected server configuration
   setup   Configure the WireGuard interface and firewall if needed
   rotate  Download a fresh server list and switch server
   refresh_countries  Refresh the cached NordVPN country list if needed
@@ -939,6 +940,10 @@ sync_server_selection () {
   nordvpn_easy_sync_server_selection "$@"
 }
 
+reconcile_action () {
+  nordvpn_easy_reconcile_action "$@"
+}
+
 change_vpn_server () {
   nordvpn_easy_change_vpn_server "$@"
 }
@@ -969,7 +974,7 @@ ACTION_STARTED_AT=''
 
 if [ $# -gt 0 ]; then
   case "$1" in
-    check|setup|rotate|refresh_countries|refresh_countries_force|server_catalog|public_ip|public_country|operation_status|vpn_status|status_json|diagnostics_log|run|help)
+    check|reconcile|setup|rotate|refresh_countries|refresh_countries_force|server_catalog|public_ip|public_country|operation_status|vpn_status|status_json|diagnostics_log|run|help)
       ACTION="$1"
       shift
       ;;
@@ -1137,6 +1142,11 @@ ACTION_RC=0
 case "$ACTION" in
   run|check)
     bootstrap_if_needed && check_once
+    ACTION_RC=$?
+    ;;
+  reconcile)
+    validate_setup_runtime &&
+    reconcile_action
     ACTION_RC=$?
     ;;
   setup)

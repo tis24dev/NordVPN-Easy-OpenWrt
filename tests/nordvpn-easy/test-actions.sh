@@ -128,6 +128,11 @@ nordvpn_easy_preferred_server_matches_current() {
 	[ -n "$PREFERRED_SERVER_STATION" ] || return 1
 	[ "$(nordvpn_easy_current_server_station)" = "$PREFERRED_SERVER_STATION" ]
 }
+nordvpn_easy_current_server_matches_recommendations() {
+	jq -e --arg current "$CURRENT_SERVER_VALUE" '
+		[ .[] | select(.station == $current) ] | length > 0
+	' "$SERVER_LIST_FILE" >/dev/null 2>&1
+}
 nordvpn_easy_apply_server_change_runtime() {
 	APPLY_COUNT=$((APPLY_COUNT + 1))
 	if [ "$APPLY_COUNT" -le "$APPLY_FAIL_UNTIL" ]; then
@@ -189,6 +194,20 @@ nordvpn_easy_change_vpn_server reload
 assert_eq '2' "$APPLY_COUNT" 'recommended rotation retries next candidate after apply failure'
 assert_eq '2' "$COMMIT_NETWORK_COUNT" 'recommended rotation commits each tried candidate'
 assert_eq 'it45.nordvpn.com|it456' "$LAST_SET_SERVER" 'recommended rotation lands on second candidate'
+
+SERVER_SELECTION_MODE='auto'
+CURRENT_SERVER_VALUE='bz1'
+APPLY_FAIL_UNTIL=0
+APPLY_COUNT=0
+COMMIT_NETWORK_COUNT=0
+LAST_SET_SERVER=''
+SET_SEQUENCE=''
+
+nordvpn_easy_sync_server_selection
+
+assert_eq '1' "$APPLY_COUNT" 'auto sync rotates when the active server is outside selected country recommendations'
+assert_eq '1' "$COMMIT_NETWORK_COUNT" 'auto sync commits the replacement recommended server once'
+assert_eq 'it12.nordvpn.com|it123' "$LAST_SET_SERVER" 'auto sync lands on a recommended server for the selected country'
 
 APPLY_FAIL_UNTIL=0
 APPLY_COUNT=0
@@ -469,6 +488,30 @@ if [ -f "$(nordvpn_easy_pending_network_reload_marker_path)" ]; then
 	printf '%s\n' 'FAIL: successful pending reload retry should clear marker' >&2
 	exit 1
 fi
+
+VPN_CONFIGURED_RC=0
+BOOTSTRAP_ENABLE_COUNT=0
+BOOTSTRAP_BASE_COUNT=0
+BOOTSTRAP_TRANSPORT_COUNT=0
+BOOTSTRAP_ZONE_COUNT=0
+BOOTSTRAP_PRESENT_COUNT=0
+SERVER_SELECTION_MODE='auto'
+CURRENT_SERVER_VALUE='bz1'
+APPLY_FAIL_UNTIL=0
+APPLY_COUNT=0
+COMMIT_NETWORK_COUNT=0
+LAST_SET_SERVER=''
+PING_COUNT=0
+PING_FAIL_UNTIL=0
+SERVER_ROTATE_THRESHOLD=99
+INTERFACE_RESTART_THRESHOLD=99
+
+nordvpn_easy_reconcile_action
+
+assert_eq '1' "$BOOTSTRAP_ENABLE_COUNT" 'reconcile action bootstraps an already configured interface'
+assert_eq '1' "$APPLY_COUNT" 'reconcile action syncs away from a healthy but mismatched automatic server'
+assert_eq 'it12.nordvpn.com|it123' "$LAST_SET_SERVER" 'reconcile action applies a recommended server for the selected country'
+assert_eq '1' "$PING_COUNT" 'reconcile action health-checks after server selection sync'
 
 NORDVPN_EASY_NETWORK_INIT="$TMP_DIR/network-fail.sh"
 cat > "$NORDVPN_EASY_NETWORK_INIT" <<'EOF'
