@@ -10,6 +10,7 @@ return baseclass.extend({
 	updatePublicIp: managerActions.updatePublicIp,
 	updatePublicCountry: managerActions.updatePublicCountry,
 	updateLocalStatus: managerActions.updateLocalStatus,
+	maybeAutoReconcileSelectionDrift: managerActions.maybeAutoReconcileSelectionDrift,
 	onCountryChanged: managerActions.onCountryChanged,
 	onModeChanged: managerActions.onModeChanged,
 	handleRefreshServerCatalog: managerActions.handleRefreshServerCatalog,

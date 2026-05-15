@@ -235,6 +235,12 @@ nordvpn_easy_current_server_station() {
 	uci -q get "network.${vpn_if}server.nordvpn_station" 2>/dev/null || true
 }
 
+nordvpn_easy_current_server_country() {
+	local vpn_if="${VPN_IF:-wg0}"
+
+	uci -q get "network.${vpn_if}server.nordvpn_country_code" 2>/dev/null || true
+}
+
 nordvpn_easy_set_server_preference_in_uci() {
 	uci set "nordvpn_easy.main.preferred_server_hostname"="$1"
 	uci set "nordvpn_easy.main.preferred_server_station"="$2"

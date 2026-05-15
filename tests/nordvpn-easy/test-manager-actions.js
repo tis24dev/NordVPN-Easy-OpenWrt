@@ -101,6 +101,7 @@ function loadManagerActionsModule(overrides) {
 			return null;
 		},
 		console: console,
+		Date: Date,
 		setTimeout: setTimeout,
 		clearTimeout: clearTimeout,
 		Promise: Promise
@@ -193,6 +194,8 @@ const missingRuntime = {
 const unknownRuntime = {};
 
 assert.equal(typeof managerActions.hasServerSelectionChanged, 'function', 'hasServerSelectionChanged is exported');
+assert.equal(typeof managerActions.deriveServerSelectionDrift, 'function', 'deriveServerSelectionDrift is exported');
+assert.equal(typeof managerActions.maybeAutoReconcileSelectionDrift, 'function', 'maybeAutoReconcileSelectionDrift is exported');
 assert.equal(typeof managerActions.deriveRuntimeActionPlan, 'function', 'deriveRuntimeActionPlan is exported');
 assert.equal(typeof managerActions.renderLocalStatusSnapshot, 'function', 'renderLocalStatusSnapshot is exported');
 assert.equal(managerData.parseEnabledFlag(undefined), false, 'missing enabled option is treated as disabled');
@@ -1267,6 +1270,181 @@ async function testHandleSaveApplyReconcilesDisabledRuntimeAfterSave() {
 	assert.ok(harness.serviceCalls.indexOf('status_json') !== -1, 'reconcile flow refreshes status before choosing runtime action');
 }
 
+async function testAutoReconcileRunsForCountryDrift() {
+	const harness = buildHandleSaveApplyHarness({
+		previousEnabled: true,
+		savedCountry: 'AU',
+		statusPayload: {
+			desired_enabled: true,
+			runtime_disabled: false,
+			interface_disabled: false,
+			runtime_configured: true,
+			operation_status: 'idle',
+			operation_lock_state: 'none',
+			selected_country: 'AU',
+			server_selection_mode: 'auto',
+			current_server_country: 'AU',
+			current_server_station: 'au123'
+		}
+	});
+	const driftStatus = {
+		desired_enabled: true,
+		runtime_disabled: false,
+		interface_disabled: false,
+		runtime_configured: true,
+		operation_status: 'idle',
+		operation_lock_state: 'none',
+		selected_country: 'AU',
+		server_selection_mode: 'auto',
+		current_server_country: 'BM',
+		current_server_station: 'bm3'
+	};
+
+	harness.state.appliedCountryCode = 'AU';
+	harness.state.currentLocalStatus = driftStatus;
+
+	await harness.actions.maybeAutoReconcileSelectionDrift(harness.state, driftStatus);
+
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'reconcile' ] ], 'country drift queues exactly one reconcile');
+	assert.equal(harness.state.pendingOperationLabel, '', 'auto reconcile clears the pending label after completion');
+	assert.ok(harness.phaseTransitions.indexOf('runtime_busy') !== -1, 'auto reconcile enters runtime-busy phase');
+	assert.ok(harness.serviceCalls.indexOf('status_json') !== -1, 'auto reconcile refreshes status after completion');
+	assert.ok(harness.serviceCalls.indexOf('public_ip') !== -1, 'auto reconcile refreshes public IP after completion');
+}
+
+async function testAutoReconcileSkipsNonDriftCases() {
+	const cases = [
+		{
+			label: 'busy runtime',
+			status: {
+				desired_enabled: true,
+				runtime_disabled: false,
+				interface_disabled: false,
+				runtime_configured: true,
+				operation_status: 'busy:check',
+				operation_lock_state: 'held',
+				selected_country: 'AU',
+				server_selection_mode: 'auto',
+				current_server_country: 'BM',
+				current_server_station: 'bm3'
+			}
+		},
+		{
+			label: 'disabled runtime',
+			state: { appliedEnabled: false },
+			status: {
+				desired_enabled: false,
+				runtime_disabled: true,
+				interface_disabled: true,
+				runtime_configured: true,
+				operation_status: 'idle',
+				selected_country: 'AU',
+				server_selection_mode: 'auto',
+				current_server_country: 'BM',
+				current_server_station: 'bm3'
+			}
+		},
+		{
+			label: 'automatic country',
+			status: {
+				desired_enabled: true,
+				runtime_disabled: false,
+				interface_disabled: false,
+				runtime_configured: true,
+				operation_status: 'idle',
+				selected_country: '',
+				server_selection_mode: 'auto',
+				current_server_country: 'BM',
+				current_server_station: 'bm3'
+			}
+		},
+		{
+			label: 'aligned country',
+			status: {
+				desired_enabled: true,
+				runtime_disabled: false,
+				interface_disabled: false,
+				runtime_configured: true,
+				operation_status: 'idle',
+				selected_country: 'AU',
+				server_selection_mode: 'auto',
+				current_server_country: 'AU',
+				current_server_station: 'au123'
+			}
+		},
+		{
+			label: 'manual missing preference',
+			status: {
+				desired_enabled: true,
+				runtime_disabled: false,
+				interface_disabled: false,
+				runtime_configured: true,
+				operation_status: 'idle',
+				selected_country: 'AU',
+				server_selection_mode: 'manual',
+				preferred_server_station: '',
+				current_server_station: 'au123'
+			}
+		}
+	];
+
+	for (const testCase of cases) {
+		const harness = buildHandleSaveApplyHarness({
+			previousEnabled: true,
+			savedCountry: 'AU',
+			state: Object.assign({ appliedEnabled: true, appliedCountryCode: 'AU' }, testCase.state || {})
+		});
+
+		harness.state.currentLocalStatus = testCase.status;
+		await harness.actions.maybeAutoReconcileSelectionDrift(harness.state, testCase.status);
+		assert.deepEqual(normalizeValue(harness.runtimeActions), [], 'auto reconcile skips ' + testCase.label);
+	}
+}
+
+async function testAutoReconcileThrottlesRepeatedFailures() {
+	const runError = new Error('reconcile exploded');
+	const harness = buildHandleSaveApplyHarness({
+		previousEnabled: true,
+		savedCountry: 'AU',
+		runActionsReject: runError,
+		statusPayload: {
+			desired_enabled: true,
+			runtime_disabled: false,
+			interface_disabled: false,
+			runtime_configured: true,
+			operation_status: 'idle',
+			operation_lock_state: 'none',
+			selected_country: 'AU',
+			server_selection_mode: 'auto',
+			current_server_country: 'BM',
+			current_server_station: 'bm3'
+		}
+	});
+	const driftStatus = {
+		desired_enabled: true,
+		runtime_disabled: false,
+		interface_disabled: false,
+		runtime_configured: true,
+		operation_status: 'idle',
+		operation_lock_state: 'none',
+		selected_country: 'AU',
+		server_selection_mode: 'auto',
+		current_server_country: 'BM',
+		current_server_station: 'bm3'
+	};
+
+	harness.state.appliedCountryCode = 'AU';
+	harness.state.currentLocalStatus = driftStatus;
+
+	await harness.actions.maybeAutoReconcileSelectionDrift(harness.state, driftStatus);
+	await harness.actions.maybeAutoReconcileSelectionDrift(harness.state, driftStatus);
+
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'reconcile' ] ], 'failed auto reconcile is throttled for the same drift');
+	assert.match(harness.notifications[harness.notifications.length - 1].message, /Automatic runtime sync failed: reconcile exploded/, 'auto reconcile failure is reported once');
+	assert.equal(harness.notifications.length, 1, 'throttled auto reconcile does not repeat notifications');
+	assert.equal(harness.state.lastAutoReconcileFailureKey, 'auto:AU:BM', 'throttle records the drift key');
+}
+
 Promise.resolve().then(async function() {
 	await testUpdateLocalStatusMarksSnapshotsStaleOnFailedResponse();
 	await testUpdateLocalStatusMarksSnapshotsStaleOnRejectedExec();
@@ -1281,6 +1459,9 @@ Promise.resolve().then(async function() {
 	await testHandleSaveApplyClearsBusyStateWhenPostApplySyncFails();
 	await testHandleSaveApplyAutoModeClearsManualSelectionAndReconnects();
 	await testHandleSaveApplyReconcilesDisabledRuntimeAfterSave();
+	await testAutoReconcileRunsForCountryDrift();
+	await testAutoReconcileSkipsNonDriftCases();
+	await testAutoReconcileThrottlesRepeatedFailures();
 	console.log('test-manager-actions.js: ok');
 }).catch(function(err) {
 	console.error(err);

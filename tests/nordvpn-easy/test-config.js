@@ -262,6 +262,7 @@ function loadConfigView(options) {
 		renderLocalStatusSnapshot: [],
 		updateLocalStatus: [],
 		updatePublicIp: [],
+		maybeAutoReconcileSelectionDrift: [],
 		loadServerCatalog: [],
 		updateServerSelectionState: [],
 		onCountryChanged: 0,
@@ -337,6 +338,13 @@ function loadConfigView(options) {
 					options: normalizeValue(updateOptions)
 				});
 				return Promise.resolve();
+			},
+			maybeAutoReconcileSelectionDrift(renderState, status) {
+				calls.maybeAutoReconcileSelectionDrift.push({
+					state: renderState,
+					status: normalizeValue(status)
+				});
+				return Promise.resolve(false);
 			},
 			loadServerCatalog(renderState, country, forceRefresh) {
 				calls.loadServerCatalog.push({

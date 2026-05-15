@@ -248,6 +248,9 @@ function updateCountryMatchStatus(state) {
 	if (state.currentOperationStatus.indexOf('busy:') === 0) {
 		busyAction = state.currentOperationStatus.substring(5);
 
+		if (busyAction === 'reconcile')
+			return setCountryMatchIndicator('checking', _('Syncing'));
+
 		if (busyAction !== 'refresh_countries' && busyAction !== 'server_catalog' && !actualCountry)
 			return setCountryMatchIndicator('checking', _('Checking'));
 	}
@@ -255,6 +258,9 @@ function updateCountryMatchStatus(state) {
 		if (!actualCountry)
 			return setCountryMatchIndicator('checking', _('Checking'));
 	}
+
+	if (state.pendingOperationLabel === 'reconcile')
+		return setCountryMatchIndicator('checking', _('Syncing'));
 
 	if (!expectedCountry)
 		return setCountryMatchIndicator('automatic', _('Automatic'));

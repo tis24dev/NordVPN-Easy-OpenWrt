@@ -31,6 +31,8 @@ function createState() {
 		currentServerCatalog: managerData.emptyServerCatalog(),
 		serverCatalogIndex: {},
 		latestServerCatalogRequestId: 0,
+		lastAutoReconcileFailureKey: '',
+		lastAutoReconcileFailureAt: 0,
 		pollingSuspended: false,
 		pollersStarted: false,
 		lastError: '',
@@ -38,7 +40,8 @@ function createState() {
 			status: null,
 			publicIp: null,
 			publicCountry: null,
-			catalog: null
+			catalog: null,
+			autoReconcile: null
 		}
 	};
 }
