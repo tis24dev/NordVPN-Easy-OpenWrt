@@ -44,6 +44,7 @@
 					"connect",
 					"disconnect",
 					"reconnect",
+					"reconcile",
 					"rotate",
 					"setup",
 					"check",

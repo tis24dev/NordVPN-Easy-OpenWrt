@@ -201,26 +201,16 @@ const TokenValue = form.Value.extend({
 	}
 });
 
-return view.extend({
-	load: function() {
-		const uciLoad = uci.load('nordvpn_easy');
-		const countriesCachePromise = L.resolveDefault(fs.read(COUNTRIES_CACHE_PATH), '[]');
-		const statusPromise = L.resolveDefault(service.execService('status_json'), null);
-
-		return Promise.all([ uciLoad, countriesCachePromise, statusPromise ]).then(function(results) {
-			const countriesRaw = results[1];
-			const statusResult = results[2];
-			const statusPayload = service.parseExecJsonResponse(statusResult, null);
-			const runtimeBusy = statusPayloadIsBusy(statusPayload);
-			const configuredCountry = managerData.normalizeCountryCode(uci.get('nordvpn_easy', 'main', 'vpn_country') || '');
-			const currentMode = String(uci.get('nordvpn_easy', 'main', 'server_selection_mode') || 'auto');
-			const catalogPromise = managerStore.shouldLoadCatalog(currentMode, configuredCountry) && !runtimeBusy
-				? L.resolveDefault(service.execService('server_catalog', [ configuredCountry ]), null)
-				: Promise.resolve(null);
-
-			return Promise.all([ Promise.resolve(countriesRaw), Promise.resolve(statusResult), catalogPromise ]);
-		});
-	},
+	return view.extend({
+		load: function() {
+			const uciLoad = uci.load('nordvpn_easy');
+			const countriesCachePromise = L.resolveDefault(fs.read(COUNTRIES_CACHE_PATH), '[]');
+			const statusPromise = L.resolveDefault(service.execService('status_json'), null);
+	
+			return Promise.all([ uciLoad, countriesCachePromise, statusPromise ]).then(function(results) {
+				return [ results[1], results[2], null ];
+			});
+		},
 
 	handleRefreshServerCatalog: function(ev) {
 		return managerActions.handleRefreshServerCatalog(state, ev);
@@ -334,6 +324,14 @@ return view.extend({
 			managerActions.renderLocalStatusSnapshot(state, state.currentLocalStatus);
 			if (!countries.length && !statusPayloadIsBusy(initialStatusPayload))
 				refreshCountriesInBackground(countrySelect, currentCountry);
+
+			if (!state.currentServerCatalog.servers.length &&
+				managerStore.shouldLoadCatalog(currentMode, currentCountry) &&
+				!statusPayloadIsBusy(initialStatusPayload)) {
+				managerActions.loadServerCatalog(state, currentCountry, false).catch(function(err) {
+					service.notifyError(err);
+				});
+			}
 
 			if (!state.currentLocalStatusFresh)
 				managerActions.updateLocalStatus(state, { force: true });

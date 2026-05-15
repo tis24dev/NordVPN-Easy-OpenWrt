@@ -4,6 +4,7 @@ set -eu
 
 ROOT_DIR="$(CDPATH='' cd -- "$(dirname "$0")/../.." && pwd)"
 RPCD_SCRIPT="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/rpcd/nordvpn.easy"
+ACL_FILE="$ROOT_DIR/openwrt-packages/luci-app-nordvpn-easy/root/usr/share/rpcd/acl.d/luci-app-nordvpn-easy.json"
 LIB_DIR="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib"
 TMP_DIR="$(mktemp -d)"
 
@@ -20,11 +21,16 @@ printf '%s' "$LIST_JSON" | jq -er '
 	.connect == {} and
 	.disconnect == {} and
 	.reconnect == {} and
+	.reconcile == {} and
 	.refresh_countries.force == "Boolean" and
 	.refresh_servers.country == "String" and
 	.refresh_servers.force == "Boolean" and
 	.diagnostics == {}
 ' >/dev/null
+
+jq -er '
+	."luci-app-nordvpn-easy".write.ubus."nordvpn.easy" | index("reconcile")
+' "$ACL_FILE" >/dev/null
 
 UNKNOWN_JSON="$(printf '{}' | NORDVPN_EASY_LIB_DIR="$LIB_DIR" sh "$RPCD_SCRIPT" call unknown)"
 printf '%s' "$UNKNOWN_JSON" | jq -er '
@@ -132,6 +138,9 @@ case "\$1" in
 	connect)
 		exit 0
 		;;
+	reconcile)
+		exit 0
+		;;
 	check)
 		exit 75
 		;;
@@ -159,6 +168,27 @@ case "$(cat "$TX_CAPTURE")" in
 		;;
 	*)
 		printf '%s\n' 'FAIL: rpc connect should invoke the init connect transaction exactly once' >&2
+		exit 1
+		;;
+esac
+
+RECONCILE_JSON="$(
+	printf '{}' |
+		NORDVPN_EASY_LIB_DIR="$LIB_DIR" \
+		NORDVPN_EASY_INIT_SCRIPT="$TX_INIT" \
+		sh "$RPCD_SCRIPT" call reconcile
+)"
+printf '%s' "$RECONCILE_JSON" | jq -er '
+	.success == true and
+	.action == "reconcile" and
+	.busy == false and
+	.skipped == false
+' >/dev/null
+case "$(tail -n 1 "$TX_CAPTURE")" in
+	reconcile)
+		;;
+	*)
+		printf '%s\n' 'FAIL: rpc reconcile should invoke the init reconcile transaction exactly once' >&2
 		exit 1
 		;;
 esac

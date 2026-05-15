@@ -286,7 +286,7 @@ assert.deepEqual(
 assert.deepEqual(
 	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'UY', 'UY', 'auto', 'auto', '', '', disabledRuntime)),
 	{
-		actions: [ 'reconnect' ],
+		actions: [ 'reconcile' ],
 		successMessage: 'NordVPN Easy runtime synchronized with the saved configuration.',
 		serverSelectionChanged: false
 	},
@@ -296,7 +296,7 @@ assert.deepEqual(
 assert.deepEqual(
 	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'UY', 'UY', 'auto', 'auto', '', '', missingRuntime)),
 	{
-		actions: [ 'reconnect' ],
+		actions: [ 'reconcile' ],
 		successMessage: 'NordVPN Easy runtime synchronized with the saved configuration.',
 		serverSelectionChanged: false
 	},
@@ -306,7 +306,7 @@ assert.deepEqual(
 assert.deepEqual(
 	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'UY', 'UY', 'auto', 'auto', '', '', unknownRuntime)),
 	{
-		actions: [ 'reconnect' ],
+		actions: [ 'reconcile' ],
 		successMessage: 'NordVPN Easy runtime synchronized with the saved configuration.',
 		serverSelectionChanged: false
 	},
@@ -316,7 +316,7 @@ assert.deepEqual(
 assert.deepEqual(
 	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'UY', 'UY', 'auto', 'auto', '', '', null)),
 	{
-		actions: [ 'reconnect' ],
+		actions: [ 'reconcile' ],
 		successMessage: 'NordVPN Easy runtime synchronized with the saved configuration.',
 		serverSelectionChanged: false
 	},
@@ -1237,6 +1237,36 @@ async function testHandleSaveApplyAutoModeClearsManualSelectionAndReconnects() {
 	assert.ok(harness.serviceCalls.indexOf('status_json') !== -1, 'save/apply refreshes local status during the flow');
 }
 
+async function testHandleSaveApplyReconcilesDisabledRuntimeAfterSave() {
+	const harness = buildHandleSaveApplyHarness({
+		previousEnabled: true,
+		previousCountry: 'UY',
+		currentEnabled: true,
+		currentMode: 'auto',
+		currentCountry: 'UY',
+		savedEnabled: '1',
+		savedCountry: 'UY',
+		statusPayload: {
+			desired_enabled: true,
+			runtime_disabled: true,
+			interface_disabled: true,
+			runtime_configured: true,
+			operation_status: 'idle',
+			selected_country: 'UY',
+			server_selection_mode: 'auto',
+			preferred_server_station: ''
+		}
+	});
+
+	await harness.actions.handleSaveApply(harness.viewState, harness.state, {}, '1');
+	await Promise.resolve();
+	await Promise.resolve();
+
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'reconcile' ] ], 'unchanged enabled config reconciles a disabled runtime after Save & Apply');
+	assert.equal(harness.state.pendingOperationLabel, '', 'reconcile completion clears pending operation label');
+	assert.ok(harness.serviceCalls.indexOf('status_json') !== -1, 'reconcile flow refreshes status before choosing runtime action');
+}
+
 Promise.resolve().then(async function() {
 	await testUpdateLocalStatusMarksSnapshotsStaleOnFailedResponse();
 	await testUpdateLocalStatusMarksSnapshotsStaleOnRejectedExec();
@@ -1250,6 +1280,7 @@ Promise.resolve().then(async function() {
 	await testHandleSaveApplyContinuesWhenUciAppliedEventIsMissing();
 	await testHandleSaveApplyClearsBusyStateWhenPostApplySyncFails();
 	await testHandleSaveApplyAutoModeClearsManualSelectionAndReconnects();
+	await testHandleSaveApplyReconcilesDisabledRuntimeAfterSave();
 	console.log('test-manager-actions.js: ok');
 }).catch(function(err) {
 	console.error(err);

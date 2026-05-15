@@ -202,11 +202,14 @@ rpc_call() {
 		disconnect)
 			rpc_disconnect
 			;;
-		reconnect)
-			rpc_reconnect
-			;;
-		rotate)
-			rpc_command_result 'rotate' "$INIT_SCRIPT" rotate
+			reconnect)
+				rpc_reconnect
+				;;
+			reconcile)
+				rpc_command_result 'reconcile' "$INIT_SCRIPT" reconcile
+				;;
+			rotate)
+				rpc_command_result 'rotate' "$INIT_SCRIPT" rotate
 			;;
 		setup)
 			rpc_command_result 'setup' "$INIT_SCRIPT" setup
@@ -249,10 +252,11 @@ case "$1" in
 		cat <<'EOF'
 {
   "status": {},
-  "connect": {},
-  "disconnect": {},
-  "reconnect": {},
-  "rotate": {},
+	  "connect": {},
+	  "disconnect": {},
+	  "reconnect": {},
+	  "reconcile": {},
+	  "rotate": {},
   "setup": {},
   "check": {},
   "install_hooks": {},

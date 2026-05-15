@@ -213,4 +213,55 @@ assert_file_missing_line "	option nordvpn_basic_token 'legacy-token'" "$FAKE_UCI
 	exit 1
 }
 
+reset_fake_uci
+cat > "$FAKE_OPKG_CONFIG_FILE" <<'EOF'
+config nordvpn_easy 'main'
+	option enabled 'yes'
+	option nordvpn_token 'opkg-secret-token'
+	option vpn_country 'BM'
+	option server_selection_mode 'manual'
+	option preferred_server_hostname "bm1.nordvpn.com"
+	option preferred_server_station 'bm1'
+	option check_cron_schedule '*/5 * * * *'
+	option wireguard_mtu '1412'
+EOF
+
+run_migrator
+
+assert_file_has_line "	option enabled '1'" "$FAKE_UCI_CONFIG_FILE" 'opkg recovery normalizes enabled flag'
+assert_file_has_line "	option nordvpn_token 'opkg-secret-token'" "$FAKE_UCI_CONFIG_FILE" 'opkg recovery preserves NordVPN token'
+assert_file_has_line "	option vpn_country 'BM'" "$FAKE_UCI_CONFIG_FILE" 'opkg recovery preserves selected country'
+assert_file_has_line "	option server_selection_mode 'manual'" "$FAKE_UCI_CONFIG_FILE" 'opkg recovery preserves manual mode'
+assert_file_has_line "	option preferred_server_hostname 'bm1.nordvpn.com'" "$FAKE_UCI_CONFIG_FILE" 'opkg recovery parses double-quoted hostname'
+assert_file_has_line "	option preferred_server_station 'bm1'" "$FAKE_UCI_CONFIG_FILE" 'opkg recovery preserves manual station'
+assert_file_has_line "	option check_cron_schedule '*/5 * * * *'" "$FAKE_UCI_CONFIG_FILE" 'opkg recovery preserves cron schedule'
+assert_file_has_line "	option wireguard_mtu '1412'" "$FAKE_UCI_CONFIG_FILE" 'opkg recovery preserves WireGuard MTU'
+
+[ ! -e "$FAKE_OPKG_CONFIG_FILE" ] || {
+	printf '%s\n' 'FAIL: migrator did not remove recovered nordvpn_easy-opkg file' >&2
+	exit 1
+}
+
+reset_fake_uci
+set_store_value '__section__' 'nordvpn_easy'
+set_store_value 'enabled' '1'
+set_store_value 'nordvpn_token' 'active-secret-token'
+set_store_value 'vpn_country' 'CH'
+cat > "$FAKE_OPKG_CONFIG_FILE" <<'EOF'
+config nordvpn_easy 'main'
+	option enabled 'yes'
+	option nordvpn_token 'stale-opkg-token'
+	option vpn_country 'AT'
+EOF
+
+run_migrator
+
+assert_file_has_line "	option nordvpn_token 'active-secret-token'" "$FAKE_UCI_CONFIG_FILE" 'active config wins over stale opkg token'
+assert_file_has_line "	option vpn_country 'CH'" "$FAKE_UCI_CONFIG_FILE" 'active config wins over stale opkg country'
+
+[ ! -e "$FAKE_OPKG_CONFIG_FILE" ] || {
+	printf '%s\n' 'FAIL: migrator did not remove stale nordvpn_easy-opkg after active config won' >&2
+	exit 1
+}
+
 printf '%s\n' 'test-migrate-config.sh: ok'

@@ -24,6 +24,11 @@ const callReconnect = rpc.declare({
 	method: 'reconnect'
 });
 
+const callReconcile = rpc.declare({
+	object: 'nordvpn.easy',
+	method: 'reconcile'
+});
+
 const callRotate = rpc.declare({
 	object: 'nordvpn.easy',
 	method: 'rotate'
@@ -199,6 +204,8 @@ function callSimpleAction(action) {
 		return callDisconnect();
 	case 'reconnect':
 		return callReconnect();
+	case 'reconcile':
+		return callReconcile();
 	case 'rotate':
 		return callRotate();
 	case 'setup':

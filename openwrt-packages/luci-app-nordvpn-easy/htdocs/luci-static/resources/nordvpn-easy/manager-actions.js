@@ -137,7 +137,7 @@ function deriveRuntimeActionPlan(previousEnabled, enabled, previousCountry, coun
 	}
 
 	if (runtimeReconciliationRequired) {
-		plan.actions = [ 'reconnect' ];
+		plan.actions = [ 'reconcile' ];
 		plan.successMessage = _('NordVPN Easy runtime synchronized with the saved configuration.');
 	}
 
@@ -590,6 +590,41 @@ function handleRefreshServerCatalog(state, ev) {
 	});
 }
 
+function loadSavedRuntimeConfig() {
+	return Promise.resolve().then(function() {
+		uci.unload('nordvpn_easy');
+		return uci.load('nordvpn_easy');
+	}).then(function() {
+		return {
+			enabled: managerData.parseEnabledFlag(uci.get('nordvpn_easy', 'main', 'enabled')),
+			country: managerData.normalizeCountryCode(uci.get('nordvpn_easy', 'main', 'vpn_country') || ''),
+			mode: String(uci.get('nordvpn_easy', 'main', 'server_selection_mode') || 'auto'),
+			preferredStation: String(uci.get('nordvpn_easy', 'main', 'preferred_server_station') || '')
+		};
+	});
+}
+
+function rememberSavedRuntimeConfig(viewState, state, savedConfig) {
+	viewState.initialEnabled = savedConfig.enabled;
+	viewState.initialCountry = savedConfig.country;
+	viewState.initialMode = savedConfig.mode;
+	viewState.initialPreferredStation = savedConfig.preferredStation;
+	state.appliedEnabled = savedConfig.enabled;
+	state.appliedCountryCode = savedConfig.country;
+}
+
+function refreshAfterSaveApply(state, refreshPublicIp) {
+	state.pendingOperationLabel = '';
+	managerStore.resumePolling(state);
+
+	return updateLocalStatus(state, { force: true }).then(function() {
+		if (refreshPublicIp)
+			return updatePublicIp(state, { force: true });
+
+		return null;
+	});
+}
+
 function handleSaveApply(viewState, state, ev, mode) {
 	const previousEnabled = !!viewState.initialEnabled;
 	const previousCountry = viewState.initialCountry || '';
@@ -691,7 +726,7 @@ function handleSaveApply(viewState, state, ev, mode) {
 
 		return new Promise(function(resolve, reject) {
 			let settled = false;
-			let timeoutId = null;
+				let timeoutId = null;
 
 				const cleanup = function() {
 					if (timeoutId !== null) {
@@ -730,82 +765,67 @@ function handleSaveApply(viewState, state, ev, mode) {
 
 			Promise.resolve(viewState.handleSave(ev)).then(function() {
 				const continueAfterUciApply = function() {
-					return Promise.resolve().then(function() {
-						uci.unload('nordvpn_easy');
-						return uci.load('nordvpn_easy');
-					}).then(function() {
-						const enabled = managerData.parseEnabledFlag(uci.get('nordvpn_easy', 'main', 'enabled'));
-						const country = managerData.normalizeCountryCode(uci.get('nordvpn_easy', 'main', 'vpn_country') || '');
-						const modeValue = String(uci.get('nordvpn_easy', 'main', 'server_selection_mode') || 'auto');
-						const preferred = String(uci.get('nordvpn_easy', 'main', 'preferred_server_station') || '');
-						const localStatus = state.currentLocalStatusFresh ? state.currentLocalStatus : null;
-						const runtimePlan = deriveRuntimeActionPlan(
-							previousEnabled,
-							enabled,
-							previousCountry,
-							country,
-							previousMode,
-							modeValue,
-							previousPreferredStation,
-							preferred,
-							localStatus
-						);
-						const actions = runtimePlan.actions;
-						const successMessage = runtimePlan.successMessage;
+					return loadSavedRuntimeConfig().then(function(savedConfig) {
+						rememberSavedRuntimeConfig(viewState, state, savedConfig);
+						return updateLocalStatus(state, { force: true }).then(function(status) {
+							const localStatus = state.currentLocalStatusFresh ? status : null;
+							const runtimePlan = deriveRuntimeActionPlan(
+								previousEnabled,
+								savedConfig.enabled,
+								previousCountry,
+								savedConfig.country,
+								previousMode,
+								savedConfig.mode,
+								previousPreferredStation,
+								savedConfig.preferredStation,
+								localStatus
+							);
+							const actions = runtimePlan.actions;
+							const successMessage = runtimePlan.successMessage;
 
-						viewState.initialEnabled = enabled;
-						viewState.initialCountry = country;
-						viewState.initialMode = modeValue;
-						viewState.initialPreferredStation = preferred;
-						state.appliedEnabled = enabled;
-						state.appliedCountryCode = country;
+							if (!actions.length) {
+								notifyDebugBlock(_('Configuration applied'), [
+									_('UCI changes were saved successfully.'),
+									_('No runtime action was required.')
+								]);
+								return refreshAfterSaveApply(state, false).then(function() {
+									finishResolve();
+								});
+							}
 
-						if (!actions.length) {
-							notifyDebugBlock(_('Configuration applied'), [
-								_('UCI changes were saved successfully.'),
-								_('No runtime action was required.')
+							state.pendingOperationLabel = managerFormat.formatActionsLabel(actions);
+							state.currentOperationStatus = 'busy:' + state.pendingOperationLabel;
+							managerStore.setPhase(state, managerStore.PHASES.RUNTIME_BUSY);
+							managerStore.resumePolling(state);
+							notifyDebugBlock(_('Runtime actions queued'), [
+								_('Executing: %s').format(state.pendingOperationLabel),
+								_('Enabled state after save: %s').format(savedConfig.enabled ? _('checked') : _('unchecked'))
 							]);
-							state.pendingOperationLabel = '';
-							managerStore.resumePolling(state);
-							updateLocalStatus(state, { force: true });
-							finishResolve();
-							return Promise.resolve();
-						}
 
-						state.pendingOperationLabel = managerFormat.formatActionsLabel(actions);
-						state.currentOperationStatus = 'busy:' + state.pendingOperationLabel;
-						managerStore.setPhase(state, managerStore.PHASES.RUNTIME_BUSY);
-						managerStore.resumePolling(state);
-						notifyDebugBlock(_('Runtime actions queued'), [
-							_('Executing: %s').format(state.pendingOperationLabel),
-							_('Enabled state after save: %s').format(enabled ? _('checked') : _('unchecked'))
-						]);
-						updateLocalStatus(state, { force: true });
-
-						service.runActions(actions).then(function() {
-							service.notifyInfo(successMessage);
-							finishResolve();
-						}).catch(function(err) {
-							managerStore.setError(state, err);
-							service.notifyError(err);
-							finishReject(err);
-						}).finally(function() {
-							state.pendingOperationLabel = '';
-							managerStore.resumePolling(state);
-							updateLocalStatus(state, { force: true });
-							updatePublicIp(state, { force: true });
+							return updateLocalStatus(state, { force: true }).then(function() {
+								return service.runActions(actions);
+							}).then(function() {
+								service.notifyInfo(successMessage);
+								return refreshAfterSaveApply(state, true);
+							}).then(function() {
+								finishResolve();
+							}).catch(function(err) {
+								managerStore.setError(state, err);
+								service.notifyError(err);
+								return refreshAfterSaveApply(state, true).then(function() {
+									finishReject(err);
+								});
+							});
 						});
-						}).catch(function(err) {
-							const message = (err && err.message) ? err.message : String(err);
+					}).catch(function(err) {
+						const message = (err && err.message) ? err.message : String(err);
 
-							managerStore.setError(state, err);
-							state.pendingOperationLabel = '';
-							managerStore.resumePolling(state);
-							updateLocalStatus(state, { force: true });
-							updatePublicIp(state, { force: true });
+						managerStore.setError(state, err);
+						return refreshAfterSaveApply(state, true).then(function() {
 							service.notifyError(new Error(_('Automatic runtime sync failed: ') + message));
 							finishReject(err);
 						});
+					});
 				};
 
 				timeoutId = setTimeout(function() {
