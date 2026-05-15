@@ -120,6 +120,8 @@ nordvpn_easy_selected_country_code() {
 	nordvpn_easy_require_core_action_helpers resolve_country_filter || return 1
 	resolve_country_filter || return 1
 	[ -n "${RESOLVED_COUNTRY_CODE:-}" ] || return 1
+	# resolve_country_filter currently sets RESOLVED_COUNTRY_CODE from the uppercase cache;
+	# keep normalizing defensively in case future inputs change.
 	nordvpn_easy_normalize_country_code "$RESOLVED_COUNTRY_CODE"
 }
 
@@ -163,6 +165,8 @@ nordvpn_easy_log_server_selection_drift() {
 
 nordvpn_easy_reconcile_explicit_server_selection_drift() {
 	local phase="${1:-healthcheck}"
+	local drift_reason=''
+	local sync_rc=0
 
 	if ! nordvpn_easy_vpn_is_configured; then
 		return 0
@@ -172,8 +176,16 @@ nordvpn_easy_reconcile_explicit_server_selection_drift() {
 		return 0
 	fi
 
+	drift_reason="$NORDVPN_EASY_SELECTION_DRIFT_REASON"
 	log "$phase: server selection drift detected ($NORDVPN_EASY_SELECTION_DRIFT_REASON); synchronizing runtime"
 	nordvpn_easy_sync_server_selection
+	sync_rc=$?
+	if [ "$sync_rc" -eq 0 ]; then
+		return 0
+	fi
+
+	log "WARNING: $phase: server selection drift sync failed (rc=$sync_rc, $drift_reason); continuing health-check recovery"
+	return 0
 }
 
 nordvpn_easy_apply_preferred_server_from_catalog() {

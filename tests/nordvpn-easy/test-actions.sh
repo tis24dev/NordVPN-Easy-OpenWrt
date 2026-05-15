@@ -460,6 +460,25 @@ nordvpn_easy_check_once
 assert_eq '0' "$APPLY_COUNT" 'health check does not rotate a healthy automatic-country server just because it is outside current recommendations'
 assert_eq '1' "$PING_COUNT" 'health check still validates a healthy automatic-country server'
 
+nordvpn_easy_get_servers_list() { return 1; }
+
+PING_COUNT=0
+PING_FAIL_UNTIL=0
+SERVER_SELECTION_MODE='auto'
+VPN_COUNTRY='IT'
+CURRENT_SERVER_VALUE='bm3'
+CURRENT_COUNTRY_VALUE='BM'
+APPLY_COUNT=0
+COMMIT_NETWORK_COUNT=0
+LAST_SET_SERVER=''
+
+nordvpn_easy_check_once
+
+assert_eq '0' "$APPLY_COUNT" 'health check treats drift sync failure as non-fatal before ping recovery'
+assert_eq '1' "$PING_COUNT" 'health check continues after a selected-country drift sync failure'
+
+nordvpn_easy_get_servers_list() { return 0; }
+
 VPN_CONFIGURED_RC=1
 BOOTSTRAP_REPAIR_RC=0
 BOOTSTRAP_REPAIR_COUNT=0

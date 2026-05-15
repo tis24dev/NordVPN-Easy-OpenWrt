@@ -1312,6 +1312,47 @@ async function testAutoReconcileRunsForCountryDrift() {
 	assert.ok(harness.serviceCalls.indexOf('public_ip') !== -1, 'auto reconcile refreshes public IP after completion');
 }
 
+async function testAutoReconcileThrottlesSuccessfulNoChange() {
+	const harness = buildHandleSaveApplyHarness({
+		previousEnabled: true,
+		savedCountry: 'AU',
+		statusPayload: {
+			desired_enabled: true,
+			runtime_disabled: false,
+			interface_disabled: false,
+			runtime_configured: true,
+			operation_status: 'idle',
+			operation_lock_state: 'none',
+			selected_country: 'AU',
+			server_selection_mode: 'auto',
+			current_server_country: 'BM',
+			current_server_station: 'bm3'
+		}
+	});
+	const driftStatus = {
+		desired_enabled: true,
+		runtime_disabled: false,
+		interface_disabled: false,
+		runtime_configured: true,
+		operation_status: 'idle',
+		operation_lock_state: 'none',
+		selected_country: 'AU',
+		server_selection_mode: 'auto',
+		current_server_country: 'BM',
+		current_server_station: 'bm3'
+	};
+
+	harness.state.appliedCountryCode = 'AU';
+	harness.state.currentLocalStatus = driftStatus;
+
+	await harness.actions.maybeAutoReconcileSelectionDrift(harness.state, driftStatus);
+	await harness.actions.maybeAutoReconcileSelectionDrift(harness.state, harness.state.currentLocalStatus);
+
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'reconcile' ] ], 'successful reconcile that leaves the same drift is throttled');
+	assert.equal(harness.state.lastAutoReconcileFailureKey, 'auto:AU:BM', 'unchanged success records the drift key');
+	assert.match(harness.notifications[harness.notifications.length - 1].message, /still out of sync/, 'unchanged success reports a readable sync error');
+}
+
 async function testAutoReconcileSkipsNonDriftCases() {
 	const cases = [
 		{
@@ -1460,6 +1501,7 @@ Promise.resolve().then(async function() {
 	await testHandleSaveApplyAutoModeClearsManualSelectionAndReconnects();
 	await testHandleSaveApplyReconcilesDisabledRuntimeAfterSave();
 	await testAutoReconcileRunsForCountryDrift();
+	await testAutoReconcileThrottlesSuccessfulNoChange();
 	await testAutoReconcileSkipsNonDriftCases();
 	await testAutoReconcileThrottlesRepeatedFailures();
 	console.log('test-manager-actions.js: ok');

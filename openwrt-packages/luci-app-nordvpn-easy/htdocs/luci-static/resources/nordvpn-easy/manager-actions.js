@@ -180,9 +180,21 @@ function maybeAutoReconcileSelectionDrift(state, status) {
 		notifyDebugBlock(_('Automatic runtime sync queued'), autoReconcileDebugLines(latestDrift));
 
 		return service.runActions([ 'reconcile' ]).then(function() {
-			state.lastAutoReconcileFailureKey = '';
-			state.lastAutoReconcileFailureAt = 0;
-			return refreshAfterSaveApply(state, true).then(function() {
+			return refreshAfterSaveApply(state, true, { suppressAutoReconcile: true }).then(function() {
+				const remainingDrift = deriveServerSelectionDrift(state, state.currentLocalStatus);
+				let unchangedError;
+
+				if (remainingDrift && remainingDrift.key === latestDrift.key) {
+					unchangedError = new Error(_('Automatic runtime sync completed but server selection is still out of sync.'));
+					state.lastAutoReconcileFailureKey = latestDrift.key;
+					state.lastAutoReconcileFailureAt = Date.now();
+					managerStore.setError(state, unchangedError);
+					service.notifyError(unchangedError);
+					return false;
+				}
+
+				state.lastAutoReconcileFailureKey = '';
+				state.lastAutoReconcileFailureAt = 0;
 				return true;
 			});
 		}).catch(function(err) {
@@ -191,7 +203,7 @@ function maybeAutoReconcileSelectionDrift(state, status) {
 			state.lastAutoReconcileFailureKey = latestDrift.key;
 			state.lastAutoReconcileFailureAt = Date.now();
 			managerStore.setError(state, err);
-			return refreshAfterSaveApply(state, true).then(function() {
+			return refreshAfterSaveApply(state, true, { suppressAutoReconcile: true }).then(function() {
 				service.notifyError(new Error(_('Automatic runtime sync failed: ') + message));
 				return false;
 			});
@@ -617,8 +629,8 @@ function updateLocalStatus(state, options) {
 			state.appliedEnabled = desiredEnabled;
 			state.appliedCountryCode = managerData.normalizeCountryCode(status.selected_country || state.appliedCountryCode);
 			renderLocalStatusSnapshot(state, status);
-			if (localStatusSnapshot.fresh)
-				maybeAutoReconcileSelectionDrift(state, status);
+			if (localStatusSnapshot.fresh && !opts.suppressAutoReconcile)
+				void maybeAutoReconcileSelectionDrift(state, status);
 			return status;
 		}).catch(function(err) {
 			state.currentLocalStatusFresh = false;
@@ -732,11 +744,16 @@ function rememberSavedRuntimeConfig(viewState, state, savedConfig) {
 	state.appliedCountryCode = savedConfig.country;
 }
 
-function refreshAfterSaveApply(state, refreshPublicIp) {
+function refreshAfterSaveApply(state, refreshPublicIp, options) {
+	const opts = options || {};
+
 	state.pendingOperationLabel = '';
 	managerStore.resumePolling(state);
 
-	return updateLocalStatus(state, { force: true }).then(function() {
+	return updateLocalStatus(state, {
+		force: true,
+		suppressAutoReconcile: !!opts.suppressAutoReconcile
+	}).then(function() {
 		if (refreshPublicIp)
 			return updatePublicIp(state, { force: true });
 
