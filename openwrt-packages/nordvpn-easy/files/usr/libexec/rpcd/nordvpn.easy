@@ -205,6 +205,9 @@ rpc_call() {
 		reconnect)
 			rpc_reconnect
 			;;
+		reconcile)
+			rpc_command_result 'reconcile' "$INIT_SCRIPT" reconcile
+			;;
 		rotate)
 			rpc_command_result 'rotate' "$INIT_SCRIPT" rotate
 			;;
@@ -252,6 +255,7 @@ case "$1" in
   "connect": {},
   "disconnect": {},
   "reconnect": {},
+  "reconcile": {},
   "rotate": {},
   "setup": {},
   "check": {},

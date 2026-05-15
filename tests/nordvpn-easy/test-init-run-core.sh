@@ -43,6 +43,7 @@ eval "$(extract_function run_core_action)"
 eval "$(extract_function connect)"
 eval "$(extract_function disconnect)"
 eval "$(extract_function reconnect)"
+eval "$(extract_function reconcile)"
 
 load_service_config() { :; }
 log_service_info() { printf '%s\n' "$1" >> "$INFO_CAPTURE"; }
@@ -79,6 +80,8 @@ nordvpn_easy_validate_runtime_config() {
 
 UCI_SET_VALUES=''
 UCI_COMMIT_COUNT=0
+NETWORK_PROTO=''
+NETWORK_DISABLED=''
 SETUP_COUNT=0
 SETUP_RC=0
 INSTALL_HOOKS_COUNT=0
@@ -86,7 +89,26 @@ DISABLE_RUNTIME_COUNT=0
 UCI_CONFIG='nordvpn_easy'
 UCI_SECTION='main'
 uci() {
+	if [ "${1:-}" = '-q' ]; then
+		shift
+	fi
+
 	case "$1" in
+		get)
+			case "$2" in
+				network.wg0.proto)
+					[ -n "$NETWORK_PROTO" ] || return 1
+					printf '%s\n' "$NETWORK_PROTO"
+					return 0
+					;;
+				network.wg0.disabled)
+					[ -n "$NETWORK_DISABLED" ] || return 1
+					printf '%s\n' "$NETWORK_DISABLED"
+					return 0
+					;;
+			esac
+			return 1
+			;;
 		set)
 			UCI_SET_VALUES="${UCI_SET_VALUES}${2};"
 			return 0
@@ -112,6 +134,8 @@ disable_vpn_runtime() {
 }
 
 cfg_enabled=0
+cfg_nordvpn_token=''
+cfg_vpn_if='wg0'
 SETUP_RC=1
 RC=0
 connect || RC=$?
@@ -157,6 +181,47 @@ case "$UCI_SET_VALUES" in
 		;;
 	*)
 		printf '%s\n' 'FAIL: disconnect should set enabled=0 before disabling runtime' >&2
+		exit 1
+		;;
+esac
+
+cfg_enabled=0
+cfg_nordvpn_token='token-secret'
+cfg_vpn_if='wg0'
+DISABLE_RUNTIME_COUNT=0
+RC=0
+reconcile || RC=$?
+assert_eq '0' "$RC" 'reconcile succeeds while ensuring disabled runtime'
+assert_eq '1' "$DISABLE_RUNTIME_COUNT" 'reconcile disables runtime when saved config is disabled'
+
+cfg_enabled=1
+cfg_nordvpn_token=''
+DISABLE_RUNTIME_COUNT=0
+SETUP_COUNT=0
+RC=0
+reconcile || RC=$?
+assert_eq '1' "$RC" 'reconcile rejects enabled config without token'
+assert_eq '0' "$SETUP_COUNT" 'reconcile does not start setup when token is missing'
+
+cfg_enabled=1
+cfg_nordvpn_token='token-secret'
+cfg_vpn_if='wg0'
+NETWORK_PROTO=''
+NETWORK_DISABLED=''
+SETUP_RC=0
+SETUP_COUNT=0
+INSTALL_HOOKS_COUNT=0
+UCI_SET_VALUES=''
+RC=0
+reconcile || RC=$?
+assert_eq '0' "$RC" 'reconcile connects when WireGuard interface is missing'
+assert_eq '1' "$SETUP_COUNT" 'reconcile runs setup through connect when runtime is missing'
+assert_eq '1' "$INSTALL_HOOKS_COUNT" 'reconcile installs hooks after reconnecting missing runtime'
+case "$UCI_SET_VALUES" in
+	*nordvpn_easy.main.enabled=1\;*)
+		;;
+	*)
+		printf '%s\n' 'FAIL: reconcile connect path should keep enabled=1' >&2
 		exit 1
 		;;
 esac

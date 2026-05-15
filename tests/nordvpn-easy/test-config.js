@@ -262,6 +262,7 @@ function loadConfigView(options) {
 		renderLocalStatusSnapshot: [],
 		updateLocalStatus: [],
 		updatePublicIp: [],
+		loadServerCatalog: [],
 		updateServerSelectionState: [],
 		onCountryChanged: 0,
 		onModeChanged: 0,
@@ -334,6 +335,14 @@ function loadConfigView(options) {
 				calls.updatePublicIp.push({
 					state: renderState,
 					options: normalizeValue(updateOptions)
+				});
+				return Promise.resolve();
+			},
+			loadServerCatalog(renderState, country, forceRefresh) {
+				calls.loadServerCatalog.push({
+					state: renderState,
+					country: country,
+					forceRefresh: forceRefresh
 				});
 				return Promise.resolve();
 			},
@@ -491,7 +500,7 @@ function loadConfigView(options) {
 	};
 }
 
-async function testLoadUsesCachedCountriesAndLoadsManualCatalogWhenIdle() {
+async function testLoadUsesCachedCountriesWithoutBlockingOnManualCatalog() {
 	const harness = loadConfigView({
 		fsReadResponses: [
 			'[]'
@@ -514,13 +523,12 @@ async function testLoadUsesCachedCountriesAndLoadsManualCatalogWhenIdle() {
 			return [ call.action, call.args ];
 		})),
 		[
-			[ 'status_json', [] ],
-			[ 'server_catalog', [ 'UY' ] ]
+			[ 'status_json', [] ]
 		],
-		'idle manual configuration loads status and selected-country server catalog without blocking on country refresh'
+		'idle manual configuration loads status without blocking initial render on server catalog data'
 	);
-	assert.equal(data[2].code, 0, 'manual server catalog response is returned to render');
-}
+	assert.equal(data[2], null, 'manual server catalog is loaded after render');
+	}
 
 async function testLoadSkipsRefreshesWhenRuntimeBusy() {
 	const harness = loadConfigView({
@@ -544,7 +552,7 @@ async function testLoadSkipsRefreshesWhenRuntimeBusy() {
 		[ [ 'status_json', [] ] ],
 		'busy runtime skips country refresh and server catalog loading'
 	);
-	assert.equal(data[2], null, 'busy runtime returns no server catalog response');
+	assert.equal(data[2], null, 'load never returns a synchronous server catalog response');
 }
 
 async function testRenderWiresInitialStateAndLiveHandlers() {
@@ -621,6 +629,7 @@ async function testRenderWiresInitialStateAndLiveHandlers() {
 		return call.options;
 	}), [ { force: true } ], 'enabled configuration starts a forced public-IP refresh');
 	assert.equal(harness.calls.renderServerChoices.length, 1, 'render refreshes server choices after the map node exists');
+	assert.equal(harness.calls.loadServerCatalog.length, 0, 'render does not refresh server catalog when initial catalog is already present');
 	assert.equal(harness.calls.updateServerSelectionState.length, 1, 'render updates server-selection state after wiring controls');
 	assert.deepEqual(harness.calls.pollingStart, [ harness.state ], 'render starts manager polling with the shared state');
 
@@ -628,6 +637,45 @@ async function testRenderWiresInitialStateAndLiveHandlers() {
 	harness.selectElements['cbid.nordvpn_easy.main.server_selection_mode'].handlers[0].handler();
 	assert.equal(harness.calls.onCountryChanged, 1, 'country select change delegates to manager-actions');
 	assert.equal(harness.calls.onModeChanged, 1, 'mode select change delegates to manager-actions');
+}
+
+async function testRenderLoadsManualCatalogInBackgroundAfterInitialPaint() {
+	const statusResult = {
+		code: 0,
+		stdout: JSON.stringify({
+			desired_enabled: true,
+			runtime_disabled: false,
+			interface_disabled: false,
+			runtime_configured: true,
+			selected_country: 'UY',
+			server_selection_mode: 'manual',
+			operation_status: 'idle'
+		}),
+		stderr: ''
+	};
+	const harness = loadConfigView({
+		uciValues: {
+			enabled: '1',
+			vpn_country: 'UY',
+			server_selection_mode: 'manual',
+			preferred_server_station: ''
+		}
+	});
+
+	await harness.view.render([ JSON.stringify([ { name: 'Uruguay', code: 'UY' } ]), statusResult, null ]);
+	await Promise.resolve();
+
+	assert.equal(harness.state.currentServerCatalog.servers.length, 0, 'initial render is not blocked by server catalog data');
+	assert.deepEqual(
+		harness.calls.loadServerCatalog.map(function(call) {
+			return {
+				country: call.country,
+				forceRefresh: call.forceRefresh
+			};
+		}),
+		[ { country: 'UY', forceRefresh: false } ],
+		'manual server catalog refresh starts in the background after render'
+	);
 }
 
 async function testRenderRefreshesEmptyCountryCacheInBackground() {
@@ -682,9 +730,10 @@ async function testRenderRefreshesEmptyCountryCacheInBackground() {
 }
 
 Promise.resolve().then(async function() {
-	await testLoadUsesCachedCountriesAndLoadsManualCatalogWhenIdle();
+	await testLoadUsesCachedCountriesWithoutBlockingOnManualCatalog();
 	await testLoadSkipsRefreshesWhenRuntimeBusy();
 	await testRenderWiresInitialStateAndLiveHandlers();
+	await testRenderLoadsManualCatalogInBackgroundAfterInitialPaint();
 	await testRenderRefreshesEmptyCountryCacheInBackground();
 	console.log('test-config.js: ok');
 }).catch(function(err) {

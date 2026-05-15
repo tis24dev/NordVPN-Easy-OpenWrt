@@ -12,7 +12,7 @@ FAKE_BIN="$TMP_DIR/bin"
 FAKE_UCI_STORE_DIR="$TMP_DIR/uci-store"
 FAKE_UCI_CONFIG_FILE="$TMP_DIR/etc/config/nordvpn_easy"
 FAKE_UCI_OPTIONS_FILE="$TMP_DIR/options"
-FAKE_OPKG_CONFIG_FILE="$TMP_DIR/etc/config/nordvpn_easy-opkg"
+FAKE_LEGACY_CONFIG_FILE="$TMP_DIR/etc/config/nordvpn_easy-opkg"
 
 cleanup() {
 	rm -rf "$TMP_DIR"
@@ -137,21 +137,21 @@ set_store_value() {
 
 run_migrator() {
 	config_file="$FAKE_UCI_CONFIG_FILE"
-	opkg_config_file="$FAKE_OPKG_CONFIG_FILE"
+	legacy_config_file="$FAKE_LEGACY_CONFIG_FILE"
 
 	PATH="$FAKE_BIN:$PATH" \
 	FAKE_UCI_STORE_DIR="$FAKE_UCI_STORE_DIR" \
 	FAKE_UCI_CONFIG_FILE="$config_file" \
 	FAKE_UCI_OPTIONS_FILE="$FAKE_UCI_OPTIONS_FILE" \
 	NORDVPN_EASY_CONFIG_FILE="$config_file" \
-	NORDVPN_EASY_OPKG_CONFIG_FILE="$opkg_config_file" \
+	NORDVPN_EASY_LEGACY_CONFIG_FILE="$legacy_config_file" \
 	NORDVPN_EASY_TEMPLATE_FILE="$TEMPLATE_FILE" \
 	NORDVPN_EASY_LIB_DIR="$LIB_DIR" \
 	"$MIGRATOR"
 }
 
 reset_fake_uci
-rm -f "$FAKE_UCI_CONFIG_FILE" "$FAKE_OPKG_CONFIG_FILE"
+rm -f "$FAKE_UCI_CONFIG_FILE" "$FAKE_LEGACY_CONFIG_FILE"
 run_migrator
 
 [ -f "$FAKE_UCI_CONFIG_FILE" ] || {
@@ -190,7 +190,7 @@ set_store_value 'wan_if' 'wan6'
 set_store_value 'server_cache_ttl' 'not-a-number'
 set_store_value 'wireguard_mtu' '1420'
 set_store_value 'kill_switch_enabled' 'on'
-printf '%s\n' 'stale opkg conffile' > "$FAKE_OPKG_CONFIG_FILE"
+printf '%s\n' 'stale legacy conffile' > "$FAKE_LEGACY_CONFIG_FILE"
 
 run_migrator
 
@@ -208,8 +208,80 @@ assert_file_has_line "	option fallback_server_station ''" "$FAKE_UCI_CONFIG_FILE
 assert_file_has_line "	option config_schema_version '$NORDVPN_EASY_SCHEMA_VERSION'" "$FAKE_UCI_CONFIG_FILE" 'upgrade writes current schema version'
 assert_file_missing_line "	option nordvpn_basic_token 'legacy-token'" "$FAKE_UCI_CONFIG_FILE" 'upgrade removes legacy basic token option'
 
-[ ! -e "$FAKE_OPKG_CONFIG_FILE" ] || {
+[ ! -e "$FAKE_LEGACY_CONFIG_FILE" ] || {
 	printf '%s\n' 'FAIL: migrator did not remove stale nordvpn_easy-opkg file' >&2
+	exit 1
+}
+
+reset_fake_uci
+cat > "$FAKE_LEGACY_CONFIG_FILE" <<'EOF'
+config nordvpn_easy 'main'
+	option enabled 'yes'
+	option nordvpn_token 'legacy-secret-token'
+	option vpn_country 'BM'
+	option server_selection_mode 'manual'
+	option preferred_server_hostname "bm1.nordvpn.com"
+	option preferred_server_station 'bm1'
+	option check_cron_schedule '*/5 * * * *'
+	option wireguard_mtu '1412'
+EOF
+
+run_migrator
+
+assert_file_has_line "	option enabled '1'" "$FAKE_UCI_CONFIG_FILE" 'legacy recovery normalizes enabled flag'
+assert_file_has_line "	option nordvpn_token 'legacy-secret-token'" "$FAKE_UCI_CONFIG_FILE" 'legacy recovery preserves NordVPN token'
+assert_file_has_line "	option vpn_country 'BM'" "$FAKE_UCI_CONFIG_FILE" 'legacy recovery preserves selected country'
+assert_file_has_line "	option server_selection_mode 'manual'" "$FAKE_UCI_CONFIG_FILE" 'legacy recovery preserves manual mode'
+assert_file_has_line "	option preferred_server_hostname 'bm1.nordvpn.com'" "$FAKE_UCI_CONFIG_FILE" 'legacy recovery parses double-quoted hostname'
+assert_file_has_line "	option preferred_server_station 'bm1'" "$FAKE_UCI_CONFIG_FILE" 'legacy recovery preserves manual station'
+assert_file_has_line "	option check_cron_schedule '*/5 * * * *'" "$FAKE_UCI_CONFIG_FILE" 'legacy recovery preserves cron schedule'
+assert_file_has_line "	option wireguard_mtu '1412'" "$FAKE_UCI_CONFIG_FILE" 'legacy recovery preserves WireGuard MTU'
+
+[ ! -e "$FAKE_LEGACY_CONFIG_FILE" ] || {
+	printf '%s\n' 'FAIL: migrator did not remove recovered nordvpn_easy-opkg file' >&2
+	exit 1
+}
+
+reset_fake_uci
+set_store_value '__section__' 'nordvpn_easy'
+set_store_value 'enabled' '1'
+set_store_value 'vpn_country' ''
+cat > "$FAKE_LEGACY_CONFIG_FILE" <<'EOF'
+config nordvpn_easy 'main'
+	option vpn_country 'BM'
+	option nordvpn_token 'mixed-source-token'
+EOF
+
+run_migrator
+
+assert_file_has_line "	option enabled '1'" "$FAKE_UCI_CONFIG_FILE" 'mixed source preserves active enabled flag'
+assert_file_has_line "	option vpn_country 'BM'" "$FAKE_UCI_CONFIG_FILE" 'mixed source recovers legacy country when active country is default'
+assert_file_has_line "	option nordvpn_token 'mixed-source-token'" "$FAKE_UCI_CONFIG_FILE" 'mixed source recovers legacy token when active token is missing'
+
+[ ! -e "$FAKE_LEGACY_CONFIG_FILE" ] || {
+	printf '%s\n' 'FAIL: migrator did not remove mixed-source legacy config file' >&2
+	exit 1
+}
+
+reset_fake_uci
+set_store_value '__section__' 'nordvpn_easy'
+set_store_value 'enabled' '1'
+set_store_value 'nordvpn_token' 'active-secret-token'
+set_store_value 'vpn_country' 'CH'
+cat > "$FAKE_LEGACY_CONFIG_FILE" <<'EOF'
+config nordvpn_easy 'main'
+	option enabled 'yes'
+	option nordvpn_token 'stale-legacy-token'
+	option vpn_country 'AT'
+EOF
+
+run_migrator
+
+assert_file_has_line "	option nordvpn_token 'active-secret-token'" "$FAKE_UCI_CONFIG_FILE" 'active config wins over stale legacy token'
+assert_file_has_line "	option vpn_country 'CH'" "$FAKE_UCI_CONFIG_FILE" 'active config wins over stale legacy country'
+
+[ ! -e "$FAKE_LEGACY_CONFIG_FILE" ] || {
+	printf '%s\n' 'FAIL: migrator did not remove stale nordvpn_easy-opkg after active config won' >&2
 	exit 1
 }
 

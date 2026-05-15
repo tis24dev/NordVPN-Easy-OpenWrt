@@ -119,7 +119,7 @@ const CountrySelectValue = form.ListValue.extend({
 			}, [ _('Refresh Countries') ])
 		]);
 	}
-});
+	});
 
 const TokenValue = form.Value.extend({
 	storedValue: function(section_id) {
@@ -201,24 +201,14 @@ const TokenValue = form.Value.extend({
 	}
 });
 
-return view.extend({
+	return view.extend({
 	load: function() {
 		const uciLoad = uci.load('nordvpn_easy');
 		const countriesCachePromise = L.resolveDefault(fs.read(COUNTRIES_CACHE_PATH), '[]');
 		const statusPromise = L.resolveDefault(service.execService('status_json'), null);
 
 		return Promise.all([ uciLoad, countriesCachePromise, statusPromise ]).then(function(results) {
-			const countriesRaw = results[1];
-			const statusResult = results[2];
-			const statusPayload = service.parseExecJsonResponse(statusResult, null);
-			const runtimeBusy = statusPayloadIsBusy(statusPayload);
-			const configuredCountry = managerData.normalizeCountryCode(uci.get('nordvpn_easy', 'main', 'vpn_country') || '');
-			const currentMode = String(uci.get('nordvpn_easy', 'main', 'server_selection_mode') || 'auto');
-			const catalogPromise = managerStore.shouldLoadCatalog(currentMode, configuredCountry) && !runtimeBusy
-				? L.resolveDefault(service.execService('server_catalog', [ configuredCountry ]), null)
-				: Promise.resolve(null);
-
-			return Promise.all([ Promise.resolve(countriesRaw), Promise.resolve(statusResult), catalogPromise ]);
+			return [ results[1], results[2], null ];
 		});
 	},
 
@@ -231,6 +221,8 @@ return view.extend({
 		const initialStatusPayload = service.parseExecJsonResponse(data[1], null);
 		const initialStatusFresh = !!(initialStatusPayload && typeof initialStatusPayload === 'object' && !Array.isArray(initialStatusPayload));
 		const initialStatus = initialStatusFresh ? managerData.parseLocalStatus(JSON.stringify(initialStatusPayload)) : managerData.parseLocalStatus('{}');
+		// render keeps managerData.parseServerCatalog(data[2]) for external callers and
+		// testRenderWiresInitialStateAndLiveHandlers; load returns null in this slot.
 		const initialCatalog = managerData.parseServerCatalog(data[2] && data[2].code === 0 ? data[2].stdout || '{}' : '{}');
 		const currentCountry = managerData.normalizeCountryCode(uci.get('nordvpn_easy', 'main', 'vpn_country') || '');
 		const currentMode = String(uci.get('nordvpn_easy', 'main', 'server_selection_mode') || 'auto');
@@ -335,6 +327,14 @@ return view.extend({
 			if (!countries.length && !statusPayloadIsBusy(initialStatusPayload))
 				refreshCountriesInBackground(countrySelect, currentCountry);
 
+			if (!state.currentServerCatalog.servers.length &&
+				managerStore.shouldLoadCatalog(currentMode, currentCountry) &&
+				!statusPayloadIsBusy(initialStatusPayload)) {
+				managerActions.loadServerCatalog(state, currentCountry, false).catch(function(err) {
+					service.notifyError(err);
+				});
+			}
+
 			if (!state.currentLocalStatusFresh)
 				managerActions.updateLocalStatus(state, { force: true });
 
@@ -368,4 +368,4 @@ return view.extend({
 	handleSaveApply: function(ev, mode) {
 		return managerActions.handleSaveApply(this, state, ev, mode);
 	}
-});
+	});

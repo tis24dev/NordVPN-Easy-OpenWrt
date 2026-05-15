@@ -112,6 +112,11 @@ Promise.resolve().then(async function() {
 	assert.deepEqual(call.args, [ 'UY', true ], 'refresh_servers forwards country and force args');
 	assert.deepEqual(payload.args, [ 'UY', true ], 'refresh_servers preserves rpc payload in stdout');
 
+	const reconcileResult = await loaded.service.execService('reconcile');
+	const reconcileCall = loaded.calls[loaded.calls.length - 1];
+	assert.equal(reconcileResult.code, 0, 'reconcile returns normalized success result');
+	assert.equal(reconcileCall.spec.method, 'reconcile', 'reconcile uses the dedicated ubus method');
+
 	loaded.responses.push({
 		code: 75,
 		success: false,

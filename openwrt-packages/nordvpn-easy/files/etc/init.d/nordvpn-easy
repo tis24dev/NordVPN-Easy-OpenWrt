@@ -20,11 +20,12 @@ SERVICE_BACKEND_PAYLOAD_SIGNATURE='render-contract-v3'
 NORDVPN_EASY_RC_BUSY="${NORDVPN_EASY_RC_BUSY:-75}"
 # OpenWrt rc.common consumes the command/help metadata.
 # shellcheck disable=SC2034
-EXTRA_COMMANDS='connect disconnect reconnect setup check rotate refresh_countries refresh_countries_force server_catalog public_ip public_country operation_status vpn_status status_json diagnostics_log install_hooks remove_hooks disable_runtime render_runtime_config'
+EXTRA_COMMANDS='connect disconnect reconnect reconcile setup check rotate refresh_countries refresh_countries_force server_catalog public_ip public_country operation_status vpn_status status_json diagnostics_log install_hooks remove_hooks disable_runtime render_runtime_config'
 # shellcheck disable=SC2034
 EXTRA_HELP='  connect               Enable, run setup, then install hooks transactionally
   disconnect            Disable runtime and remove hooks
   reconnect             Run setup, then install hooks transactionally
+  reconcile             Synchronize runtime state with the saved UCI config
   setup                 Run setup immediately
   check                 Run one health check immediately
   rotate                Force server rotation immediately
@@ -539,6 +540,50 @@ reconnect() {
 	fi
 	setup || return $?
 	install_hooks
+}
+
+reconcile() {
+	local previous_failure_log_mode="${RUN_CORE_ACTION_FAILURE_LOG_MODE-}"
+	local vpn_proto vpn_disabled rc
+
+	load_service_config || return 1
+	log_service_info "reconcile requested; synchronizing runtime with saved config; $(nordvpn_easy_service_debug_summary 'cfg_')"
+
+	if [ "$cfg_enabled" -ne 1 ]; then
+		log_service_info 'reconcile: saved config is disabled; ensuring runtime is disabled'
+		disable_vpn_runtime
+		return $?
+	fi
+
+	if [ -z "$cfg_nordvpn_token" ]; then
+		log_service_error 'reconcile refused because nordvpn_token is missing'
+		return 1
+	fi
+
+	vpn_proto="$(uci -q get "network.${cfg_vpn_if}.proto" 2>/dev/null || true)"
+	vpn_disabled="$(uci -q get "network.${cfg_vpn_if}.disabled" 2>/dev/null || true)"
+	if [ "$vpn_proto" != 'wireguard' ] || [ "$vpn_disabled" = '1' ]; then
+		log_service_info "reconcile: ${cfg_vpn_if} is not active/configured (proto=${vpn_proto:-missing}, disabled=${vpn_disabled:-0}); running connect"
+		connect
+		return $?
+	fi
+
+	RUN_CORE_ACTION_FAILURE_LOG_MODE='info'
+	if run_core_action check; then
+		RUN_CORE_ACTION_FAILURE_LOG_MODE="$previous_failure_log_mode"
+		install_hooks
+		return $?
+	fi
+	rc=$?
+	RUN_CORE_ACTION_FAILURE_LOG_MODE="$previous_failure_log_mode"
+
+	if [ "$rc" -eq "${NORDVPN_EASY_RC_BUSY:-75}" ]; then
+		log_service_info 'reconcile skipped because another operation is running'
+		return "$rc"
+	fi
+
+	log_service_info 'reconcile: health check did not validate the runtime; running reconnect'
+	reconnect
 }
 
 setup() {
