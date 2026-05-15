@@ -119,7 +119,7 @@ const CountrySelectValue = form.ListValue.extend({
 			}, [ _('Refresh Countries') ])
 		]);
 	}
-});
+	});
 
 const TokenValue = form.Value.extend({
 	storedValue: function(section_id) {
@@ -202,15 +202,15 @@ const TokenValue = form.Value.extend({
 });
 
 	return view.extend({
-		load: function() {
-			const uciLoad = uci.load('nordvpn_easy');
-			const countriesCachePromise = L.resolveDefault(fs.read(COUNTRIES_CACHE_PATH), '[]');
-			const statusPromise = L.resolveDefault(service.execService('status_json'), null);
-	
-			return Promise.all([ uciLoad, countriesCachePromise, statusPromise ]).then(function(results) {
-				return [ results[1], results[2], null ];
-			});
-		},
+	load: function() {
+		const uciLoad = uci.load('nordvpn_easy');
+		const countriesCachePromise = L.resolveDefault(fs.read(COUNTRIES_CACHE_PATH), '[]');
+		const statusPromise = L.resolveDefault(service.execService('status_json'), null);
+
+		return Promise.all([ uciLoad, countriesCachePromise, statusPromise ]).then(function(results) {
+			return [ results[1], results[2], null ];
+		});
+	},
 
 	handleRefreshServerCatalog: function(ev) {
 		return managerActions.handleRefreshServerCatalog(state, ev);
@@ -368,4 +368,4 @@ const TokenValue = form.Value.extend({
 	handleSaveApply: function(ev, mode) {
 		return managerActions.handleSaveApply(this, state, ev, mode);
 	}
-});
+	});
