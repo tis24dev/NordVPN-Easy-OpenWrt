@@ -215,4 +215,90 @@ printf '%s' "$BUSY_JSON" | jq -er '
 	(.message | contains("operation busy"))
 ' >/dev/null
 
+STATUS_BIN_DIR="$TMP_DIR/status-bin"
+STATUS_INIT="$TMP_DIR/init-status"
+STATUS_CAPTURE="$TMP_DIR/status-reconcile-calls"
+STATUS_RUN_DIR="$TMP_DIR/status-run"
+mkdir -p "$STATUS_BIN_DIR" "$STATUS_RUN_DIR"
+cat > "$STATUS_BIN_DIR/uci" <<'EOF'
+#!/bin/sh
+if [ "$1" = 'show' ] && [ "$2" = 'firewall' ]; then
+	exit 0
+fi
+if [ "$1" = '-q' ] && [ "$2" = 'get' ]; then
+	case "$3" in
+		nordvpn_easy.main.enabled) printf '%s\n' '1' ;;
+		nordvpn_easy.main.vpn_country) printf '%s\n' "${FAKE_VPN_COUNTRY:-BO}" ;;
+		nordvpn_easy.main.server_selection_mode) printf '%s\n' "${FAKE_SELECTION_MODE:-auto}" ;;
+		nordvpn_easy.main.vpn_if) printf '%s\n' 'wg0' ;;
+		network.wg0.proto) printf '%s\n' 'wireguard' ;;
+		network.wg0server.nordvpn_station) printf '%s\n' "${FAKE_CURRENT_STATION:-45.248.77.163}" ;;
+		network.wg0server.nordvpn_country_code) printf '%s\n' "${FAKE_CURRENT_COUNTRY:-AU}" ;;
+		network.wg0server.nordvpn_hostname) printf '%s\n' 'au742.nordvpn.com' ;;
+		network.wg0server.endpoint_host) printf '%s\n' 'au742.nordvpn.com' ;;
+		network.wg0server.nordvpn_city) printf '%s\n' 'Brisbane' ;;
+		network.wg0server.nordvpn_load) printf '%s\n' '17' ;;
+		network.wg0server.endpoint_port) printf '%s\n' '51820' ;;
+		network.wg0server.persistent_keepalive) printf '%s\n' '15' ;;
+		*)
+			exit 1
+			;;
+	esac
+	exit 0
+fi
+exit 1
+EOF
+cat > "$STATUS_BIN_DIR/wg" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+cat > "$STATUS_BIN_DIR/logger" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+chmod 755 "$STATUS_BIN_DIR/uci" "$STATUS_BIN_DIR/wg" "$STATUS_BIN_DIR/logger"
+cat > "$STATUS_INIT" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$STATUS_CAPTURE"
+exit 0
+EOF
+chmod 755 "$STATUS_INIT"
+
+STATUS_JSON="$(
+	printf '{}' |
+		PATH="$STATUS_BIN_DIR:$PATH" \
+		NORDVPN_EASY_LIB_DIR="$LIB_DIR" \
+		NORDVPN_EASY_INIT_SCRIPT="$STATUS_INIT" \
+		NORDVPN_EASY_RUN_DIR="$STATUS_RUN_DIR" \
+		NORDVPN_EASY_RPC_AUTO_RECONCILE_COOLDOWN_SECONDS=300 \
+		sh "$RPCD_SCRIPT" call status
+)"
+printf '%s' "$STATUS_JSON" | jq -er '
+	.selected_country == "BO" and
+	.current_server_country == "AU"
+' >/dev/null
+for _attempt in 1 2 3 4 5; do
+	[ -s "$STATUS_CAPTURE" ] && break
+	sleep 1
+done
+[ "$(cat "$STATUS_CAPTURE" 2>/dev/null)" = 'reconnect' ] || {
+	printf '%s\n' 'FAIL: rpc status should queue reconnect for saved-country drift' >&2
+	exit 1
+}
+
+STATUS_JSON="$(
+	printf '{}' |
+		PATH="$STATUS_BIN_DIR:$PATH" \
+		NORDVPN_EASY_LIB_DIR="$LIB_DIR" \
+		NORDVPN_EASY_INIT_SCRIPT="$STATUS_INIT" \
+		NORDVPN_EASY_RUN_DIR="$STATUS_RUN_DIR" \
+		NORDVPN_EASY_RPC_AUTO_RECONCILE_COOLDOWN_SECONDS=300 \
+		sh "$RPCD_SCRIPT" call status
+)"
+assert_status_calls="$(wc -l < "$STATUS_CAPTURE" | awk '{ print $1 }')"
+[ "$assert_status_calls" = '1' ] || {
+	printf '%s\n' 'FAIL: rpc status auto reconcile should be throttled for the same drift key' >&2
+	exit 1
+}
+
 printf '%s\n' 'test-rpcd.sh: ok'

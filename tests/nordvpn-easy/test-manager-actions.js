@@ -287,6 +287,32 @@ assert.deepEqual(
 );
 
 assert.deepEqual(
+	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'UY', 'UY', 'auto', 'auto', '', '', Object.assign({}, healthyRuntime, {
+		current_server_country: 'AT',
+		current_server_station: 'at123'
+	}))),
+	{
+		actions: [ 'reconnect' ],
+		successMessage: 'NordVPN Easy restarted and synchronized the automatic server selection.',
+		serverSelectionChanged: false
+	},
+	'unchanged country with runtime country drift uses transactional reconnect'
+);
+
+assert.deepEqual(
+	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'UY', 'UY', 'manual', 'manual', 'uy123', 'uy123', Object.assign({}, healthyRuntime, {
+		current_server_country: 'UY',
+		current_server_station: 'uy999'
+	}))),
+	{
+		actions: [ 'reconnect' ],
+		successMessage: 'NordVPN Easy restarted and synchronized the selected manual server.',
+		serverSelectionChanged: false
+	},
+	'unchanged manual preference with runtime station drift uses transactional reconnect'
+);
+
+assert.deepEqual(
 	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'UY', 'UY', 'auto', 'auto', '', '', disabledRuntime)),
 	{
 		actions: [ 'reconcile' ],
@@ -1305,7 +1331,7 @@ async function testAutoReconcileRunsForCountryDrift() {
 
 	await harness.actions.maybeAutoReconcileSelectionDrift(harness.state, driftStatus);
 
-	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'reconcile' ] ], 'country drift queues exactly one reconcile');
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'reconnect' ] ], 'country drift queues exactly one reconnect');
 	assert.equal(harness.state.pendingOperationLabel, '', 'auto reconcile clears the pending label after completion');
 	assert.ok(harness.phaseTransitions.indexOf('runtime_busy') !== -1, 'auto reconcile enters runtime-busy phase');
 	assert.ok(harness.serviceCalls.indexOf('status_json') !== -1, 'auto reconcile refreshes status after completion');
@@ -1348,7 +1374,7 @@ async function testAutoReconcileThrottlesSuccessfulNoChange() {
 	await harness.actions.maybeAutoReconcileSelectionDrift(harness.state, driftStatus);
 	await harness.actions.maybeAutoReconcileSelectionDrift(harness.state, harness.state.currentLocalStatus);
 
-	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'reconcile' ] ], 'successful reconcile that leaves the same drift is throttled');
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'reconnect' ] ], 'successful reconnect that leaves the same drift is throttled');
 	assert.equal(harness.state.lastAutoReconcileFailureKey, 'auto:AU:BM', 'unchanged success records the drift key');
 	assert.match(harness.notifications[harness.notifications.length - 1].message, /still out of sync/, 'unchanged success reports a readable sync error');
 }
@@ -1443,7 +1469,7 @@ async function testAutoReconcileSkipsNonDriftCases() {
 }
 
 async function testAutoReconcileThrottlesRepeatedFailures() {
-	const runError = new Error('reconcile exploded');
+	const runError = new Error('reconnect exploded');
 	const harness = buildHandleSaveApplyHarness({
 		previousEnabled: true,
 		savedCountry: 'AU',
@@ -1480,8 +1506,8 @@ async function testAutoReconcileThrottlesRepeatedFailures() {
 	await harness.actions.maybeAutoReconcileSelectionDrift(harness.state, driftStatus);
 	await harness.actions.maybeAutoReconcileSelectionDrift(harness.state, driftStatus);
 
-	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'reconcile' ] ], 'failed auto reconcile is throttled for the same drift');
-	assert.match(harness.notifications[harness.notifications.length - 1].message, /Automatic runtime sync failed: reconcile exploded/, 'auto reconcile failure is reported once');
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'reconnect' ] ], 'failed auto reconnect is throttled for the same drift');
+	assert.match(harness.notifications[harness.notifications.length - 1].message, /Automatic runtime sync failed: reconnect exploded/, 'auto reconnect failure is reported once');
 	assert.equal(harness.notifications.length, 1, 'throttled auto reconcile does not repeat notifications');
 	assert.equal(harness.state.lastAutoReconcileFailureKey, 'auto:AU:BM', 'throttle records the drift key');
 }

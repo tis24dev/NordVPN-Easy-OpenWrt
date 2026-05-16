@@ -85,6 +85,42 @@ function runtimeNeedsReconciliation(runtimeStatus) {
 	return !!(runtimeStatus.runtime_disabled || runtimeStatus.interface_disabled || runtimeStatus.runtime_configured === false);
 }
 
+function deriveSavedServerSelectionDrift(mode, country, preferredStation, runtimeStatus) {
+	const currentMode = normalizeSelectionMode(mode);
+	const selectedCountry = managerData.normalizeCountryCode(country || '');
+	const currentServerCountry = managerData.normalizeCountryCode((runtimeStatus && runtimeStatus.current_server_country) || '');
+	const savedPreferredStation = String(preferredStation || '');
+	const currentStation = String((runtimeStatus && runtimeStatus.current_server_station) || '');
+
+	if (currentMode === 'manual') {
+		if (!savedPreferredStation || !currentStation || savedPreferredStation === currentStation)
+			return null;
+
+		return {
+			key: [ 'manual', savedPreferredStation, currentStation ].join(':'),
+			reason: _('manual server drift'),
+			mode: currentMode,
+			selectedCountry: selectedCountry,
+			currentServerCountry: currentServerCountry,
+			preferredStation: savedPreferredStation,
+			currentStation: currentStation
+		};
+	}
+
+	if (!selectedCountry || !currentServerCountry || selectedCountry === currentServerCountry)
+		return null;
+
+	return {
+		key: [ 'auto', selectedCountry, currentServerCountry ].join(':'),
+		reason: _('country drift'),
+		mode: currentMode,
+		selectedCountry: selectedCountry,
+		currentServerCountry: currentServerCountry,
+		preferredStation: savedPreferredStation,
+		currentStation: currentStation
+	};
+}
+
 function deriveServerSelectionDrift(state, status) {
 	const runtimeStatus = status || (state && state.currentLocalStatus) || {};
 	const mode = normalizeSelectionMode(runtimeStatus.server_selection_mode || 'auto');
@@ -173,13 +209,13 @@ function maybeAutoReconcileSelectionDrift(state, status) {
 		if (!autoReconcileIsAllowed(state, latestStatus, latestDrift) || autoReconcileFailureIsThrottled(state, latestDrift))
 			return Promise.resolve(false);
 
-		state.pendingOperationLabel = 'reconcile';
-		state.currentOperationStatus = 'busy:reconcile';
+		state.pendingOperationLabel = 'reconnect';
+		state.currentOperationStatus = 'busy:reconnect';
 		managerStore.setPhase(state, managerStore.PHASES.RUNTIME_BUSY);
 		renderLocalStatusSnapshot(state, latestStatus);
 		notifyDebugBlock(_('Automatic runtime sync queued'), autoReconcileDebugLines(latestDrift));
 
-		return service.runActions([ 'reconcile' ]).then(function() {
+		return service.runActions([ 'reconnect' ]).then(function() {
 			return refreshAfterSaveApply(state, true, { suppressAutoReconcile: true }).then(function() {
 				const remainingDrift = deriveServerSelectionDrift(state, state.currentLocalStatus);
 				let unchangedError;
@@ -237,6 +273,12 @@ function deriveRuntimeActionPlan(previousEnabled, enabled, previousCountry, coun
 		previousPreferredStation,
 		preferredStation
 	);
+	const serverSelectionDrift = currentEnabled && deriveSavedServerSelectionDrift(
+		currentMode,
+		country,
+		preferredStation,
+		runtimeStatus
+	);
 	const runtimeReconciliationRequired = currentEnabled && runtimeNeedsReconciliation(runtimeStatus);
 	const plan = {
 		actions: [],
@@ -256,7 +298,7 @@ function deriveRuntimeActionPlan(previousEnabled, enabled, previousCountry, coun
 		return plan;
 	}
 
-	if (currentEnabled && serverSelectionChanged) {
+	if (currentEnabled && (serverSelectionChanged || serverSelectionDrift)) {
 		plan.actions = [ 'reconnect' ];
 		plan.successMessage = currentMode === 'manual'
 			? _('NordVPN Easy restarted and synchronized the selected manual server.')
