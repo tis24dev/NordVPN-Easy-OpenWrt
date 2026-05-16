@@ -1,5 +1,5 @@
 Package: luci-app-nordvpn-easy
-Version: 0.4.7
+Version: 0.4.8
 Depends: libc, ca-certificates, curl, jq, kmod-wireguard, wireguard-tools, luci-base, rpcd
 Source: package/luci-app-nordvpn-easy
 SourceName: luci-app-nordvpn-easy
@@ -8,9 +8,9 @@ Section: luci
 SourceDateEpoch: 1696887935
 Maintainer: tis24dev
 Architecture: all
-Installed-Size: 61479
-Filename: luci-app-nordvpn-easy_0.4.7_all.ipk
-Size: 63154
-SHA256sum: 91a5029d82e8c8c611fee881eba24d68c01a2346b3c84092cc05247a3e4c05a1
+Installed-Size: 62550
+Filename: luci-app-nordvpn-easy_0.4.8_all.ipk
+Size: 64253
+SHA256sum: a5fc6c0276e04715cce0d1e2f5952edcc451262bf132f3bdab6ca7a88113d33a
 Description:  User-facing LuCI integration for NordVPN Easy on OpenWrt, bundled with the backend for manual upload installs
 
