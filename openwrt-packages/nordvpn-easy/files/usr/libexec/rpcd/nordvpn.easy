@@ -6,8 +6,6 @@ UCI_SECTION='main'
 LIB_DIR="${NORDVPN_EASY_LIB_DIR:-/usr/libexec/nordvpn-easy/lib}"
 LOCK_DIR="${NORDVPN_EASY_LOCK_DIR:-/tmp/nordvpn-easy.lock}"
 NORDVPN_EASY_RC_BUSY="${NORDVPN_EASY_RC_BUSY:-75}"
-AUTO_RECONCILE_COOLDOWN_SECONDS="${NORDVPN_EASY_RPC_AUTO_RECONCILE_COOLDOWN_SECONDS:-300}"
-AUTO_RECONCILE_THROTTLE_LOG_SECONDS="${NORDVPN_EASY_RPC_AUTO_RECONCILE_THROTTLE_LOG_SECONDS:-60}"
 
 # shellcheck disable=SC1090
 . "${LIB_DIR}/config-context.sh" || exit 1
@@ -112,144 +110,8 @@ rpc_load_runtime_context_readonly() {
 	CONFIG_CONTEXT_SOURCE="uci:${UCI_CONFIG}.${UCI_SECTION}:readonly"
 }
 
-rpc_log_notice() {
-	if command -v logger >/dev/null 2>&1; then
-		logger -t nordvpn-easy "$*"
-	fi
-}
-
-rpc_normalize_country_code() {
-	printf '%s' "${1:-}" | tr '[:lower:]' '[:upper:]'
-}
-
-rpc_runtime_operation_is_busy() {
-	nordvpn_easy_load_lock_metadata "$LOCK_DIR"
-	[ "${OPERATION_LOCK_STATE:-none}" = 'held' ]
-}
-
-rpc_current_server_station() {
-	uci -q get "network.${VPN_IF:-wg0}server.nordvpn_station" 2>/dev/null || true
-}
-
-rpc_current_server_country() {
-	uci -q get "network.${VPN_IF:-wg0}server.nordvpn_country_code" 2>/dev/null || true
-}
-
-rpc_status_selection_drift_reason() {
-	local current_station=''
-	local current_country=''
-	local selected_country=''
-
-	RPC_STATUS_SELECTION_DRIFT_KEY=''
-	RPC_STATUS_SELECTION_DRIFT_REASON=''
-
-	[ "${DESIRED_ENABLED:-0}" = '1' ] || return 1
-	rpc_runtime_operation_is_busy && return 1
-
-	current_station="$(rpc_current_server_station)"
-
-	if [ "${SERVER_SELECTION_MODE:-auto}" = 'manual' ]; then
-		[ -n "${PREFERRED_SERVER_STATION:-}" ] || return 1
-		[ -n "$current_station" ] || return 1
-		[ "$current_station" != "$PREFERRED_SERVER_STATION" ] || return 1
-		RPC_STATUS_SELECTION_DRIFT_KEY="manual:${PREFERRED_SERVER_STATION}:${current_station}"
-		RPC_STATUS_SELECTION_DRIFT_REASON="mode=manual, preferred_station=$PREFERRED_SERVER_STATION, current_station=$current_station, selected_country=${VPN_COUNTRY:-automatic}"
-		return 0
-	fi
-
-	[ -n "${VPN_COUNTRY:-}" ] || return 1
-	selected_country="$(rpc_normalize_country_code "$VPN_COUNTRY")"
-	current_country="$(rpc_normalize_country_code "$(rpc_current_server_country)")"
-	[ -n "$current_country" ] || return 1
-	[ "$current_country" != "$selected_country" ] || return 1
-
-	RPC_STATUS_SELECTION_DRIFT_KEY="auto:${selected_country}:${current_country}"
-	RPC_STATUS_SELECTION_DRIFT_REASON="mode=auto, selected_country=$selected_country, current_server_country=$current_country, current_station=${current_station:-unknown}"
-	return 0
-}
-
-rpc_status_auto_reconcile_is_throttled() {
-	local key_file="$NORDVPN_EASY_RUN_DIR/status_auto_reconcile.key"
-	local ts_file="$NORDVPN_EASY_RUN_DIR/status_auto_reconcile.ts"
-	local log_key_file="$NORDVPN_EASY_RUN_DIR/status_auto_reconcile_throttle_log.key"
-	local log_ts_file="$NORDVPN_EASY_RUN_DIR/status_auto_reconcile_throttle_log.ts"
-	local previous_key=''
-	local previous_ts=''
-	local previous_log_key=''
-	local previous_log_ts=''
-	local now=''
-	local age_seconds=0
-	local log_age_seconds=0
-
-	[ -n "${RPC_STATUS_SELECTION_DRIFT_KEY:-}" ] || return 1
-	case "$AUTO_RECONCILE_THROTTLE_LOG_SECONDS" in
-		''|*[!0-9]*)
-			AUTO_RECONCILE_THROTTLE_LOG_SECONDS='60'
-			;;
-	esac
-	previous_key="$(sed -n '1p' "$key_file" 2>/dev/null || true)"
-	previous_ts="$(sed -n '1p' "$ts_file" 2>/dev/null || true)"
-	[ "$previous_key" = "$RPC_STATUS_SELECTION_DRIFT_KEY" ] || return 1
-	case "$previous_ts" in
-		''|*[!0-9]*)
-			return 1
-			;;
-	esac
-	now="$(date +%s 2>/dev/null || printf '%s' '0')"
-	age_seconds=$((now - previous_ts))
-	if [ "$age_seconds" -lt "$AUTO_RECONCILE_COOLDOWN_SECONDS" ]; then
-		previous_log_key="$(sed -n '1p' "$log_key_file" 2>/dev/null || true)"
-		previous_log_ts="$(sed -n '1p' "$log_ts_file" 2>/dev/null || true)"
-		case "$previous_log_ts" in
-			''|*[!0-9]*)
-				previous_log_ts=''
-				;;
-		esac
-		if [ "$previous_log_key" = "$RPC_STATUS_SELECTION_DRIFT_KEY" ] && [ -n "$previous_log_ts" ]; then
-			log_age_seconds=$((now - previous_log_ts))
-			[ "$log_age_seconds" -lt "$AUTO_RECONCILE_THROTTLE_LOG_SECONDS" ] && return 0
-		fi
-
-		rpc_log_notice "rpc status: server selection drift still throttled (key=$RPC_STATUS_SELECTION_DRIFT_KEY, age_seconds=$age_seconds, cooldown_seconds=$AUTO_RECONCILE_COOLDOWN_SECONDS)"
-		mkdir -p "$NORDVPN_EASY_RUN_DIR" || return 0
-		printf '%s\n' "$RPC_STATUS_SELECTION_DRIFT_KEY" > "$log_key_file" 2>/dev/null || true
-		printf '%s\n' "$now" > "$log_ts_file" 2>/dev/null || true
-		return 0
-	fi
-
-	return 1
-}
-
-rpc_record_status_auto_reconcile_attempt() {
-	local key_file="$NORDVPN_EASY_RUN_DIR/status_auto_reconcile.key"
-	local ts_file="$NORDVPN_EASY_RUN_DIR/status_auto_reconcile.ts"
-	local now=''
-
-	mkdir -p "$NORDVPN_EASY_RUN_DIR" || return 0
-	now="$(date +%s 2>/dev/null || printf '%s' '0')"
-	printf '%s\n' "$RPC_STATUS_SELECTION_DRIFT_KEY" > "$key_file" 2>/dev/null || true
-	printf '%s\n' "$now" > "$ts_file" 2>/dev/null || true
-}
-
-rpc_maybe_auto_reconcile_status_drift() {
-	if ! rpc_status_selection_drift_reason; then
-		return 0
-	fi
-
-	if rpc_status_auto_reconcile_is_throttled; then
-		return 0
-	fi
-
-	rpc_record_status_auto_reconcile_attempt
-	rpc_log_notice "rpc status: server selection drift detected ($RPC_STATUS_SELECTION_DRIFT_REASON); queued reconnect"
-	(
-		"$INIT_SCRIPT" reconnect </dev/null >/dev/null 2>&1
-	) &
-}
-
 rpc_status() {
 	if rpc_load_runtime_context_readonly >/dev/null 2>&1; then
-		rpc_maybe_auto_reconcile_status_drift
 		if nordvpn_easy_write_status_cache >/dev/null 2>&1; then
 			nordvpn_easy_emit_cached_status_json
 		else
