@@ -217,7 +217,7 @@ printf '%s' "$BUSY_JSON" | jq -er '
 
 STATUS_BIN_DIR="$TMP_DIR/status-bin"
 STATUS_INIT="$TMP_DIR/init-status"
-STATUS_CAPTURE="$TMP_DIR/status-reconcile-calls"
+STATUS_CAPTURE="$TMP_DIR/status-action-calls"
 STATUS_RUN_DIR="$TMP_DIR/status-run"
 mkdir -p "$STATUS_BIN_DIR" "$STATUS_RUN_DIR"
 cat > "$STATUS_BIN_DIR/uci" <<'EOF'
@@ -270,19 +270,14 @@ STATUS_JSON="$(
 		NORDVPN_EASY_LIB_DIR="$LIB_DIR" \
 		NORDVPN_EASY_INIT_SCRIPT="$STATUS_INIT" \
 		NORDVPN_EASY_RUN_DIR="$STATUS_RUN_DIR" \
-		NORDVPN_EASY_RPC_AUTO_RECONCILE_COOLDOWN_SECONDS=300 \
 		sh "$RPCD_SCRIPT" call status
 )"
 printf '%s' "$STATUS_JSON" | jq -er '
 	.selected_country == "BO" and
 	.current_server_country == "AU"
 ' >/dev/null
-for _attempt in 1 2 3 4 5; do
-	[ -s "$STATUS_CAPTURE" ] && break
-	sleep 1
-done
-[ "$(cat "$STATUS_CAPTURE" 2>/dev/null)" = 'reconnect' ] || {
-	printf '%s\n' 'FAIL: rpc status should queue reconnect for saved-country drift' >&2
+[ ! -s "$STATUS_CAPTURE" ] || {
+	printf '%s\n' 'FAIL: rpc status must not run runtime actions for saved-country drift' >&2
 	exit 1
 }
 
@@ -292,12 +287,10 @@ STATUS_JSON="$(
 		NORDVPN_EASY_LIB_DIR="$LIB_DIR" \
 		NORDVPN_EASY_INIT_SCRIPT="$STATUS_INIT" \
 		NORDVPN_EASY_RUN_DIR="$STATUS_RUN_DIR" \
-		NORDVPN_EASY_RPC_AUTO_RECONCILE_COOLDOWN_SECONDS=300 \
 		sh "$RPCD_SCRIPT" call status
 )"
-assert_status_calls="$(wc -l < "$STATUS_CAPTURE" | awk '{ print $1 }')"
-[ "$assert_status_calls" = '1' ] || {
-	printf '%s\n' 'FAIL: rpc status auto reconcile should be throttled for the same drift key' >&2
+[ ! -s "$STATUS_CAPTURE" ] || {
+	printf '%s\n' 'FAIL: repeated rpc status must stay read-only for saved-country drift' >&2
 	exit 1
 }
 
