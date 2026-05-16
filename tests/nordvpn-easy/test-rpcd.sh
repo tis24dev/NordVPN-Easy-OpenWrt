@@ -281,8 +281,8 @@ for _attempt in 1 2 3 4 5; do
 	[ -s "$STATUS_CAPTURE" ] && break
 	sleep 1
 done
-[ "$(cat "$STATUS_CAPTURE" 2>/dev/null)" = 'reconcile' ] || {
-	printf '%s\n' 'FAIL: rpc status should queue reconcile for saved-country drift' >&2
+[ "$(cat "$STATUS_CAPTURE" 2>/dev/null)" = 'reconnect' ] || {
+	printf '%s\n' 'FAIL: rpc status should queue reconnect for saved-country drift' >&2
 	exit 1
 }
 
