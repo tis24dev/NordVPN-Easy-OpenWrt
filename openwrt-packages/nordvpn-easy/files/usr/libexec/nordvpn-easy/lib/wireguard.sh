@@ -484,8 +484,13 @@ nordvpn_easy_current_server_matches_recommendations() {
 
 	[ -n "$CURRENT_SERVER" ] || return 1
 
-	jq -e --arg current "$CURRENT_SERVER" '
-		[ .[] | select(.station == $current) ] | length > 0
+	jq -e --arg current "$CURRENT_SERVER" --arg country "${RESOLVED_COUNTRY_CODE:-}" '
+		[
+			.[] | select(
+				(.station == $current) and
+				($country == "" or ((.locations[0].country.code // "") == $country))
+			)
+		] | length > 0
 	' "$SERVER_LIST_FILE" >/dev/null 2>&1
 }
 

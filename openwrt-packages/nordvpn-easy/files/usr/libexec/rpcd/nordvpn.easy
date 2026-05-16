@@ -173,6 +173,7 @@ rpc_status_auto_reconcile_is_throttled() {
 	local previous_key=''
 	local previous_ts=''
 	local now=''
+	local age_seconds=0
 
 	[ -n "${RPC_STATUS_SELECTION_DRIFT_KEY:-}" ] || return 1
 	previous_key="$(sed -n '1p' "$key_file" 2>/dev/null || true)"
@@ -184,7 +185,13 @@ rpc_status_auto_reconcile_is_throttled() {
 			;;
 	esac
 	now="$(date +%s 2>/dev/null || printf '%s' '0')"
-	[ $((now - previous_ts)) -lt "$AUTO_RECONCILE_COOLDOWN_SECONDS" ]
+	age_seconds=$((now - previous_ts))
+	if [ "$age_seconds" -lt "$AUTO_RECONCILE_COOLDOWN_SECONDS" ]; then
+		rpc_log_notice "rpc status: server selection drift still throttled (key=$RPC_STATUS_SELECTION_DRIFT_KEY, age_seconds=$age_seconds, cooldown_seconds=$AUTO_RECONCILE_COOLDOWN_SECONDS)"
+		return 0
+	fi
+
+	return 1
 }
 
 rpc_record_status_auto_reconcile_attempt() {
@@ -208,9 +215,9 @@ rpc_maybe_auto_reconcile_status_drift() {
 	fi
 
 	rpc_record_status_auto_reconcile_attempt
-	rpc_log_notice "rpc status: server selection drift detected ($RPC_STATUS_SELECTION_DRIFT_REASON); queued reconcile"
+	rpc_log_notice "rpc status: server selection drift detected ($RPC_STATUS_SELECTION_DRIFT_REASON); queued reconnect"
 	(
-		"$INIT_SCRIPT" reconcile </dev/null >/dev/null 2>&1
+		"$INIT_SCRIPT" reconnect </dev/null >/dev/null 2>&1
 	) &
 }
 
