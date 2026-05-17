@@ -1,5 +1,5 @@
 'use strict';
-/* global baseclass, managerData, managerFormat, managerStore, managerUI, service, ui, uci, Date, setTimeout, clearTimeout, E, _ */
+/* global baseclass, managerData, managerFormat, managerStore, managerUI, service, ui, uci, document, Date, setTimeout, clearTimeout, E, _ */
 'require baseclass';
 'require nordvpn-easy/manager-data as managerData';
 'require nordvpn-easy/manager-format as managerFormat';
@@ -803,6 +803,18 @@ function refreshAfterSaveApply(state, refreshPublicIp, options) {
 	});
 }
 
+function waitForUciApplied(checked) {
+	return new Promise(function(resolve) {
+		const onApplied = function() {
+			document.removeEventListener('uci-applied', onApplied);
+			resolve();
+		};
+
+		document.addEventListener('uci-applied', onApplied);
+		ui.changes.apply(checked);
+	});
+}
+
 function handleSaveApply(viewState, state, ev, mode) {
 	const previousEnabled = !!viewState.initialEnabled;
 	const previousCountry = viewState.initialCountry || '';
@@ -1020,7 +1032,7 @@ function handleSaveApply(viewState, state, ev, mode) {
 				state.currentOperationStatus = 'busy:configuration';
 				managerStore.setPhase(state, managerStore.PHASES.SAVING);
 				updateLocalStatus(state, { force: true });
-				Promise.resolve(ui.changes.apply(mode === '0')).then(continueAfterUciApply).catch(function(err) {
+				waitForUciApplied(mode === '0').then(continueAfterUciApply).catch(function(err) {
 					managerStore.setError(state, err);
 					state.pendingOperationLabel = '';
 					managerStore.resumePolling(state);

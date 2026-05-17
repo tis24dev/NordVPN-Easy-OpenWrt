@@ -1176,7 +1176,7 @@ async function testHandleSaveApplyCancellationStopsRuntimeChange() {
 	assert.deepEqual(harness.pollingTransitions, [], 'cancelled confirmation leaves polling untouched');
 }
 
-async function testHandleSaveApplyContinuesWhenUciAppliedEventIsMissing() {
+async function testHandleSaveApplyTimesOutWhenUciAppliedEventIsMissing() {
 	const harness = buildHandleSaveApplyHarness({
 		previousEnabled: false,
 		currentEnabled: true,
@@ -1187,15 +1187,19 @@ async function testHandleSaveApplyContinuesWhenUciAppliedEventIsMissing() {
 		emitUciApplied: false,
 		timeoutMs: 25
 	});
+	let rejected = null;
 
-	await harness.actions.handleSaveApply(harness.viewState, harness.state, {}, '1');
+	await harness.actions.handleSaveApply(harness.viewState, harness.state, {}, '1').catch(function(err) {
+		rejected = err;
+	});
 	await Promise.resolve();
 
 	assert.equal(harness.calls.handleSave, 1, 'enable flow saves the form once');
 	assert.equal(harness.calls.apply, 1, 'enable flow applies LuCI changes once');
-	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'connect' ] ], 'enable flow queues connect after apply promise resolves without uci-applied event');
-	assert.equal(harness.state.pendingOperationLabel, '', 'enable flow clears pending state after runtime completion without uci-applied event');
-	assert.equal(harness.pollingTransitions[harness.pollingTransitions.length - 1], 'resume', 'enable flow resumes polling without uci-applied event');
+	assert.match(rejected && rejected.message, /Configuration apply timed out/, 'missing uci-applied event rejects through the apply timeout');
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [], 'missing uci-applied event does not run runtime actions before apply confirmation');
+	assert.equal(harness.state.pendingOperationLabel, '', 'timeout clears pending state when uci-applied is missing');
+	assert.equal(harness.pollingTransitions[harness.pollingTransitions.length - 1], 'resume', 'timeout resumes polling when uci-applied is missing');
 }
 
 async function testHandleSaveApplyClearsBusyStateWhenPostApplySyncFails() {
@@ -1522,7 +1526,7 @@ Promise.resolve().then(async function() {
 	await testHandleSaveApplyRejectsManualModeWithoutCountry();
 	await testHandleSaveApplyRejectsManualModeWithoutCatalogServer();
 	await testHandleSaveApplyCancellationStopsRuntimeChange();
-	await testHandleSaveApplyContinuesWhenUciAppliedEventIsMissing();
+	await testHandleSaveApplyTimesOutWhenUciAppliedEventIsMissing();
 	await testHandleSaveApplyClearsBusyStateWhenPostApplySyncFails();
 	await testHandleSaveApplyAutoModeClearsManualSelectionAndReconnects();
 	await testHandleSaveApplyReconcilesDisabledRuntimeAfterSave();
