@@ -250,7 +250,7 @@ assert.deepEqual(
 	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'AT', 'UY', 'auto', 'auto', '', '', healthyRuntime)),
 	{
 		actions: [ 'reconnect' ],
-		successMessage: 'NordVPN Easy restarted and synchronized the automatic server selection.',
+		successMessage: 'NordVPN Easy cleanly reconnected and synchronized the automatic server selection.',
 		serverSelectionChanged: true
 	},
 	'enabled country changes use transactional reconnect'
@@ -260,7 +260,7 @@ assert.deepEqual(
 	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'UY', 'UY', 'auto', 'manual', '', 'uy123', healthyRuntime)),
 	{
 		actions: [ 'reconnect' ],
-		successMessage: 'NordVPN Easy restarted and synchronized the selected manual server.',
+		successMessage: 'NordVPN Easy cleanly reconnected and synchronized the selected manual server.',
 		serverSelectionChanged: true
 	},
 	'enabled mode changes use transactional reconnect'
@@ -270,7 +270,7 @@ assert.deepEqual(
 	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'UY', 'UY', 'manual', 'manual', 'uy123', 'uy456', healthyRuntime)),
 	{
 		actions: [ 'reconnect' ],
-		successMessage: 'NordVPN Easy restarted and synchronized the selected manual server.',
+		successMessage: 'NordVPN Easy cleanly reconnected and synchronized the selected manual server.',
 		serverSelectionChanged: true
 	},
 	'enabled manual preferred server changes use transactional reconnect'
@@ -279,11 +279,11 @@ assert.deepEqual(
 assert.deepEqual(
 	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'UY', 'UY', 'auto', 'auto', '', '', healthyRuntime)),
 	{
-		actions: [],
-		successMessage: '',
+		actions: [ 'reconnect' ],
+		successMessage: 'NordVPN Easy cleanly reconnected with the saved configuration.',
 		serverSelectionChanged: false
 	},
-	'no runtime-relevant change produces no runtime actions'
+	'enabled Save & Apply cleanly reconnects even without an explicit server-selection delta'
 );
 
 assert.deepEqual(
@@ -293,7 +293,7 @@ assert.deepEqual(
 	}))),
 	{
 		actions: [ 'reconnect' ],
-		successMessage: 'NordVPN Easy restarted and synchronized the automatic server selection.',
+		successMessage: 'NordVPN Easy cleanly reconnected and synchronized the automatic server selection.',
 		serverSelectionChanged: false
 	},
 	'unchanged country with runtime country drift uses transactional reconnect'
@@ -306,7 +306,7 @@ assert.deepEqual(
 	}))),
 	{
 		actions: [ 'reconnect' ],
-		successMessage: 'NordVPN Easy restarted and synchronized the selected manual server.',
+		successMessage: 'NordVPN Easy cleanly reconnected and synchronized the selected manual server.',
 		serverSelectionChanged: false
 	},
 	'unchanged manual preference with runtime station drift uses transactional reconnect'
@@ -315,41 +315,41 @@ assert.deepEqual(
 assert.deepEqual(
 	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'UY', 'UY', 'auto', 'auto', '', '', disabledRuntime)),
 	{
-		actions: [ 'reconcile' ],
-		successMessage: 'NordVPN Easy runtime synchronized with the saved configuration.',
+		actions: [ 'reconnect' ],
+		successMessage: 'NordVPN Easy cleanly reconnected and synchronized the automatic server selection.',
 		serverSelectionChanged: false
 	},
-	'disabled runtime with unchanged config is reconciled'
+	'disabled runtime with unchanged config uses clean reconnect'
 );
 
 assert.deepEqual(
 	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'UY', 'UY', 'auto', 'auto', '', '', missingRuntime)),
 	{
-		actions: [ 'reconcile' ],
-		successMessage: 'NordVPN Easy runtime synchronized with the saved configuration.',
+		actions: [ 'reconnect' ],
+		successMessage: 'NordVPN Easy cleanly reconnected and synchronized the automatic server selection.',
 		serverSelectionChanged: false
 	},
-	'missing runtime with unchanged config is reconciled'
+	'missing runtime with unchanged config uses clean reconnect'
 );
 
 assert.deepEqual(
 	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'UY', 'UY', 'auto', 'auto', '', '', unknownRuntime)),
 	{
-		actions: [ 'reconcile' ],
-		successMessage: 'NordVPN Easy runtime synchronized with the saved configuration.',
+		actions: [ 'reconnect' ],
+		successMessage: 'NordVPN Easy cleanly reconnected and synchronized the automatic server selection.',
 		serverSelectionChanged: false
 	},
-	'unknown runtime snapshot with unchanged config is reconciled'
+	'unknown runtime snapshot with unchanged config uses clean reconnect'
 );
 
 assert.deepEqual(
 	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'UY', 'UY', 'auto', 'auto', '', '', null)),
 	{
-		actions: [ 'reconcile' ],
-		successMessage: 'NordVPN Easy runtime synchronized with the saved configuration.',
+		actions: [ 'reconnect' ],
+		successMessage: 'NordVPN Easy cleanly reconnected and synchronized the automatic server selection.',
 		serverSelectionChanged: false
 	},
-	'null runtime snapshot with unchanged config is reconciled'
+	'null runtime snapshot with unchanged config uses clean reconnect'
 );
 
 function buildUpdateLocalStatusHarness(serviceOverrides) {
@@ -1291,9 +1291,9 @@ async function testHandleSaveApplyReconcilesDisabledRuntimeAfterSave() {
 	await Promise.resolve();
 	await Promise.resolve();
 
-	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'reconcile' ] ], 'unchanged enabled config reconciles a disabled runtime after Save & Apply');
-	assert.equal(harness.state.pendingOperationLabel, '', 'reconcile completion clears pending operation label');
-	assert.ok(harness.serviceCalls.indexOf('status_json') !== -1, 'reconcile flow refreshes status before choosing runtime action');
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'reconnect' ] ], 'unchanged enabled config cleanly reconnects a disabled runtime after Save & Apply');
+	assert.equal(harness.state.pendingOperationLabel, '', 'reconnect completion clears pending operation label');
+	assert.ok(harness.serviceCalls.indexOf('status_json') !== -1, 'reconnect flow refreshes status before choosing runtime action');
 }
 
 async function testAutoReconcileRunsForCountryDrift() {

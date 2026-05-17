@@ -24,7 +24,7 @@ EXTRA_COMMANDS='connect disconnect reconnect reconcile setup check rotate refres
 # shellcheck disable=SC2034
 EXTRA_HELP='  connect               Enable, run setup, then install hooks transactionally
   disconnect            Disable runtime and remove hooks
-  reconnect             Run setup, then install hooks transactionally
+  reconnect             Close the VPN interface, synchronize server selection, then install hooks
   reconcile             Synchronize runtime state with the saved UCI config
   setup                 Run setup immediately
   check                 Run one health check immediately
@@ -533,12 +533,12 @@ disconnect() {
 
 reconnect() {
 	load_service_config || return 1
-	log_service_info "reconnect requested; setup and hooks will run transactionally; $(nordvpn_easy_service_debug_summary 'cfg_')"
+	log_service_info "reconnect requested; clean runtime restart and hooks will run transactionally; $(nordvpn_easy_service_debug_summary 'cfg_')"
 	if [ "$cfg_enabled" -ne 1 ]; then
 		log_service_error 'reconnect refused because enabled=0; use connect to enable the runtime'
 		return 1
 	fi
-	setup || return $?
+	run_core_action reconnect || return $?
 	install_hooks
 }
 

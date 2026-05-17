@@ -279,7 +279,6 @@ function deriveRuntimeActionPlan(previousEnabled, enabled, previousCountry, coun
 		preferredStation,
 		runtimeStatus
 	);
-	const runtimeReconciliationRequired = currentEnabled && runtimeNeedsReconciliation(runtimeStatus);
 	const plan = {
 		actions: [],
 		successMessage: '',
@@ -298,17 +297,18 @@ function deriveRuntimeActionPlan(previousEnabled, enabled, previousCountry, coun
 		return plan;
 	}
 
-	if (currentEnabled && (serverSelectionChanged || serverSelectionDrift)) {
+	if (currentEnabled) {
 		plan.actions = [ 'reconnect' ];
-		plan.successMessage = currentMode === 'manual'
-			? _('NordVPN Easy restarted and synchronized the selected manual server.')
-			: _('NordVPN Easy restarted and synchronized the automatic server selection.');
+		if (currentMode === 'manual') {
+			plan.successMessage = _('NordVPN Easy cleanly reconnected and synchronized the selected manual server.');
+		}
+		else if (serverSelectionChanged || serverSelectionDrift || runtimeNeedsReconciliation(runtimeStatus)) {
+			plan.successMessage = _('NordVPN Easy cleanly reconnected and synchronized the automatic server selection.');
+		}
+		else {
+			plan.successMessage = _('NordVPN Easy cleanly reconnected with the saved configuration.');
+		}
 		return plan;
-	}
-
-	if (runtimeReconciliationRequired) {
-		plan.actions = [ 'reconcile' ];
-		plan.successMessage = _('NordVPN Easy runtime synchronized with the saved configuration.');
 	}
 
 	return plan;

@@ -487,6 +487,12 @@ nordvpn_easy_print_diagnostics_health_summary() {
 	local wg_peer_count='unknown'
 	local missing_interface=''
 	local missing_required=''
+	local server_selection_drift='none'
+	local selection_mode=''
+	local selected_country=''
+	local current_server_country=''
+	local preferred_station=''
+	local current_station=''
 	local probable_issue='none detected'
 	local value=''
 
@@ -530,9 +536,15 @@ nordvpn_easy_print_diagnostics_health_summary() {
 					missing_required="$(nordvpn_easy_diagnostics_csv_append "$missing_required" "$value")"
 				fi
 			done
+			current_server_country="$(uci -q get "network.${peer_section}.nordvpn_country_code" 2>/dev/null | tr '[:lower:]' '[:upper:]' || true)"
+			current_station="$(uci -q get "network.${peer_section}.nordvpn_station" 2>/dev/null || true)"
 		else
 			missing_required='peer_section'
 		fi
+
+		selection_mode="$(uci -q get 'nordvpn_easy.main.server_selection_mode' 2>/dev/null || printf '%s' 'auto')"
+		selected_country="$(uci -q get 'nordvpn_easy.main.vpn_country' 2>/dev/null | tr '[:lower:]' '[:upper:]' || true)"
+		preferred_station="$(uci -q get 'nordvpn_easy.main.preferred_server_station' 2>/dev/null || true)"
 	else
 		missing_required='uci_command'
 	fi
@@ -550,6 +562,14 @@ nordvpn_easy_print_diagnostics_health_summary() {
 		wg_peer_count="$(wg show "$vpn_if" peers 2>/dev/null | awk 'NF { count++ } END { print count + 0 }')"
 	fi
 
+	if [ "$selection_mode" = 'manual' ]; then
+		if [ -n "$preferred_station" ] && [ -n "$current_station" ] && [ "$preferred_station" != "$current_station" ]; then
+			server_selection_drift="manual preferred server drift (preferred_station=${preferred_station}, current_station=${current_station})"
+		fi
+	elif [ -n "$selected_country" ] && [ -n "$current_server_country" ] && [ "$selected_country" != "$current_server_country" ]; then
+		server_selection_drift="country drift (selected_country=${selected_country}, current_server_country=${current_server_country}, current_station=${current_station:-unknown})"
+	fi
+
 	if [ "$vpn_proto" = 'wireguard' ] && [ -n "$missing_interface" ]; then
 		probable_issue="wireguard interface is incomplete (${missing_interface})"
 	elif [ "$vpn_proto" = 'wireguard' ] && [ "$peer_section_found" != 'yes' ]; then
@@ -562,6 +582,8 @@ nordvpn_easy_print_diagnostics_health_summary() {
 		probable_issue='wireguard link is not present'
 	elif [ "$wg_peer_count" = '0' ]; then
 		probable_issue='wireguard runtime has no peers'
+	elif [ "$server_selection_drift" != 'none' ]; then
+		probable_issue="$server_selection_drift"
 	fi
 
 	printf 'vpn_proto=%s\n' "$vpn_proto"
@@ -576,6 +598,7 @@ nordvpn_easy_print_diagnostics_health_summary() {
 	printf 'link_present=%s\n' "$link_present"
 	printf 'wg_peer_count=%s\n' "$wg_peer_count"
 	printf 'routes_via_%s=%s\n' "$vpn_if" "$routes_via_vpn"
+	printf 'server_selection_drift=%s\n' "$server_selection_drift"
 	printf 'probable_issue=%s\n' "$probable_issue"
 }
 

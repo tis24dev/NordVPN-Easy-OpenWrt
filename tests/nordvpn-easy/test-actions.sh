@@ -85,11 +85,16 @@ LAST_SET_SERVER=''
 SET_SEQUENCE=''
 LAST_SET_PUBLIC_KEY=''
 SAVED_PREFERENCE=''
+IFDOWN_COUNT=0
+IFUP_COUNT=0
+WAIT_COUNT=0
+VERIFY_COUNT=0
 PREFERRED_SERVER_HOSTNAME='it12.nordvpn.com'
 PREFERRED_SERVER_STATION='it123'
 FALLBACK_SERVER_STATION=''
 PING_FAIL_UNTIL=0
 PING_COUNT=0
+POST_RESTART_DELAY=10
 
 log() { :; }
 fetch_server_catalog() { return 0; }
@@ -140,12 +145,15 @@ nordvpn_easy_apply_server_change_runtime() {
 	if [ "$APPLY_COUNT" -le "$APPLY_FAIL_UNTIL" ]; then
 		return 1
 	fi
+	NORDVPN_EASY_SERVER_CHANGE_APPLIED=1
 	return 0
 }
 nordvpn_easy_log_vpn_interface_state() { :; }
 sleep() { :; }
-ifdown() { :; }
-ifup() { :; }
+ifdown() { IFDOWN_COUNT=$((IFDOWN_COUNT + 1)); }
+ifup() { IFUP_COUNT=$((IFUP_COUNT + 1)); }
+nordvpn_easy_wait_for_vpn_connectivity() { WAIT_COUNT=$((WAIT_COUNT + 1)); return 0; }
+verify_public_country_selection() { VERIFY_COUNT=$((VERIFY_COUNT + 1)); return 0; }
 
 uci() {
 	if [ "$1" = 'commit' ] && [ "$2" = 'network' ]; then
@@ -618,5 +626,49 @@ if [ ! -f "$(nordvpn_easy_pending_network_reload_marker_path)" ]; then
 	printf '%s\n' 'FAIL: failed network reload should leave pending marker' >&2
 	exit 1
 fi
+
+BOOTSTRAP_COUNT=0
+nordvpn_easy_bootstrap_if_needed() {
+	BOOTSTRAP_COUNT=$((BOOTSTRAP_COUNT + 1))
+	return 0
+}
+
+SERVER_SELECTION_MODE='auto'
+CURRENT_SERVER_VALUE='it123'
+VPN_CONFIGURED_RC=0
+APPLY_COUNT=0
+IFDOWN_COUNT=0
+IFUP_COUNT=0
+WAIT_COUNT=0
+VERIFY_COUNT=0
+
+nordvpn_easy_clean_reconnect_action
+
+assert_eq '1' "$BOOTSTRAP_COUNT" 'clean reconnect bootstraps runtime once'
+assert_eq '1' "$IFDOWN_COUNT" 'clean reconnect closes the active VPN interface first'
+assert_eq '0' "$APPLY_COUNT" 'clean reconnect does not rotate when current server already matches recommendations'
+assert_eq '1' "$IFUP_COUNT" 'clean reconnect brings the VPN interface back up when no server rotation occurred'
+assert_eq '1' "$WAIT_COUNT" 'clean reconnect waits for connectivity after bringing the interface up'
+assert_eq '1' "$VERIFY_COUNT" 'clean reconnect verifies public country after bringing the interface up'
+
+BOOTSTRAP_COUNT=0
+SERVER_SELECTION_MODE='auto'
+CURRENT_SERVER_VALUE='bz1'
+APPLY_COUNT=0
+COMMIT_NETWORK_COUNT=0
+IFDOWN_COUNT=0
+IFUP_COUNT=0
+WAIT_COUNT=0
+VERIFY_COUNT=0
+LAST_SET_SERVER=''
+SET_SEQUENCE=''
+
+nordvpn_easy_clean_reconnect_action
+
+assert_eq '1' "$BOOTSTRAP_COUNT" 'clean reconnect bootstraps before rotating mismatched server'
+assert_eq '1' "$IFDOWN_COUNT" 'clean reconnect closes the active VPN interface before rotation'
+assert_eq '1' "$APPLY_COUNT" 'clean reconnect delegates mismatched server rotation to the runtime apply path'
+assert_eq '0' "$IFUP_COUNT" 'clean reconnect does not bring the interface up twice when rotation already did it'
+assert_eq '0' "$WAIT_COUNT" 'clean reconnect does not duplicate connectivity wait after rotation'
 
 printf '%s\n' 'test-actions.sh: ok'

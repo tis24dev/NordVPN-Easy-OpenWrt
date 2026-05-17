@@ -11,6 +11,7 @@ ERROR_CAPTURE="$TMP_DIR/error.log"
 VALIDATION_MODE='pass'
 CORE_EXIT_RC='0'
 export CORE_EXIT_RC
+NORDVPN_EASY_RC_BUSY='75'
 
 cleanup() {
 	rm -rf "$TMP_DIR"
@@ -161,13 +162,37 @@ assert_eq '1' "$SETUP_COUNT" 'successful connect runs setup once'
 assert_eq '1' "$INSTALL_HOOKS_COUNT" 'successful connect installs hooks once'
 
 cfg_enabled=1
-SETUP_RC=1
-SETUP_COUNT=0
+cat > "$TMP_DIR/core.sh" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" > "$CORE_CAPTURE"
+exit "\${CORE_EXIT_RC:-0}"
+EOF
+chmod +x "$TMP_DIR/core.sh"
+CORE_SCRIPT="$TMP_DIR/core.sh"
+CORE_EXIT_RC='1'
 INSTALL_HOOKS_COUNT=0
+rm -f "$CORE_CAPTURE"
 RC=0
 reconnect || RC=$?
-assert_eq '1' "$RC" 'reconnect propagates setup failure'
-assert_eq '0' "$INSTALL_HOOKS_COUNT" 'reconnect does not install hooks when setup fails'
+assert_eq '1' "$RC" 'reconnect propagates clean core reconnect failure'
+CORE_ARGS="$(cat "$CORE_CAPTURE")"
+case "$CORE_ARGS" in
+	"reconnect --config $TMP_DIR"/action.*"/nordvpn-easy.reconnect.conf")
+		;;
+	*)
+		printf '%s\n' "FAIL: reconnect should run the core reconnect action: $CORE_ARGS" >&2
+		exit 1
+		;;
+esac
+assert_eq '0' "$INSTALL_HOOKS_COUNT" 'reconnect does not install hooks when clean core reconnect fails'
+
+CORE_EXIT_RC='0'
+INSTALL_HOOKS_COUNT=0
+rm -f "$CORE_CAPTURE"
+RC=0
+reconnect || RC=$?
+assert_eq '0' "$RC" 'reconnect succeeds when clean core reconnect and hook installation succeed'
+assert_eq '1' "$INSTALL_HOOKS_COUNT" 'successful reconnect installs hooks once'
 
 cfg_enabled=0
 DISABLE_RUNTIME_COUNT=0
@@ -225,15 +250,6 @@ case "$UCI_SET_VALUES" in
 		exit 1
 		;;
 esac
-
-cat > "$TMP_DIR/core.sh" <<EOF
-#!/bin/sh
-printf '%s\n' "\$*" > "$CORE_CAPTURE"
-exit "\${CORE_EXIT_RC:-0}"
-EOF
-chmod +x "$TMP_DIR/core.sh"
-
-CORE_SCRIPT="$TMP_DIR/core.sh"
 
 cfg_enabled=1
 cfg_nordvpn_token='token-secret'

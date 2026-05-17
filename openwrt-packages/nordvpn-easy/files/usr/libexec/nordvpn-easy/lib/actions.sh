@@ -439,6 +439,38 @@ nordvpn_easy_reconcile_action() {
 	nordvpn_easy_check_once
 }
 
+nordvpn_easy_clean_reconnect_action() {
+	log 'apply: clean reconnect action started'
+	nordvpn_easy_bootstrap_if_needed || return 1
+
+	if nordvpn_easy_vpn_is_configured; then
+		log "apply: closing VPN interface $VPN_IF before reconnecting"
+		ifdown "$VPN_IF" >/dev/null 2>&1 || true
+		sleep 1
+	fi
+
+	NORDVPN_EASY_SERVER_CHANGE_APPLIED=0
+	nordvpn_easy_log_server_selection_drift 'reconnect' || true
+	nordvpn_easy_sync_server_selection || return 1
+
+	if [ "${NORDVPN_EASY_SERVER_CHANGE_APPLIED:-0}" -ne 1 ]; then
+		log "apply: bringing VPN interface $VPN_IF up after clean reconnect"
+		ifup "$VPN_IF" || {
+			log "ERROR: IFUP FAILED DURING CLEAN RECONNECT ON $VPN_IF"
+			return 1
+		}
+
+		if ! nordvpn_easy_wait_for_vpn_connectivity "$VPN_IF" "$POST_RESTART_DELAY" "clean reconnecting $VPN_IF"; then
+			log 'apply: VPN connection is not OK after clean reconnect'
+			return 1
+		fi
+
+		verify_public_country_selection
+	fi
+
+	log 'apply: clean reconnect completed'
+}
+
 nordvpn_easy_change_vpn_server() {
 	CURRENT_SERVER=$(nordvpn_easy_current_server_station)
 	local temp_dir=''

@@ -497,6 +497,10 @@ nordvpn_easy_current_server_matches_recommendations() {
 nordvpn_easy_apply_server_change_runtime() {
 	local wait_context='network restart'
 
+	# Read by clean reconnect paths to avoid cycling the interface twice.
+	# shellcheck disable=SC2034
+	NORDVPN_EASY_SERVER_CHANGE_APPLIED=0
+
 	if [ "$1" = 'reload' ]; then
 		wait_context="cycling $VPN_IF"
 		log "apply: cycling VPN interface $VPN_IF to apply the new peer configuration"
@@ -515,6 +519,8 @@ nordvpn_easy_apply_server_change_runtime() {
 
 	if nordvpn_easy_wait_for_vpn_connectivity "$VPN_IF" "$POST_RESTART_DELAY" "$wait_context"; then
 		log 'apply: VPN connection restored after runtime server change'
+		# shellcheck disable=SC2034
+		NORDVPN_EASY_SERVER_CHANGE_APPLIED=1
 		verify_public_country_selection
 		return 0
 	fi
