@@ -173,6 +173,69 @@ return view.extend({
 		const summary = parseDiagnosticsLoadResult(summaryResult);
 		const findings = findingsRows(summary);
 		const view = this;
+		const actionButtons = [
+			E('button', {
+				'class': 'cbi-button',
+				'type': 'button',
+				'click': ui.createHandlerFn(view, function(ev) {
+					const button = ev && ev.target;
+
+					if (!button || button.disabled || button._nordvpnRefreshing)
+						return;
+
+					button._nordvpnRefreshing = true;
+					button.disabled = true;
+
+					return view.poll().then(function(result) {
+						const container = document.querySelector('[data-nordvpn-easy-diagnostics]');
+
+						if (!container || !container.parentNode)
+							return;
+
+						const refreshed = view.render(result);
+						container.parentNode.replaceChild(refreshed, container);
+					}).catch(function() {
+						return null;
+					}).finally(function() {
+						button._nordvpnRefreshing = false;
+						button.disabled = false;
+					});
+				})
+			}, [ _('Refresh assessment') ])
+		];
+
+		if (summary.primary_finding && summary.primary_finding.code === 'selection.drift') {
+			actionButtons.push(E('button', {
+				'class': 'cbi-button cbi-button-apply',
+				'type': 'button',
+				'click': ui.createHandlerFn(view, function(ev) {
+					const button = ev && ev.target;
+
+					if (!button || button.disabled || button._nordvpnApplying)
+						return;
+
+					button._nordvpnApplying = true;
+					button.disabled = true;
+
+					return service.runActions([ 'reconnect' ]).then(function() {
+						service.notifyInfo(_('Server selection synchronized.'));
+						return view.poll().then(function(result) {
+							const container = document.querySelector('[data-nordvpn-easy-diagnostics]');
+
+							if (!container || !container.parentNode)
+								return;
+
+							container.parentNode.replaceChild(view.render(result), container);
+						});
+					}).catch(function(err) {
+						service.notifyError(err);
+					}).finally(function() {
+						button._nordvpnApplying = false;
+						button.disabled = false;
+					});
+				})
+			}, [ _('Apply server selection') ]));
+		}
 
 		return E('div', { 'data-nordvpn-easy-diagnostics': '1' }, [
 			E('h2', _('NordVPN Easy Diagnostics')),
@@ -180,36 +243,7 @@ return view.extend({
 				_('Review structured connectivity assessment from the NordVPN Easy backend or download the full log export. Active WAN/DNS probes are skipped during background refresh.')
 			]),
 			E('div', { 'class': 'cbi-section' }, [
-				E('div', { 'class': 'cbi-value-field' }, [
-					E('button', {
-						'class': 'cbi-button',
-						'type': 'button',
-						'click': ui.createHandlerFn(view, function(ev) {
-							const button = ev && ev.target;
-
-							if (!button || button.disabled || button._nordvpnRefreshing)
-								return;
-
-							button._nordvpnRefreshing = true;
-							button.disabled = true;
-
-							return view.poll().then(function(result) {
-								const container = document.querySelector('[data-nordvpn-easy-diagnostics]');
-
-								if (!container || !container.parentNode)
-									return;
-
-								const refreshed = view.render(result);
-								container.parentNode.replaceChild(refreshed, container);
-							}).catch(function() {
-								return null;
-							}).finally(function() {
-								button._nordvpnRefreshing = false;
-								button.disabled = false;
-							});
-						})
-					}, [ _('Refresh assessment') ])
-				])
+				E('div', { 'class': 'cbi-value-field' }, actionButtons)
 			]),
 			renderSummaryTable(_('Connection Status'), connectionStatusRows(summary)),
 			renderSummaryTable(_('Assessment'), assessmentRows(summary)),
