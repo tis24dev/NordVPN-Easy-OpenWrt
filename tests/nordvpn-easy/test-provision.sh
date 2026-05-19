@@ -46,6 +46,7 @@ WIREGUARD_MTU=''
 PRIVATE_KEY='test-private-key'
 LOG_PHASE='runtime'
 PROVISION_ORDER=''
+FETCH_FAIL=0
 
 log() { :; }
 refresh_countries_cache() { return 0; }
@@ -53,6 +54,15 @@ resolve_country_filter() { return 0; }
 get_private_key() { return 0; }
 verify_public_country_selection() { return 0; }
 nordvpn_easy_wait_for_vpn_connectivity() { return 0; }
+nordvpn_easy_get_servers_list() { return 0; }
+nordvpn_easy_server_selection_is_manual() { return 1; }
+nordvpn_easy_fetch_provision_prerequisites() {
+	PROVISION_ORDER="${PROVISION_ORDER}fetch,"
+	if [ "$FETCH_FAIL" = '1' ]; then
+		return 1
+	fi
+	return 0
+}
 nordvpn_easy_teardown_vpn() {
 	PROVISION_ORDER="${PROVISION_ORDER}teardown,"
 	return 0
@@ -65,7 +75,12 @@ nordvpn_easy_require_core_action_helpers() { return 0; }
 
 nordvpn_easy_provision_vpn
 
-assert_eq 'teardown,configure,' "$PROVISION_ORDER" 'provision tears down before configure'
+assert_eq 'fetch,teardown,configure,' "$PROVISION_ORDER" 'provision fetches prerequisites before teardown and configure'
+
+PROVISION_ORDER=''
+FETCH_FAIL=1
+nordvpn_easy_provision_vpn || true
+assert_eq 'fetch,' "$PROVISION_ORDER" 'provision fetch failure leaves existing VPN configuration untouched'
 
 uci() { return 0; }
 

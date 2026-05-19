@@ -222,9 +222,10 @@ const TokenValue = form.Value.extend({
 		const initialStatusPayload = service.parseExecJsonResponse(data[1], null);
 		const initialStatusFresh = !!(initialStatusPayload && typeof initialStatusPayload === 'object' && !Array.isArray(initialStatusPayload));
 		const initialStatus = initialStatusFresh ? managerData.parseLocalStatus(JSON.stringify(initialStatusPayload)) : managerData.parseLocalStatus('{}');
-		const initialDiagnostics = managerData.parseDiagnosticsSummary(
-			service.parseExecJsonResponse(data[3], null)
-		);
+		const initialDiagnosticsPayload = service.parseExecJsonResponse(data[3], null);
+		const initialDiagnosticsFresh = !!(data[3] && data[3].code === 0 &&
+			managerData.isDiagnosticsSummaryPayload(initialDiagnosticsPayload));
+		const initialDiagnostics = managerData.parseDiagnosticsSummary(initialDiagnosticsPayload);
 		// render keeps managerData.parseServerCatalog(data[2]) for external callers and
 		// testRenderWiresInitialStateAndLiveHandlers; load returns null in this slot.
 		const initialCatalog = managerData.parseServerCatalog(data[2] && data[2].code === 0 ? data[2].stdout || '{}' : '{}');
@@ -246,7 +247,7 @@ const TokenValue = form.Value.extend({
 		state.currentOperationStatus = String(initialStatus.operation_status || 'idle');
 		state.currentServerCatalog = initialCatalog;
 		state.currentDiagnosticsSummary = initialDiagnostics;
-		state.currentDiagnosticsSummaryFresh = !!(data[3] && data[3].code === 0);
+		state.currentDiagnosticsSummaryFresh = initialDiagnosticsFresh;
 		state.serverCatalogIndex = managerData.buildServerCatalogIndex(state.currentServerCatalog);
 
 		m = new form.Map('nordvpn_easy', _('NordVPN Easy'),

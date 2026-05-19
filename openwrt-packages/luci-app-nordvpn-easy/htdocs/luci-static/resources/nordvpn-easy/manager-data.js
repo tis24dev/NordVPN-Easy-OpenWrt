@@ -176,6 +176,12 @@ function diagnosticsHasAlert(summary) {
 	return code !== '' && code !== 'none';
 }
 
+function isDiagnosticsSummaryPayload(value) {
+	return !!value && typeof value === 'object' && !Array.isArray(value) &&
+		(Object.prototype.hasOwnProperty.call(value, 'generated_at') ||
+			(value.primary_finding && typeof value.primary_finding === 'object'));
+}
+
 function buildServerCatalogIndex(catalog) {
 	const index = {};
 
@@ -197,5 +203,6 @@ return baseclass.extend({
 	buildServerCatalogIndex: buildServerCatalogIndex,
 	emptyDiagnosticsSummary: emptyDiagnosticsSummary,
 	parseDiagnosticsSummary: parseDiagnosticsSummary,
-	diagnosticsHasAlert: diagnosticsHasAlert
+	diagnosticsHasAlert: diagnosticsHasAlert,
+	isDiagnosticsSummaryPayload: isDiagnosticsSummaryPayload
 });

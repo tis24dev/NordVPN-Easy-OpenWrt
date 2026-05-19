@@ -46,6 +46,8 @@ nordvpn_easy_log_vpn_interface_state() {
 nordvpn_easy_teardown_vpn() {
 	local peer_section="${VPN_IF}server"
 	local wan_metric=''
+	local wireguard_peer_type="wireguard_${VPN_IF}"
+	local section=''
 
 	log "apply: tearing down VPN interface $VPN_IF before provisioning"
 	nordvpn_easy_log_vpn_interface_state 'before-teardown'
@@ -54,6 +56,17 @@ nordvpn_easy_teardown_vpn() {
 		ifdown "$VPN_IF" >/dev/null 2>&1 || true
 		sleep "${INTERFACE_RESTART_DELAY:-2}"
 	fi
+
+	while IFS= read -r section; do
+		[ -n "$section" ] || continue
+		uci -q delete "network.${section}" || true
+	done <<EOF
+$(uci show network 2>/dev/null | awk -F '[.=]' -v target="$wireguard_peer_type" '
+	$1 == "network" && $3 == target {
+		print $2
+	}
+')
+EOF
 
 	uci -q delete "network.${VPN_IF}" || true
 	uci -q delete "network.${peer_section}" || true

@@ -685,6 +685,35 @@ async function testRenderWiresInitialStateAndLiveHandlers() {
 	assert.equal(harness.calls.onModeChanged, 1, 'mode select change delegates to manager-actions');
 }
 
+async function testRenderMarksInvalidDiagnosticsPayloadStale() {
+	const harness = loadConfigView({
+		uciValues: {
+			enabled: '1',
+			vpn_country: '',
+			server_selection_mode: 'auto',
+			preferred_server_station: ''
+		}
+	});
+
+	await harness.view.render([
+		'[]',
+		{
+			code: 0,
+			stdout: JSON.stringify({ desired_enabled: true, operation_status: 'idle' }),
+			stderr: ''
+		},
+		null,
+		{
+			code: 0,
+			stdout: 'not-json',
+			stderr: ''
+		}
+	]);
+
+	assert.equal(harness.state.currentDiagnosticsSummaryFresh, false,
+		'diagnostics_summary with invalid JSON is not marked fresh');
+}
+
 async function testRenderLoadsManualCatalogInBackgroundAfterInitialPaint() {
 	const statusResult = {
 		code: 0,
@@ -779,6 +808,7 @@ Promise.resolve().then(async function() {
 	await testLoadUsesCachedCountriesWithoutBlockingOnManualCatalog();
 	await testLoadSkipsRefreshesWhenRuntimeBusy();
 	await testRenderWiresInitialStateAndLiveHandlers();
+	await testRenderMarksInvalidDiagnosticsPayloadStale();
 	await testRenderLoadsManualCatalogInBackgroundAfterInitialPaint();
 	await testRenderRefreshesEmptyCountryCacheInBackground();
 	console.log('test-config.js: ok');

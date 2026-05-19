@@ -443,11 +443,15 @@ function updateDiagnosticsBanner(summary) {
 		return;
 	}
 
-	match = findings.find(function(finding) {
-		return finding.code === primary.code;
-	});
-	if (match && match.severity === 'critical')
+	if (primary.severity === 'critical')
 		severity = 'error';
+	else {
+		match = findings.find(function(finding) {
+			return finding.code === primary.code;
+		});
+		if (match && match.severity === 'critical')
+			severity = 'error';
+	}
 
 	if (wrap) {
 		wrap.style.display = '';

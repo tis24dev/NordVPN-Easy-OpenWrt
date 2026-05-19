@@ -293,13 +293,17 @@ nordvpn_easy_build_wireguard_peer_section() {
 	fi
 }
 
-nordvpn_easy_configure_vpn_interface() {
+nordvpn_easy_fetch_provision_prerequisites() {
 	nordvpn_easy_require_core_action_helpers get_private_key || return 1
-	log "apply: creating WireGuard interface $VPN_IF with address $VPN_ADDR and endpoint port $VPN_PORT"
-	nordvpn_easy_log_vpn_interface_state 'before-create'
-
 	log 'apply: requesting NordLynx private key'
-	get_private_key || return 1
+	if ! get_private_key; then
+		if command -v nordvpn_easy_try_clear_routing_blackhole >/dev/null 2>&1 &&
+			nordvpn_easy_try_clear_routing_blackhole "$VPN_IF" "${LOG_PHASE:-apply}"; then
+			get_private_key || return 1
+		else
+			return 1
+		fi
+	fi
 	if nordvpn_easy_server_selection_is_manual; then
 		nordvpn_easy_require_core_action_helpers fetch_server_catalog || return 1
 		nordvpn_easy_require_manual_server_preference || return 1
@@ -308,6 +312,17 @@ nordvpn_easy_configure_vpn_interface() {
 	else
 		log 'apply: automatic mode selected; fetching NordVPN recommendations'
 		nordvpn_easy_get_servers_list || return 1
+	fi
+	return 0
+}
+
+nordvpn_easy_configure_vpn_interface() {
+	nordvpn_easy_require_core_action_helpers get_private_key || return 1
+	log "apply: creating WireGuard interface $VPN_IF with address $VPN_ADDR and endpoint port $VPN_PORT"
+	nordvpn_easy_log_vpn_interface_state 'before-create'
+
+	if [ "${NORDVPN_EASY_PROVISION_FETCH_DONE:-}" != '1' ]; then
+		nordvpn_easy_fetch_provision_prerequisites || return 1
 	fi
 	log "apply: ensuring firewall zone for ${WAN_IF:-unset} contains ${VPN_IF:-unset}"
 	nordvpn_easy_ensure_vpn_in_wan_zone || return 1
@@ -365,8 +380,11 @@ nordvpn_easy_provision_vpn() {
 		resolve_country_filter || return 1
 	fi
 
+	nordvpn_easy_fetch_provision_prerequisites || return 1
+	NORDVPN_EASY_PROVISION_FETCH_DONE=1
 	nordvpn_easy_teardown_vpn || return 1
 	nordvpn_easy_configure_vpn_interface || return 1
+	unset NORDVPN_EASY_PROVISION_FETCH_DONE
 
 	if ! nordvpn_easy_wait_for_vpn_connectivity "$VPN_IF" "$POST_RESTART_DELAY" "provisioning $VPN_IF"; then
 		log 'apply: VPN connection is not OK after provisioning'

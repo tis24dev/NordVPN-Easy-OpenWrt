@@ -85,9 +85,12 @@ function assessmentRows(summary) {
 		},
 		{
 			label: _('Kill Switch'),
-			value: formatStatusValue((summary && summary.health && summary.health.kill_switch_enabled) || false),
-			alert: !!(summary && summary.health && summary.health.kill_switch_enabled) &&
-				!(summary && summary.health && summary.health.wireguard_connected)
+			value: formatStatusValue(summary && summary.health ?
+				summary.health.kill_switch_enabled :
+				undefined),
+			alert: !!(summary && summary.health &&
+				summary.health.kill_switch_enabled === true &&
+				summary.health.wireguard_connected !== true)
 		},
 		{
 			label: _('Probe Duration'),
@@ -162,7 +165,15 @@ return view.extend({
 					E('button', {
 						'class': 'cbi-button',
 						'type': 'button',
-						'click': ui.createHandlerFn(view, function() {
+						'click': ui.createHandlerFn(view, function(ev) {
+							const button = ev && ev.target;
+
+							if (!button || button.disabled || button._nordvpnRefreshing)
+								return;
+
+							button._nordvpnRefreshing = true;
+							button.disabled = true;
+
 							return view.poll().then(function(result) {
 								const container = document.querySelector('[data-nordvpn-easy-diagnostics]');
 
@@ -171,6 +182,11 @@ return view.extend({
 
 								const refreshed = view.render(result);
 								container.parentNode.replaceChild(refreshed, container);
+							}).catch(function() {
+								return null;
+							}).finally(function() {
+								button._nordvpnRefreshing = false;
+								button.disabled = false;
 							});
 						})
 					}, [ _('Refresh assessment') ])

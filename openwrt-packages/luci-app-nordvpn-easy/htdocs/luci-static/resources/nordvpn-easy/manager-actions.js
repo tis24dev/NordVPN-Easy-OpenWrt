@@ -261,6 +261,16 @@ function buildLocalStatusSnapshot(res) {
 	};
 }
 
+function buildDiagnosticsSnapshot(res) {
+	const rawSummary = service.parseExecJsonResponse(res, null);
+	const fresh = !!(res && res.code === 0 && managerData.isDiagnosticsSummaryPayload(rawSummary));
+
+	return {
+		summary: managerData.parseDiagnosticsSummary(rawSummary),
+		fresh: fresh
+	};
+}
+
 function deriveRuntimeActionPlan(previousEnabled, enabled, previousCountry, country, previousMode, mode, previousPreferredStation, preferredStation, runtimeStatus) {
 	const currentEnabled = !!enabled;
 	const wasEnabled = !!previousEnabled;
@@ -651,9 +661,9 @@ function updatePublicCountry(state, options) {
 	});
 }
 
-function renderDiagnosticsSnapshot(state, summary) {
+function renderDiagnosticsSnapshot(state, summary, fresh) {
 	state.currentDiagnosticsSummary = summary;
-	state.currentDiagnosticsSummaryFresh = true;
+	state.currentDiagnosticsSummaryFresh = !!fresh;
 	managerUI.updateDiagnosticsBanner(summary);
 }
 
@@ -664,19 +674,18 @@ function updateDiagnosticsSummary(state, options) {
 		return Promise.resolve(state.currentDiagnosticsSummary);
 
 	if (!state.appliedEnabled) {
-		renderDiagnosticsSnapshot(state, managerData.emptyDiagnosticsSummary());
+		renderDiagnosticsSnapshot(state, managerData.emptyDiagnosticsSummary(), false);
 		return Promise.resolve(state.currentDiagnosticsSummary);
 	}
 
 	return managerStore.runExclusive(state, 'diagnostics', function() {
 		return service.execService('diagnostics_summary').then(function(res) {
-			const summary = managerData.parseDiagnosticsSummary(service.parseExecJsonResponse(res, null));
+			const diagnosticsSnapshot = buildDiagnosticsSnapshot(res);
 
-			renderDiagnosticsSnapshot(state, summary);
-			return summary;
+			renderDiagnosticsSnapshot(state, diagnosticsSnapshot.summary, diagnosticsSnapshot.fresh);
+			return diagnosticsSnapshot.summary;
 		}).catch(function() {
-			state.currentDiagnosticsSummaryFresh = false;
-			renderDiagnosticsSnapshot(state, managerData.emptyDiagnosticsSummary());
+			renderDiagnosticsSnapshot(state, managerData.emptyDiagnosticsSummary(), false);
 			return state.currentDiagnosticsSummary;
 		});
 	});
@@ -707,7 +716,7 @@ function updateLocalStatus(state, options) {
 			if (desiredEnabled)
 				void updateDiagnosticsSummary(state, { force: opts.force });
 			else
-				renderDiagnosticsSnapshot(state, managerData.emptyDiagnosticsSummary());
+				renderDiagnosticsSnapshot(state, managerData.emptyDiagnosticsSummary(), false);
 			return status;
 		}).catch(function(err) {
 			state.currentLocalStatusFresh = false;

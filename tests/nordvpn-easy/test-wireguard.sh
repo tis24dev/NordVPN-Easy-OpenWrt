@@ -233,6 +233,12 @@ nordvpn_easy_vpn_link_is_present() { return 0; }
 nordvpn_easy_log_vpn_interface_state() { :; }
 uci() {
 	case "$1" in
+		show)
+			if [ "$2" = 'network' ]; then
+				printf '%s\n' 'network.wg0server=wireguard_wg0' 'network.legacy_peer=wireguard_wg0'
+				return 0
+			fi
+			;;
 		-q)
 			shift
 			case "$1" in
@@ -273,7 +279,7 @@ NORDVPN_EASY_NETWORK_INIT="$TMP_DIR/mock-bin/etc/init.d/network"
 nordvpn_easy_teardown_vpn
 
 assert_eq '1' "$IFDOWN_COUNT" 'teardown runs ifdown when the VPN link is present'
-assert_eq '2' "$UCI_DELETE_COUNT" 'teardown removes the interface and peer sections'
+assert_eq '4' "$UCI_DELETE_COUNT" 'teardown removes the interface and all wireguard peer sections'
 assert_eq '1' "$(cat "$NETWORK_RELOAD_COUNT_FILE")" 'teardown reloads network after UCI cleanup'
 
 wg() {
