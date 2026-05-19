@@ -156,6 +156,14 @@ Common `probable_issue_code` values:
 | `operational.kill_switch_active` | Kill switch on while the tunnel is down |
 | `connectivity.wan_down` | WAN probe failed while VPN is enabled |
 
+Background `diagnostics_summary` polls from the main page and LuCI view refresh
+skip active WAN/DNS probes to avoid extra load. A full log download or manual
+assessment refresh runs the complete probe set (typically under a few seconds).
+
+The VPN health-check clears a **routing blackhole** automatically: if the default
+route points at the VPN interface without a WireGuard handshake, it runs `ifdown`
+on the tunnel before attempting API or server-list recovery.
+
 If long-lived streams or downloads drop after roughly 30 seconds while OpenVPN is
 stable, check diagnostics first. Common causes are an aggressive upstream NAT,
 MTU/MSS blackholes, or a bad VPN server path rather than an OpenWrt log-visible

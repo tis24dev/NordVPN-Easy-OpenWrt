@@ -82,6 +82,18 @@ function assessmentRows(summary) {
 		{
 			label: _('API DNS (api.nordvpn.com)'),
 			value: connectivity.dns_api_nordvpn_com || _('Unknown')
+		},
+		{
+			label: _('Kill Switch'),
+			value: formatStatusValue((summary && summary.health && summary.health.kill_switch_enabled) || false),
+			alert: !!(summary && summary.health && summary.health.kill_switch_enabled) &&
+				!(summary && summary.health && summary.health.wireguard_connected)
+		},
+		{
+			label: _('Probe Duration'),
+			value: connectivity.diagnostics_probe_duration_ms != null ?
+				String(connectivity.diagnostics_probe_duration_ms) + ' ms' :
+				_('Unknown')
 		}
 	];
 }
@@ -131,14 +143,38 @@ return view.extend({
 		});
 	},
 
+	poll: function() {
+		return this.load();
+	},
+
 	render: function(summaryResult) {
 		const summary = service.parseExecJsonResponse(summaryResult, null);
 		const findings = findingsRows(summary);
+		const view = this;
 
-		return E([
+		return E('div', { 'data-nordvpn-easy-diagnostics': '1' }, [
 			E('h2', _('NordVPN Easy Diagnostics')),
 			E('div', { 'class': 'cbi-section-descr' }, [
-				_('Review structured connectivity assessment from the NordVPN Easy backend or download the full log export.')
+				_('Review structured connectivity assessment from the NordVPN Easy backend or download the full log export. Active WAN/DNS probes are skipped during background refresh.')
+			]),
+			E('div', { 'class': 'cbi-section' }, [
+				E('div', { 'class': 'cbi-value-field' }, [
+					E('button', {
+						'class': 'cbi-button',
+						'type': 'button',
+						'click': ui.createHandlerFn(view, function() {
+							return view.poll().then(function(result) {
+								const container = document.querySelector('[data-nordvpn-easy-diagnostics]');
+
+								if (!container || !container.parentNode)
+									return;
+
+								const refreshed = view.render(result);
+								container.parentNode.replaceChild(refreshed, container);
+							});
+						})
+					}, [ _('Refresh assessment') ])
+				])
 			]),
 			renderSummaryTable(_('Connection Status'), connectionStatusRows(summary)),
 			renderSummaryTable(_('Assessment'), assessmentRows(summary)),

@@ -806,6 +806,31 @@ nordvpn_easy_diagnostics_compute_findings() {
 	fi
 }
 
+nordvpn_easy_try_clear_routing_blackhole() {
+	local vpn_if="${1:-${VPN_IF:-wg0}}"
+	local phase="${2:-healthcheck}"
+	local previous_active_probes="${NORDVPN_EASY_DIAGNOSTICS_ACTIVE_PROBES:-1}"
+
+	if ! command -v nordvpn_easy_diagnostics_collect >/dev/null 2>&1; then
+		return 1
+	fi
+
+	NORDVPN_EASY_DIAGNOSTICS_ACTIVE_PROBES=0
+	nordvpn_easy_diagnostics_collect "$vpn_if"
+	NORDVPN_EASY_DIAGNOSTICS_ACTIVE_PROBES="$previous_active_probes"
+
+	if [ "$DIAG_ROUTING_BLACKHOLE_RISK" != 'yes' ]; then
+		nordvpn_easy_diagnostics_reset_state
+		return 1
+	fi
+
+	log "$phase: default route uses $vpn_if without WireGuard handshake; running ifdown to restore WAN connectivity"
+	ifdown "$vpn_if" 2>/dev/null || log "WARNING: $phase: ifdown failed for $vpn_if while clearing routing blackhole"
+	sleep "${INTERFACE_RESTART_DELAY:-2}"
+	nordvpn_easy_diagnostics_reset_state
+	return 0
+}
+
 nordvpn_easy_diagnostics_collect() {
 	local vpn_if="${1:-${VPN_IF:-wg0}}"
 

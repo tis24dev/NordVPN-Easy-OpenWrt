@@ -841,6 +841,7 @@ nordvpn_easy_check_once() {
 	local backoff_steps
 
 	log "healthcheck: starting VPN health-check on interface $VPN_IF (failure_retry_delay=${FAILURE_RETRY_DELAY:-unset}, rotate_threshold=${SERVER_ROTATE_THRESHOLD:-unset}, restart_threshold=${INTERFACE_RESTART_THRESHOLD:-unset}, max_restarts=${max_interface_restarts})"
+	nordvpn_easy_try_clear_routing_blackhole "$VPN_IF" 'healthcheck' || true
 	nordvpn_easy_reconcile_explicit_server_selection_drift 'healthcheck' || return 1
 	if ! nordvpn_easy_server_selection_is_manual; then
 		[ -f "$SERVER_LIST_FILE" ] || nordvpn_easy_get_servers_list || true

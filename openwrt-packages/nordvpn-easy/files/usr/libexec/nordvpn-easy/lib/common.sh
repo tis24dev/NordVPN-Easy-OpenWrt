@@ -504,6 +504,9 @@ nordvpn_easy_export_diagnostics_log() {
 		nordvpn_easy_diagnostics_print_health_summary "$vpn_if" | nordvpn_easy_sanitize_diagnostics_stream
 		nordvpn_easy_diagnostics_print_connectivity_assessment "$vpn_if" | nordvpn_easy_sanitize_diagnostics_stream
 		nordvpn_easy_diagnostics_print_runtime_caches "$vpn_if" | nordvpn_easy_sanitize_diagnostics_stream
+		if command -v nordvpn_easy_emit_diagnostics_summary_json >/dev/null 2>&1; then
+			nordvpn_easy_print_sanitized_command 'Diagnostics summary JSON' nordvpn_easy_emit_diagnostics_summary_json "$vpn_if"
+		fi
 	else
 		nordvpn_easy_diagnostics_section 'Health summary'
 		printf '%s\n' 'diagnostics module not loaded'
