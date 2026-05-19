@@ -1,5 +1,5 @@
 'use strict';
-/* global baseclass, managerData, managerFormat, ui, document, E, _ */
+/* global baseclass, managerData, managerFormat, ui, document, E, _, L */
 'require baseclass';
 'require nordvpn-easy/manager-data as managerData';
 'require nordvpn-easy/manager-format as managerFormat';
@@ -25,7 +25,11 @@ const ids = {
 	PUBLIC_COUNTRY_STATUS_ID: 'nordvpn-easy-public-country-status',
 	COUNTRY_MATCH_STATUS_ID: 'nordvpn-easy-country-match-status',
 	SERVER_CATALOG_STATUS_ID: 'nordvpn-easy-server-catalog-status',
-	SERVER_SELECTION_HINT_ID: 'nordvpn-easy-server-selection-hint'
+	SERVER_SELECTION_HINT_ID: 'nordvpn-easy-server-selection-hint',
+	DIAGNOSTICS_ALERT_ID: 'nordvpn-easy-diagnostics-alert',
+	DIAGNOSTICS_ALERT_TITLE_ID: 'nordvpn-easy-diagnostics-alert-title',
+	DIAGNOSTICS_ALERT_MESSAGE_ID: 'nordvpn-easy-diagnostics-alert-message',
+	DIAGNOSTICS_ALERT_ACTION_ID: 'nordvpn-easy-diagnostics-alert-action'
 };
 
 function getSelectElement(optionId) {
@@ -239,8 +243,11 @@ function preferredServerSummaryFromStatus(status) {
 
 function updateCountryMatchStatus(state) {
 	let busyAction;
+	const runtimeStatus = state.currentLocalStatus || {};
 	const expectedCountry = managerData.normalizeCountryCode(state.appliedCountryCode);
-	const actualCountry = managerData.normalizeCountryCode(state.currentPublicCountry);
+	const actualCountry = managerData.normalizeCountryCode(
+		state.currentPublicCountry || runtimeStatus.current_server_country || ''
+	);
 
 	if (!state.appliedEnabled || state.currentLocalStatus.runtime_disabled || state.currentLocalStatus.interface_disabled || isDisableRequested(state))
 		return setCountryMatchIndicator('inactive', _('Inactive'));
@@ -395,8 +402,81 @@ function showConfirmationModal(title, lines) {
 	});
 }
 
+function diagnosticsPageHref() {
+	if (typeof L !== 'undefined' && typeof L.url === 'function')
+		return L.url('admin/services/nordvpn-easy/diagnostics');
+
+	return null;
+}
+
+function renderDiagnosticsBanner() {
+	const href = diagnosticsPageHref();
+	const linkChildren = href ?
+		[ E('a', { href: href }, [ _('Open diagnostics page') ]) ] :
+		[ _('Open Services → NordVPN Easy → Diagnostics') ];
+
+	return E('div', {
+		id: ids.DIAGNOSTICS_ALERT_ID,
+		class: 'cbi-section',
+		style: 'display: none; margin-bottom: 1em;'
+	}, [
+		E('div', { class: 'alert-message warning' }, [
+			E('strong', {}, [ E('span', { id: ids.DIAGNOSTICS_ALERT_TITLE_ID }) ]),
+			E('p', { id: ids.DIAGNOSTICS_ALERT_MESSAGE_ID }),
+			E('p', { id: ids.DIAGNOSTICS_ALERT_ACTION_ID }),
+			E('p', {}, linkChildren)
+		])
+	]);
+}
+
+function updateDiagnosticsBanner(summary) {
+	const wrap = document.getElementById(ids.DIAGNOSTICS_ALERT_ID);
+	const titleEl = document.getElementById(ids.DIAGNOSTICS_ALERT_TITLE_ID);
+	const messageEl = document.getElementById(ids.DIAGNOSTICS_ALERT_MESSAGE_ID);
+	const actionEl = document.getElementById(ids.DIAGNOSTICS_ALERT_ACTION_ID);
+	const primary = (summary && summary.primary_finding) || {};
+	const findings = (summary && summary.findings) || [];
+	let severity = 'warning';
+	let match;
+	let alertEl;
+
+	if (!managerData.diagnosticsHasAlert(summary)) {
+		if (wrap)
+			wrap.style.display = 'none';
+		return;
+	}
+
+	if (primary.severity === 'critical')
+		severity = 'error';
+	else {
+		match = findings.find(function(finding) {
+			return finding.code === primary.code;
+		});
+		if (match && match.severity === 'critical')
+			severity = 'error';
+	}
+
+	if (wrap) {
+		wrap.style.display = '';
+		alertEl = wrap.querySelector('.alert-message');
+		if (alertEl)
+			alertEl.className = 'alert-message ' + severity;
+	}
+
+	if (titleEl)
+		titleEl.textContent = primary.code || _('Diagnostics issue');
+
+	if (messageEl)
+		messageEl.textContent = primary.message || '';
+
+	if (actionEl)
+		actionEl.textContent = primary.action || '';
+}
+
 function renderStatusSection() {
-	return E('div', { class: 'table-wrapper' }, [
+	return E('div', {}, [
+		renderDiagnosticsBanner(),
+		E('div', { class: 'table-wrapper' }, [
 		E('table', { class: 'table' }, [
 			E('tr', { class: 'tr' }, [
 				E('td', { class: 'td left', style: 'width: 30%; font-weight: bold' }, [ _('Connection') ]),
@@ -443,6 +523,7 @@ function renderStatusSection() {
 				E('td', { class: 'td left' }, [ E('span', { id: ids.COUNTRY_MATCH_STATUS_ID }, [ _('Checking') ]) ])
 			])
 		])
+		])
 	]);
 }
 
@@ -467,5 +548,7 @@ return baseclass.extend({
 	updateServerCatalogStatus: updateServerCatalogStatus,
 	updateServerSelectionState: updateServerSelectionState,
 	showConfirmationModal: showConfirmationModal,
+	renderDiagnosticsBanner: renderDiagnosticsBanner,
+	updateDiagnosticsBanner: updateDiagnosticsBanner,
 	renderStatusSection: renderStatusSection
 });

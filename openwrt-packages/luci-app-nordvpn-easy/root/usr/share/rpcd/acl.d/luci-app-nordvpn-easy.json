@@ -27,6 +27,7 @@
 					"status",
 					"diagnostics",
 					"diagnostics_log",
+					"diagnostics_summary",
 					"public_ip",
 					"public_country",
 					"refresh_countries",
@@ -43,6 +44,7 @@
 				"nordvpn.easy": [
 					"connect",
 					"disconnect",
+					"stop_vpn",
 					"reconnect",
 					"reconcile",
 					"rotate",
@@ -57,7 +59,8 @@
 					"public_ip",
 					"public_country",
 					"diagnostics",
-					"diagnostics_log"
+					"diagnostics_log",
+					"diagnostics_summary"
 				]
 			}
 		}

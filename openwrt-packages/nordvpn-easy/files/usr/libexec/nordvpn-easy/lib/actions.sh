@@ -96,172 +96,13 @@ nordvpn_easy_find_preferred_server_in_catalog() {
 	nordvpn_easy_find_server_in_catalog "$PREFERRED_SERVER_HOSTNAME" "$PREFERRED_SERVER_STATION" 'preferred'
 }
 
-nordvpn_easy_preferred_server_matches_current() {
-	[ -n "$PREFERRED_SERVER_STATION" ] || return 1
-	[ "$(nordvpn_easy_current_server_station)" = "$PREFERRED_SERVER_STATION" ]
-}
-
 nordvpn_easy_normalize_country_code() {
 	printf '%s' "${1:-}" | tr '[:lower:]' '[:upper:]'
-}
-
-nordvpn_easy_selected_country_code() {
-	local country_query="${VPN_COUNTRY:-}"
-
-	[ -n "$country_query" ] || return 1
-
-	case "$country_query" in
-		[A-Za-z][A-Za-z])
-			nordvpn_easy_normalize_country_code "$country_query"
-			return 0
-			;;
-	esac
-
-	nordvpn_easy_require_core_action_helpers resolve_country_filter || return 1
-	resolve_country_filter || return 1
-	[ -n "${RESOLVED_COUNTRY_CODE:-}" ] || return 1
-	# resolve_country_filter currently sets RESOLVED_COUNTRY_CODE from the uppercase cache;
-	# keep normalizing defensively in case future inputs change.
-	nordvpn_easy_normalize_country_code "$RESOLVED_COUNTRY_CODE"
-}
-
-nordvpn_easy_server_selection_drift_reason() {
-	local current_station=''
-	local current_country=''
-	local selected_country=''
-
-	NORDVPN_EASY_SELECTION_DRIFT_REASON=''
-
-	current_station="$(nordvpn_easy_current_server_station)"
-
-	if nordvpn_easy_server_selection_is_manual; then
-		[ -n "${PREFERRED_SERVER_STATION:-}" ] || return 1
-		[ -n "$current_station" ] || return 1
-		[ "$current_station" != "$PREFERRED_SERVER_STATION" ] || return 1
-		NORDVPN_EASY_SELECTION_DRIFT_REASON="mode=manual, preferred_station=$PREFERRED_SERVER_STATION, current_station=$current_station, selected_country=${VPN_COUNTRY:-automatic}"
-		return 0
-	fi
-
-	[ -n "${VPN_COUNTRY:-}" ] || return 1
-	selected_country="$(nordvpn_easy_selected_country_code)" || return 1
-	current_country="$(nordvpn_easy_normalize_country_code "$(nordvpn_easy_current_server_country)")"
-	[ -n "$current_country" ] || return 1
-	[ "$current_country" != "$selected_country" ] || return 1
-
-	NORDVPN_EASY_SELECTION_DRIFT_REASON="mode=auto, selected_country=$selected_country, current_server_country=$current_country, current_station=${current_station:-unknown}"
-	return 0
-}
-
-nordvpn_easy_log_server_selection_drift() {
-	local phase="${1:-runtime}"
-
-	if nordvpn_easy_server_selection_drift_reason; then
-		log "$phase: server selection drift detected ($NORDVPN_EASY_SELECTION_DRIFT_REASON)"
-		return 0
-	fi
-
-	return 1
-}
-
-nordvpn_easy_reconcile_explicit_server_selection_drift() {
-	local phase="${1:-healthcheck}"
-	local drift_reason=''
-	local sync_rc=0
-
-	if ! nordvpn_easy_vpn_is_configured; then
-		return 0
-	fi
-
-	if ! nordvpn_easy_server_selection_drift_reason; then
-		return 0
-	fi
-
-	drift_reason="$NORDVPN_EASY_SELECTION_DRIFT_REASON"
-	log "$phase: server selection drift detected ($NORDVPN_EASY_SELECTION_DRIFT_REASON); synchronizing runtime"
-	nordvpn_easy_sync_server_selection
-	sync_rc=$?
-	if [ "$sync_rc" -eq 0 ]; then
-		return 0
-	fi
-
-	log "WARNING: $phase: server selection drift sync failed (rc=$sync_rc, $drift_reason); continuing health-check recovery"
-	return 0
 }
 
 nordvpn_easy_apply_preferred_server_from_catalog() {
 	nordvpn_easy_find_preferred_server_in_catalog || return 1
 	nordvpn_easy_apply_catalog_server_line_to_uci "$CATALOG_MATCHED_SERVER_LINE" 'preferred'
-}
-
-nordvpn_easy_validate_current_manual_server_connectivity() {
-	log "Current VPN server already matches the preferred manual server $PREFERRED_SERVER_STATION; validating tunnel connectivity"
-	if nordvpn_easy_ping_interface "$VPN_IF"; then
-		log "Manual preferred VPN server $PREFERRED_SERVER_STATION passed connectivity validation"
-		return 0
-	fi
-
-	log "WARNING: manual preferred VPN server $PREFERRED_SERVER_STATION is active but failed connectivity validation"
-	if nordvpn_easy_try_configured_fallback_server reload "preferred manual server $PREFERRED_SERVER_STATION is active but failed connectivity validation"; then
-		return 0
-	fi
-
-	if nordvpn_easy_has_fallback_server_preference; then
-		log 'ERROR: manual preferred server failed connectivity validation and the configured fallback server did not restore connectivity'
-	else
-		log 'ERROR: manual preferred server failed connectivity validation and no fallback server is configured'
-	fi
-	return 1
-}
-
-nordvpn_easy_apply_fallback_server_from_catalog() {
-	nordvpn_easy_require_core_action_helpers fetch_server_catalog || return 1
-	nordvpn_easy_has_fallback_server_preference || return 1
-	log "apply: resolving fallback server from catalog for country ${VPN_COUNTRY:-unset}"
-	fetch_server_catalog 0 "$VPN_COUNTRY" || return 1
-	nordvpn_easy_find_server_in_catalog '' "$FALLBACK_SERVER_STATION" 'fallback' || return 1
-	nordvpn_easy_apply_catalog_server_line_to_uci "$CATALOG_MATCHED_SERVER_LINE" 'fallback'
-}
-
-nordvpn_easy_try_configured_fallback_server() {
-	local runtime_action="${1:-reload}"
-	local recovery_reason="${2:-the configured server could not be applied}"
-	local current_station=''
-
-	nordvpn_easy_has_fallback_server_preference || return 1
-
-	if [ "${FALLBACK_SERVER_STATION:-}" = "${PREFERRED_SERVER_STATION:-}" ]; then
-		log "apply: configured fallback server ${FALLBACK_SERVER_STATION:-unset} matches the preferred server; skipping fallback recovery"
-		return 1
-	fi
-
-	current_station="$(nordvpn_easy_current_server_station)"
-	if [ -n "$current_station" ] && [ "$current_station" = "${FALLBACK_SERVER_STATION:-}" ]; then
-		log "apply: configured fallback server ${FALLBACK_SERVER_STATION:-unset} is already active; skipping fallback recovery"
-		return 1
-	fi
-
-	log "apply: attempting configured fallback server ${FALLBACK_SERVER_STATION:-unset} because $recovery_reason"
-	nordvpn_easy_apply_fallback_server_from_catalog || return 1
-
-	uci commit network || {
-		nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" 'could not commit network configuration while applying the configured fallback server'
-		return 1
-	}
-
-	if ! nordvpn_easy_apply_server_change_runtime "$runtime_action"; then
-		log "apply: configured fallback server ${MATCHED_SERVER_HOSTNAME:-unknown} (${MATCHED_SERVER_STATION:-unknown}) did not restore VPN connectivity"
-		return 1
-	fi
-
-	nordvpn_easy_set_server_preference_in_uci "$MATCHED_SERVER_HOSTNAME" "$MATCHED_SERVER_STATION"
-	if ! uci commit nordvpn_easy; then
-		log 'WARNING: COULD NOT COMMIT FALLBACK SERVER PROMOTION; KEEPING WORKING RUNTIME SERVER'
-	fi
-
-	PREFERRED_SERVER_HOSTNAME="$MATCHED_SERVER_HOSTNAME"
-	PREFERRED_SERVER_STATION="$MATCHED_SERVER_STATION"
-	log "apply: promoted fallback server to preferred server $MATCHED_SERVER_HOSTNAME ($MATCHED_SERVER_STATION)"
-	return 0
 }
 
 nordvpn_easy_build_server_recommendations_url() {
@@ -270,8 +111,12 @@ nordvpn_easy_build_server_recommendations_url() {
 	if [ -n "$VPN_COUNTRY" ]; then
 		nordvpn_easy_require_core_action_helpers resolve_country_filter || return 1
 		resolve_country_filter || return 1
-		SERVER_RECOMMENDATIONS_URL="${SERVER_RECOMMENDATIONS_URL}&filters[country_id]=$RESOLVED_COUNTRY_ID"
-		log "Building recommendations URL for country filter $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
+		if [ -n "$RESOLVED_COUNTRY_ID" ]; then
+			SERVER_RECOMMENDATIONS_URL="${SERVER_RECOMMENDATIONS_URL}&filters[country_id]=$RESOLVED_COUNTRY_ID"
+			log "Building recommendations URL for country filter $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
+		else
+			log "Building recommendations URL without country_id filter; will select servers matching $RESOLVED_COUNTRY_CODE from the response"
+		fi
 	else
 		log 'Building recommendations URL with automatic country selection'
 	fi
@@ -293,8 +138,28 @@ nordvpn_easy_server_list_cache_is_usable() {
 	' "$SERVER_LIST_FILE" >/dev/null 2>&1
 }
 
+nordvpn_easy_clear_provision_caches() {
+	log 'apply: clearing VPN server selection and public lookup caches'
+
+	rm -f "${SERVER_LIST_FILE:-/tmp/nordvpn.json}" 2>/dev/null || true
+	rm -f "${SERVER_CATALOG_FILE:-/tmp/nordvpn-easy-servers.json}" \
+		"${SERVER_CATALOG_TS_FILE:-/tmp/nordvpn-easy-servers.timestamp}" 2>/dev/null || true
+
+	if command -v nordvpn_easy_write_runtime_cache_value >/dev/null 2>&1; then
+		nordvpn_easy_write_runtime_cache_value "${NORDVPN_EASY_PUBLIC_IP_CACHE:-}" '' >/dev/null 2>&1 || true
+		nordvpn_easy_write_runtime_cache_value "${NORDVPN_EASY_PUBLIC_COUNTRY_CACHE:-}" '' >/dev/null 2>&1 || true
+		nordvpn_easy_write_runtime_cache_value "${NORDVPN_EASY_LAST_ERROR_CACHE:-}" '' >/dev/null 2>&1 || true
+	fi
+
+	return 0
+}
+
 nordvpn_easy_use_cached_server_list_if_available() {
 	local reason="$1"
+
+	if [ "${NORDVPN_EASY_FORCE_FRESH_SERVER_LIST:-0}" = '1' ]; then
+		return 1
+	fi
 
 	if nordvpn_easy_server_list_cache_is_usable; then
 		log "WARNING: $reason; using existing recommended server cache at $SERVER_LIST_FILE"
@@ -355,25 +220,35 @@ nordvpn_easy_get_servers_list() {
 }
 
 nordvpn_easy_set_first_server_from_list() {
-	FIRST_SERVER=$(jq -r '.[0] | [
-		.hostname,
-		.station,
-		([.technologies[]?
-			| select(.identifier == "wireguard_udp")
-			| .metadata[]?
-			| select(.name == "public_key")
-			| (.value // "")
-		][0] // ""),
-		(.locations[0].country.code // ""),
-		(.locations[0].country.city.name // ""),
-		((.load // 0) | tostring)
-	] | @tsv' "$SERVER_LIST_FILE" 2>/dev/null) || {
+	local exclude="${NORDVPN_EASY_ROTATE_EXCLUDE_STATION:-}"
+
+	FIRST_SERVER=$(jq -r --arg exclude "$exclude" --arg want "${RESOLVED_COUNTRY_CODE:-}" '
+		[.[] |
+			select(($exclude == "") or ((.station // "") != $exclude)) |
+			select(($want == "") or ((.locations[0].country.code // "") == $want))
+		] | .[0] | [
+			.hostname,
+			.station,
+			([.technologies[]?
+				| select(.identifier == "wireguard_udp")
+				| .metadata[]?
+				| select(.name == "public_key")
+				| (.value // "")
+			][0] // ""),
+			(.locations[0].country.code // ""),
+			(.locations[0].country.city.name // ""),
+			((.load // 0) | tostring)
+		] | @tsv' "$SERVER_LIST_FILE" 2>/dev/null) || {
 		log 'ERROR: INVALID VPN SERVER LIST'
 		return 1
 	}
 
 	[ -n "$FIRST_SERVER" ] || {
-		log 'ERROR: VPN SERVER LIST IS EMPTY'
+		if [ -n "$exclude" ]; then
+			log 'ERROR: NO ALTERNATIVE VPN SERVER FOUND FOR ROTATION'
+		else
+			log 'ERROR: VPN SERVER LIST IS EMPTY'
+		fi
 		return 1
 	}
 
@@ -381,226 +256,52 @@ nordvpn_easy_set_first_server_from_list() {
 $FIRST_SERVER
 EOF
 
-	log "Selected first recommended VPN server $HOST_NAME ($SERVER_STATION)"
+	log "Selected recommended VPN server $HOST_NAME ($SERVER_STATION)"
 	nordvpn_easy_set_vpn_server_in_uci "$HOST_NAME" "$SERVER_STATION" "$PUBLIC_KEY" "$COUNTRY_CODE" "$CITY_NAME" "$SERVER_LOAD"
 }
 
-nordvpn_easy_change_to_preferred_server() {
-	local runtime_action="${1:-reload}"
+nordvpn_easy_apply_next_manual_server_from_catalog() {
+	local exclude="${1:-}"
+	local candidate_line=''
+	local host_name=''
+	local server_station=''
+	local public_key=''
+	local country_code=''
+	local city_name=''
+	local server_load=''
 
-	nordvpn_easy_apply_preferred_server_from_catalog || {
-		nordvpn_easy_try_configured_fallback_server "$runtime_action" 'the preferred server could not be resolved from the catalog'
-		return $?
-	}
-
-	uci commit network || {
-		nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" 'could not commit network configuration while applying preferred server'
-		return 1
-	}
-
-	log "VPN server changed to preferred server $PREFERRED_SERVER_HOSTNAME ($PREFERRED_SERVER_STATION)"
-	nordvpn_easy_apply_server_change_runtime "$runtime_action" && return 0
-
-	nordvpn_easy_try_configured_fallback_server "$runtime_action" "preferred server $PREFERRED_SERVER_HOSTNAME ($PREFERRED_SERVER_STATION) did not restore VPN connectivity"
-}
-
-nordvpn_easy_sync_server_selection() {
-	nordvpn_easy_vpn_is_configured || return 0
-
-	if nordvpn_easy_server_selection_is_manual; then
-		nordvpn_easy_require_manual_server_preference || return 1
-
-		if nordvpn_easy_preferred_server_matches_current; then
-			nordvpn_easy_validate_current_manual_server_connectivity
-			return $?
-		fi
-
-		log 'Current VPN server does not match the preferred manual server, applying preference'
-		nordvpn_easy_change_to_preferred_server reload
-		return $?
-	fi
-
-	nordvpn_easy_get_servers_list || return 1
-
-	if nordvpn_easy_current_server_matches_recommendations; then
-		log 'Current VPN server already matches the selected country/filter'
-		return 0
-	fi
-
-	log 'Current VPN server does not match the selected country/filter, changing server'
-	nordvpn_easy_change_vpn_server reload
-}
-
-nordvpn_easy_reconcile_action() {
-	log 'apply: reconcile action started'
-	nordvpn_easy_bootstrap_if_needed || return 1
-	nordvpn_easy_log_server_selection_drift 'reconcile' || true
-	nordvpn_easy_sync_server_selection || return 1
-	nordvpn_easy_check_once
-}
-
-nordvpn_easy_clean_reconnect_action() {
-	log 'apply: clean reconnect action started'
-	nordvpn_easy_bootstrap_if_needed || return 1
-
-	if nordvpn_easy_vpn_is_configured; then
-		log "apply: closing VPN interface $VPN_IF before reconnecting"
-		ifdown "$VPN_IF" >/dev/null 2>&1 || true
-		sleep 1
-	fi
-
-	NORDVPN_EASY_SERVER_CHANGE_APPLIED=0
-	nordvpn_easy_log_server_selection_drift 'reconnect' || true
-	nordvpn_easy_sync_server_selection || return 1
-
-	if [ "${NORDVPN_EASY_SERVER_CHANGE_APPLIED:-0}" -ne 1 ]; then
-		log "apply: bringing VPN interface $VPN_IF up after clean reconnect"
-		ifup "$VPN_IF" || {
-			log "ERROR: IFUP FAILED DURING CLEAN RECONNECT ON $VPN_IF"
-			return 1
-		}
-
-		if ! nordvpn_easy_wait_for_vpn_connectivity "$VPN_IF" "$POST_RESTART_DELAY" "clean reconnecting $VPN_IF"; then
-			log 'apply: VPN connection is not OK after clean reconnect'
-			return 1
-		fi
-
-		verify_public_country_selection
-	fi
-
-	log 'apply: clean reconnect completed'
-}
-
-nordvpn_easy_change_vpn_server() {
-	CURRENT_SERVER=$(nordvpn_easy_current_server_station)
-	local temp_dir=''
-	SERVER_CANDIDATES_FILE=''
-	commit_failed=0
-	server_changed=0
-	candidate_count=0
-	candidate_index=0
-
-	log "apply: starting VPN server rotation from current endpoint ${CURRENT_SERVER:-none}"
-
-	nordvpn_easy_mktemp_dir 'recommended-candidates' temp_dir || return 1
-	SERVER_CANDIDATES_FILE="$(nordvpn_easy_temp_file_path "$temp_dir" 'recommended.tsv')"
-	nordvpn_easy_recommendation_candidates_tsv "$SERVER_LIST_FILE" > "$SERVER_CANDIDATES_FILE" || {
-		rm -rf -- "$temp_dir"
-		log 'ERROR: INVALID VPN SERVER LIST'
-		return 1
-	}
-
-	candidate_count="$(wc -l < "$SERVER_CANDIDATES_FILE" 2>/dev/null || printf '%s' '0')"
-	log "apply: loaded $candidate_count recommended server candidates for rotation"
-
-	while IFS="$(printf '\t')" read -r HOST_NAME SERVER_STATION PUBLIC_KEY COUNTRY_CODE CITY_NAME SERVER_LOAD; do
-		[ -n "$SERVER_STATION" ] || continue
-		[ "$CURRENT_SERVER" = "$SERVER_STATION" ] && continue
-		candidate_index=$((candidate_index + 1))
-
-		log "apply: trying recommended candidate ${candidate_index}/${candidate_count}: $HOST_NAME ($SERVER_STATION)"
-
-		nordvpn_easy_set_vpn_server_in_uci "$HOST_NAME" "$SERVER_STATION" "$PUBLIC_KEY" "$COUNTRY_CODE" "$CITY_NAME" "$SERVER_LOAD" || continue
-		uci commit network || {
-			nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" 'could not commit network configuration during recommended server rotation'
-			commit_failed=1
-			break
-		}
-
-		log "VPN server changed to $HOST_NAME ($SERVER_STATION)"
-
-		if nordvpn_easy_apply_server_change_runtime "$1"; then
-			server_changed=1
-			break
-		fi
-
-		log "apply: candidate $HOST_NAME ($SERVER_STATION) did not restore VPN connectivity, moving to the next candidate"
-	done < "$SERVER_CANDIDATES_FILE"
-
-	rm -rf -- "$temp_dir"
-
-	if [ "$commit_failed" -eq 1 ]; then
-		return 1
-	fi
-
-	if [ "$server_changed" -eq 1 ]; then
-		return 0
-	fi
-
-	if nordvpn_easy_try_configured_fallback_server "$1" 'recommended server rotation exhausted the current candidate list'; then
-		return 0
-	fi
-
-	log 'NO RECOMMENDED VPN SERVER RESTORED CONNECTIVITY'
-	return 1
-}
-
-nordvpn_easy_change_manual_server() {
-	CURRENT_SERVER=$(nordvpn_easy_current_server_station)
-	local temp_dir=''
-	SERVER_CANDIDATES_FILE=''
-	commit_failed=0
-	server_changed=0
-	candidate_count=0
-	candidate_index=0
-
+	nordvpn_easy_require_core_action_helpers fetch_server_catalog || return 1
 	nordvpn_easy_require_manual_server_preference || return 1
 	fetch_server_catalog 0 "$VPN_COUNTRY" || return 1
 
-	log "apply: starting manual VPN server rotation from current endpoint ${CURRENT_SERVER:-none}"
+	while IFS="$(printf '\t')" read -r host_name server_station public_key country_code city_name server_load; do
+		[ -n "$server_station" ] || continue
+		[ -n "$exclude" ] && [ "$server_station" = "$exclude" ] && continue
 
-	nordvpn_easy_mktemp_dir 'manual-candidates' temp_dir || return 1
-	SERVER_CANDIDATES_FILE="$(nordvpn_easy_temp_file_path "$temp_dir" 'manual.tsv')"
-	nordvpn_easy_server_catalog_candidates_tsv "$SERVER_CATALOG_FILE" > "$SERVER_CANDIDATES_FILE" || {
-		rm -rf -- "$temp_dir"
-		log 'ERROR: INVALID SERVER CATALOG'
-		return 1
-	}
-
-	candidate_count="$(wc -l < "$SERVER_CANDIDATES_FILE" 2>/dev/null || printf '%s' '0')"
-	log "apply: loaded $candidate_count manual server candidates for rotation"
-
-	while IFS="$(printf '\t')" read -r HOST_NAME SERVER_STATION PUBLIC_KEY COUNTRY_CODE CITY_NAME SERVER_LOAD; do
-		[ -n "$SERVER_STATION" ] || continue
-		[ "$CURRENT_SERVER" = "$SERVER_STATION" ] && continue
-		candidate_index=$((candidate_index + 1))
-
-		log "apply: trying manual candidate ${candidate_index}/${candidate_count}: $HOST_NAME ($SERVER_STATION)"
-
-		nordvpn_easy_set_vpn_server_in_uci "$HOST_NAME" "$SERVER_STATION" "$PUBLIC_KEY" "$COUNTRY_CODE" "$CITY_NAME" "$SERVER_LOAD" || continue
-		uci commit network || {
-			nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" 'could not commit network configuration during manual server rotation'
-			commit_failed=1
-			break
+		log "Selected manual VPN server $host_name ($server_station) for rotation"
+		nordvpn_easy_set_vpn_server_in_uci "$host_name" "$server_station" "$public_key" "$country_code" "$city_name" "$server_load" || return 1
+		nordvpn_easy_set_server_preference_in_uci "$host_name" "$server_station"
+		uci commit nordvpn_easy || {
+			log 'WARNING: COULD NOT COMMIT MANUAL SERVER PREFERENCE AFTER ROTATION'
 		}
-		if nordvpn_easy_apply_server_change_runtime "$1"; then
-			nordvpn_easy_set_server_preference_in_uci "$HOST_NAME" "$SERVER_STATION"
-			if ! uci commit nordvpn_easy; then
-				log 'WARNING: COULD NOT COMMIT MANUAL SERVER PREFERENCE; KEEPING WORKING RUNTIME SERVER'
-			fi
+		PREFERRED_SERVER_HOSTNAME="$host_name"
+		PREFERRED_SERVER_STATION="$server_station"
+		return 0
+	done <<EOF
+$(nordvpn_easy_server_catalog_candidates_tsv "$SERVER_CATALOG_FILE")
+EOF
 
-			PREFERRED_SERVER_HOSTNAME="$HOST_NAME"
-			PREFERRED_SERVER_STATION="$SERVER_STATION"
-			log "Manual preferred VPN server updated to $HOST_NAME ($SERVER_STATION)"
-			server_changed=1
-			break
-		fi
+	log 'ERROR: NO ALTERNATIVE MANUAL VPN SERVER FOUND FOR ROTATION'
+	return 1
+}
 
-		log "apply: manual candidate $HOST_NAME ($SERVER_STATION) did not restore VPN connectivity, moving to the next candidate"
-	done < "$SERVER_CANDIDATES_FILE"
-
-	rm -rf -- "$temp_dir"
-
-	if [ "$commit_failed" -eq 1 ]; then
-		return 1
-	fi
-
-	if [ "$server_changed" -eq 1 ]; then
+nordvpn_easy_apply_manual_peer_for_provision() {
+	if [ "${NORDVPN_EASY_PROVISION_MODE:-}" = 'rotate' ]; then
+		nordvpn_easy_apply_next_manual_server_from_catalog "${NORDVPN_EASY_ROTATE_EXCLUDE_STATION:-}" || return 1
 		return 0
 	fi
 
-	log 'NO MANUAL VPN SERVER RESTORED CONNECTIVITY'
-	return 1
+	nordvpn_easy_apply_preferred_server_from_catalog
 }
 
 nordvpn_easy_build_wireguard_peer_section() {
@@ -613,33 +314,50 @@ nordvpn_easy_build_wireguard_peer_section() {
 	uci add_list "network.${peer_section}.allowed_ips"='0.0.0.0/0' || return 1
 
 	if nordvpn_easy_server_selection_is_manual; then
-		nordvpn_easy_apply_preferred_server_from_catalog || return 1
+		nordvpn_easy_apply_manual_peer_for_provision || return 1
 	else
 		nordvpn_easy_set_first_server_from_list || return 1
 	fi
 }
 
-nordvpn_easy_configure_vpn_interface() {
+nordvpn_easy_fetch_provision_prerequisites() {
 	nordvpn_easy_require_core_action_helpers get_private_key || return 1
-	log "apply: $VPN_IF is not configured and will be created"
-	nordvpn_easy_log_vpn_interface_state 'before-create'
-	log "apply: creating WireGuard interface $VPN_IF with address $VPN_ADDR and endpoint port $VPN_PORT"
-
 	log 'apply: requesting NordLynx private key'
-	get_private_key || return 1
+	if ! get_private_key; then
+		if command -v nordvpn_easy_try_clear_routing_blackhole >/dev/null 2>&1 &&
+			nordvpn_easy_try_clear_routing_blackhole "$VPN_IF" "${LOG_PHASE:-apply}"; then
+			get_private_key || return 1
+		else
+			return 1
+		fi
+	fi
 	if nordvpn_easy_server_selection_is_manual; then
 		nordvpn_easy_require_core_action_helpers fetch_server_catalog || return 1
 		nordvpn_easy_require_manual_server_preference || return 1
 		log "apply: manual mode selected; fetching server catalog for ${VPN_COUNTRY:-unset}"
-		fetch_server_catalog 0 "$VPN_COUNTRY" || return 1
+		if [ "${NORDVPN_EASY_FORCE_FRESH_SERVER_LIST:-0}" = '1' ]; then
+			fetch_server_catalog 1 "$VPN_COUNTRY" || return 1
+		else
+			fetch_server_catalog 0 "$VPN_COUNTRY" || return 1
+		fi
 	else
 		log 'apply: automatic mode selected; fetching NordVPN recommendations'
 		nordvpn_easy_get_servers_list || return 1
 	fi
+	return 0
+}
+
+nordvpn_easy_configure_vpn_interface() {
+	nordvpn_easy_require_core_action_helpers get_private_key || return 1
+	log "apply: creating WireGuard interface $VPN_IF with address $VPN_ADDR and endpoint port $VPN_PORT"
+	nordvpn_easy_log_vpn_interface_state 'before-create'
+
+	if [ "${NORDVPN_EASY_PROVISION_FETCH_DONE:-}" != '1' ]; then
+		nordvpn_easy_fetch_provision_prerequisites || return 1
+	fi
 	log "apply: ensuring firewall zone for ${WAN_IF:-unset} contains ${VPN_IF:-unset}"
 	nordvpn_easy_ensure_vpn_in_wan_zone || return 1
 
-	uci -q delete "network.${VPN_IF}"
 	uci set "network.${VPN_IF}"='interface'
 	uci set "network.${VPN_IF}.proto"='wireguard'
 	uci add_list "network.${VPN_IF}.addresses"="$VPN_ADDR"
@@ -675,257 +393,132 @@ nordvpn_easy_configure_vpn_interface() {
 	nordvpn_easy_log_vpn_interface_state 'after-create'
 }
 
-nordvpn_easy_pending_network_reload_marker_path() {
-	printf '%s/network-reload-pending-%s\n' "${NORDVPN_EASY_RUN_DIR:-/tmp/run/nordvpn-easy}" "${VPN_IF:-wg0}"
+nordvpn_easy_stop_vpn_for_server_change() {
+	log 'apply: stopping VPN and clearing server selection caches'
+	nordvpn_easy_immediate_vpn_shutdown || return 1
+	nordvpn_easy_clear_provision_caches || return 1
+	nordvpn_easy_teardown_vpn || return 1
+	return 0
 }
 
-nordvpn_easy_mark_network_reload_pending() {
-	local reason="$1"
-	local marker_path=''
-	local marker_dir=''
+nordvpn_easy_provision_vpn_connect_fresh() {
+	NORDVPN_EASY_FORCE_FRESH_SERVER_LIST=1
 
-	marker_path="$(nordvpn_easy_pending_network_reload_marker_path)"
-	marker_dir="${marker_path%/*}"
-	mkdir -p "$marker_dir" 2>/dev/null || {
-		nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "could not create pending reload marker directory $marker_dir for $VPN_IF"
-		return 1
-	}
+	log 'apply: connecting with a fresh server list and clean caches'
+	nordvpn_easy_fetch_provision_prerequisites || return 1
+	NORDVPN_EASY_PROVISION_FETCH_DONE=1
+	nordvpn_easy_configure_vpn_interface || return 1
+	unset NORDVPN_EASY_PROVISION_FETCH_DONE NORDVPN_EASY_FORCE_FRESH_SERVER_LIST
 
-	{
-		printf 'vpn_if=%s\n' "$VPN_IF"
-		printf 'created_at=%s\n' "$(date +%s 2>/dev/null || printf '%s' '0')"
-		printf 'reason=%s\n' "$reason"
-	} > "$marker_path" || {
-		nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "could not write pending reload marker $marker_path for $VPN_IF"
-		return 1
-	}
-}
-
-nordvpn_easy_network_reload_is_pending() {
-	[ -f "$(nordvpn_easy_pending_network_reload_marker_path)" ]
-}
-
-nordvpn_easy_clear_pending_network_reload() {
-	rm -f "$(nordvpn_easy_pending_network_reload_marker_path)" 2>/dev/null || true
-}
-
-nordvpn_easy_reload_network_for_wireguard() {
-	local context="$1"
-	local network_init="${NORDVPN_EASY_NETWORK_INIT:-/etc/init.d/network}"
-	local reload_output=''
-	local reload_rc=0
-	local marker_path=''
-
-	reload_output="$("$network_init" reload 2>&1)" || {
-		reload_rc=$?
-		reload_output="$(printf '%s' "$reload_output" | sed -n '1p')"
-		marker_path="$(nordvpn_easy_pending_network_reload_marker_path)"
-		nordvpn_easy_mark_network_reload_pending "$context failed with rc=$reload_rc" || true
-		nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "network reload failed for $VPN_IF while $context (rc=$reload_rc, output=${reload_output:-none}, pending_marker=$marker_path)"
-		return 1
-	}
-
-	nordvpn_easy_clear_pending_network_reload
-}
-
-nordvpn_easy_retry_pending_network_reload() {
-	local marker_path=''
-	local marker_reason=''
-
-	nordvpn_easy_network_reload_is_pending || return 0
-	marker_path="$(nordvpn_easy_pending_network_reload_marker_path)"
-	marker_reason="$(sed -n 's/^reason=//p' "$marker_path" 2>/dev/null | sed -n '1p')"
-	log "runtime: retrying pending network reload for $VPN_IF (${marker_reason:-reason unavailable})"
-	nordvpn_easy_reload_network_for_wireguard 'retrying pending WireGuard peer reload'
-}
-
-nordvpn_easy_repair_missing_wireguard_peer() {
-	local existing_private_key=''
-
-	nordvpn_easy_vpn_interface_has_wireguard_proto "$VPN_IF" || return 1
-	if nordvpn_easy_vpn_has_peer_section "$VPN_IF"; then
+	if ! nordvpn_easy_wait_for_vpn_connectivity "$VPN_IF" "$POST_RESTART_DELAY" "provisioning $VPN_IF"; then
+		log 'apply: VPN connection is not OK after provisioning'
 		return 1
 	fi
 
-	existing_private_key="$(uci -q get "network.${VPN_IF}.private_key" 2>/dev/null || true)"
-	[ -n "$existing_private_key" ] || {
-		log "runtime: interface $VPN_IF is missing its WireGuard peer and private key; full create is required"
-		return 1
-	}
-
-	log "runtime: interface $VPN_IF is missing its WireGuard peer; rebuilding peer section"
-
-	if nordvpn_easy_server_selection_is_manual; then
-		nordvpn_easy_require_core_action_helpers fetch_server_catalog || return 1
-		nordvpn_easy_require_manual_server_preference || return 1
-		fetch_server_catalog 0 "$VPN_COUNTRY" || return 1
-	else
-		nordvpn_easy_get_servers_list || return 1
-	fi
-
-	nordvpn_easy_build_wireguard_peer_section || return 1
-
-	uci commit network || {
-		nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" 'could not commit network configuration while repairing missing WireGuard peer'
-		return 1
-	}
-
-	nordvpn_easy_reload_network_for_wireguard 'repairing missing WireGuard peer' || return 1
-
-	log "runtime: rebuilt missing WireGuard peer section for $VPN_IF"
+	verify_public_country_selection || return 1
+	log 'apply: VPN provisioning completed'
+	return 0
 }
 
-nordvpn_easy_bootstrap_if_needed() {
-	local base_settings_changed=0
-	local transport_settings_changed=0
+nordvpn_easy_provision_vpn_server_change() {
+	nordvpn_easy_stop_vpn_for_server_change || return 1
+	nordvpn_easy_provision_vpn_connect_fresh
+}
 
-	nordvpn_easy_require_core_action_helpers refresh_countries_cache || return 1
-	log "runtime: bootstrap starting for interface $VPN_IF (mode=${SERVER_SELECTION_MODE:-auto}, country=${VPN_COUNTRY:-automatic})"
-	nordvpn_easy_log_vpn_interface_state 'bootstrap-start'
+nordvpn_easy_provision_vpn() {
+	local mode="${1:-}"
+
+	nordvpn_easy_require_core_action_helpers refresh_countries_cache verify_public_country_selection || return 1
+	log "apply: provisioning VPN interface $VPN_IF (mode=${mode:-fresh}, selection=${SERVER_SELECTION_MODE:-auto}, country=${VPN_COUNTRY:-automatic})"
+
+	NORDVPN_EASY_PROVISION_MODE="$mode"
+	NORDVPN_EASY_ROTATE_EXCLUDE_STATION=''
+	NORDVPN_EASY_FORCE_FRESH_SERVER_LIST=0
+	if [ "$mode" = 'rotate' ]; then
+		NORDVPN_EASY_ROTATE_EXCLUDE_STATION="$(nordvpn_easy_current_server_station 2>/dev/null || true)"
+	fi
+
 	refresh_countries_cache || true
 	if [ -n "$VPN_COUNTRY" ]; then
 		nordvpn_easy_require_core_action_helpers resolve_country_filter || return 1
 		resolve_country_filter || return 1
 	fi
 
-	if ! nordvpn_easy_vpn_is_configured; then
-		if ! nordvpn_easy_repair_missing_wireguard_peer; then
-			log "runtime: interface $VPN_IF is not configured; entering create path"
-			nordvpn_easy_configure_vpn_interface || return 1
-		fi
-	else
-		nordvpn_easy_retry_pending_network_reload || return 1
-		log "runtime: interface $VPN_IF is already configured; ensuring it is enabled and present"
-		nordvpn_easy_ensure_vpn_interface_enabled || return 1
-		nordvpn_easy_repair_wireguard_interface_base_settings || return 1
-		base_settings_changed="${NORDVPN_EASY_UCI_CHANGED:-0}"
-		nordvpn_easy_apply_wireguard_transport_settings "${VPN_IF}server" || return 1
-		transport_settings_changed="${NORDVPN_EASY_UCI_CHANGED:-0}"
-		if [ "$base_settings_changed" -eq 1 ] || [ "$transport_settings_changed" -eq 1 ]; then
-			log "runtime: repaired WireGuard settings for $VPN_IF (base=${base_settings_changed}, transport=${transport_settings_changed}, keepalive=${WIREGUARD_PERSISTENT_KEEPALIVE:-15}, mtu=${WIREGUARD_MTU:-auto})"
-			uci commit network || {
-				nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" 'could not commit network configuration while repairing WireGuard settings'
-				return 1
-			}
-			nordvpn_easy_reload_network_for_wireguard 'repairing WireGuard settings' || return 1
-		fi
+	if [ "$mode" = 'server_change' ]; then
+		nordvpn_easy_provision_vpn_server_change
+		return $?
 	fi
 
-	nordvpn_easy_ensure_vpn_in_wan_zone || return 1
-	nordvpn_easy_ensure_vpn_interface_present || return 1
-	log "runtime: bootstrap completed for interface $VPN_IF"
-	nordvpn_easy_log_vpn_interface_state 'bootstrap-complete'
+	if [ "$mode" = 'connect_fresh' ]; then
+		nordvpn_easy_provision_vpn_connect_fresh
+		return $?
+	fi
+
+	nordvpn_easy_fetch_provision_prerequisites || return 1
+	NORDVPN_EASY_PROVISION_FETCH_DONE=1
+	nordvpn_easy_teardown_vpn || return 1
+	nordvpn_easy_configure_vpn_interface || return 1
+	unset NORDVPN_EASY_PROVISION_FETCH_DONE
+
+	if ! nordvpn_easy_wait_for_vpn_connectivity "$VPN_IF" "$POST_RESTART_DELAY" "provisioning $VPN_IF"; then
+		log 'apply: VPN connection is not OK after provisioning'
+		return 1
+	fi
+
+	verify_public_country_selection || return 1
+	log 'apply: VPN provisioning completed'
+}
+
+nordvpn_easy_reconcile_action() {
+	log 'apply: reconcile action started'
+	nordvpn_easy_provision_vpn || return 1
+	nordvpn_easy_check_once
 }
 
 nordvpn_easy_rotate_action() {
 	log 'apply: rotate action started'
-	nordvpn_easy_bootstrap_if_needed || return 1
+	nordvpn_easy_provision_vpn rotate
+}
 
-	if nordvpn_easy_server_selection_is_manual; then
-		log 'apply: changing preferred manual VPN server'
-		nordvpn_easy_change_manual_server reload
-		return $?
-	fi
-
-	nordvpn_easy_get_servers_list || return 1
-	log 'apply: changing VPN server'
-	nordvpn_easy_change_vpn_server reload
+nordvpn_easy_check_once_finish() {
+	nordvpn_easy_log_enterprise_state_if_degraded "${VPN_IF:-wg0}" 'healthcheck' || true
 }
 
 nordvpn_easy_check_once() {
-	# shellcheck disable=SC3043 # OpenWrt /bin/sh is BusyBox ash, which supports local.
-	local failed_pings=0
-	local restart_count=0
-	local max_interface_restarts="${MAX_INTERFACE_RESTARTS:-3}"
-	local retry_delay
-	local backoff_steps
+	log "healthcheck: starting VPN health-check on interface $VPN_IF (failure_retry_delay=${FAILURE_RETRY_DELAY:-unset})"
 
-	log "healthcheck: starting VPN health-check on interface $VPN_IF (failure_retry_delay=${FAILURE_RETRY_DELAY:-unset}, rotate_threshold=${SERVER_ROTATE_THRESHOLD:-unset}, restart_threshold=${INTERFACE_RESTART_THRESHOLD:-unset}, max_restarts=${max_interface_restarts})"
-	nordvpn_easy_reconcile_explicit_server_selection_drift 'healthcheck' || return 1
-	if ! nordvpn_easy_server_selection_is_manual; then
-		[ -f "$SERVER_LIST_FILE" ] || nordvpn_easy_get_servers_list || true
+	if nordvpn_easy_ping_interface "$VPN_IF"; then
+		log "healthcheck: VPN health-check passed on interface $VPN_IF"
+		nordvpn_easy_check_once_finish
+		return 0
 	fi
 
-	while ! nordvpn_easy_ping_interface "$VPN_IF"; do
-		failed_pings=$((failed_pings+1))
-		retry_delay="$FAILURE_RETRY_DELAY"
-		nordvpn_easy_ping_wan || {
-			log "healthcheck: WAN connectivity is down while VPN health-check is failing on $VPN_IF; skipping VPN recovery"
-			return 0
+	nordvpn_easy_ping_wan || {
+		log "healthcheck: WAN connectivity is down while VPN health-check is failing on $VPN_IF; skipping VPN recovery"
+		nordvpn_easy_check_once_finish
+		return 0
+	}
+
+	if nordvpn_easy_runtime_needs_provision "$VPN_IF"; then
+		log "healthcheck: degraded VPN runtime detected; reprovisioning $VPN_IF"
+		nordvpn_easy_provision_vpn || {
+			nordvpn_easy_check_once_finish
+			return 1
 		}
+		nordvpn_easy_check_once_finish
+		return 0
+	fi
 
-		if [ "$failed_pings" -ge "$SERVER_ROTATE_THRESHOLD" ]; then
-			log "healthcheck: ping failed $failed_pings times; evaluating server rotation"
+	sleep "${FAILURE_RETRY_DELAY:-6}"
 
-			if nordvpn_easy_server_selection_is_manual; then
-				if nordvpn_easy_try_configured_fallback_server restart 'manual server recovery threshold reached'; then
-					return 0
-				fi
+	if nordvpn_easy_ping_interface "$VPN_IF"; then
+		log "healthcheck: VPN health-check passed on interface $VPN_IF after retry delay"
+		nordvpn_easy_check_once_finish
+		return 0
+	fi
 
-				if nordvpn_easy_has_fallback_server_preference; then
-					log 'healthcheck: manual server selection is enabled, but the configured fallback server did not restore connectivity'
-				else
-					log 'healthcheck: manual server selection is enabled and no fallback server is configured; stopping this health-check without automatic rotation'
-				fi
-				return 1
-			fi
-
-			if nordvpn_easy_get_servers_list; then
-				log 'healthcheck: changing VPN server after repeated failures'
-				nordvpn_easy_change_vpn_server restart && return 0
-			else
-				log 'healthcheck: refreshing VPN server list failed'
-			fi
-		fi
-
-		if [ "$failed_pings" -gt "$INTERFACE_RESTART_THRESHOLD" ]; then
-			if [ "$restart_count" -ge "$max_interface_restarts" ]; then
-				log "healthcheck: ping failed $failed_pings times; restart limit reached for $VPN_IF ($restart_count/$max_interface_restarts)"
-				return 1
-			fi
-
-			restart_count=$((restart_count+1))
-			log "healthcheck: ping failed $failed_pings times; restarting $VPN_IF ($restart_count/$max_interface_restarts)"
-			log "healthcheck: requesting ifdown for interface $VPN_IF during recovery"
-			ifdown "$VPN_IF"
-			sleep "$INTERFACE_RESTART_DELAY"
-			log "healthcheck: requesting ifup for interface $VPN_IF during recovery"
-			ifup "$VPN_IF"
-			sleep "$POST_RESTART_DELAY"
-			nordvpn_easy_log_vpn_interface_state 'after-recovery-restart'
-
-			if nordvpn_easy_ping_interface "$VPN_IF"; then
-				log "healthcheck: interface restart restored connectivity on $VPN_IF"
-				return 0
-			fi
-
-			if nordvpn_easy_server_selection_is_manual; then
-				log 'healthcheck: manual server selection is enabled; not restarting the whole network after interface recovery failed'
-				return 1
-			fi
-
-			log 'healthcheck: restarting network as last automatic recovery fallback'
-			/etc/init.d/network restart || {
-				log 'ERROR: NETWORK RESTART FAILED'
-				return 1
-			}
-			sleep "$POST_RESTART_DELAY"
-		fi
-
-		if [ "$failed_pings" -ge "$SERVER_ROTATE_THRESHOLD" ]; then
-			backoff_steps=$((failed_pings - SERVER_ROTATE_THRESHOLD + 1))
-			while [ "$backoff_steps" -gt 0 ]; do
-				retry_delay=$((retry_delay * 2))
-				if [ "$retry_delay" -ge "$POST_RESTART_DELAY" ]; then
-					retry_delay="$POST_RESTART_DELAY"
-					break
-				fi
-				backoff_steps=$((backoff_steps - 1))
-			done
-		fi
-
-		sleep "$retry_delay"
-	done
-
-	log "healthcheck: VPN health-check passed on interface $VPN_IF"
+	log "healthcheck: VPN ping still failing; reprovisioning $VPN_IF"
+	nordvpn_easy_provision_vpn
+	nordvpn_easy_check_once_finish
+	return $?
 }

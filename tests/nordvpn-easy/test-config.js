@@ -50,6 +50,22 @@ function normalizeValue(value) {
 	return JSON.parse(JSON.stringify(value));
 }
 
+const emptyDiagnosticsPayload = {
+	generated_at: 0,
+	primary_finding: { code: 'none', message: '', action: '' },
+	findings: [],
+	health: {},
+	connectivity: {}
+};
+
+function emptyDiagnosticsExecResult() {
+	return {
+		code: 0,
+		stdout: JSON.stringify(emptyDiagnosticsPayload),
+		stderr: ''
+	};
+}
+
 function loadManagerDataModule() {
 	const source = fs.readFileSync(managerDataPath, 'utf8');
 
@@ -265,6 +281,7 @@ function loadConfigView(options) {
 		maybeAutoReconcileSelectionDrift: [],
 		loadServerCatalog: [],
 		updateServerSelectionState: [],
+		updateDiagnosticsBanner: [],
 		onCountryChanged: 0,
 		onModeChanged: 0,
 		pollingStart: []
@@ -292,6 +309,7 @@ function loadConfigView(options) {
 		preferred_server_station: uciValues.preferred_server_station,
 		operation_status: 'idle'
 	};
+	const diagnosticsPayload = opts.diagnosticsPayload || emptyDiagnosticsPayload;
 	const catalogPayload = opts.catalogPayload || {
 		country_code: 'UY',
 		country_name: 'Uruguay',
@@ -413,6 +431,12 @@ function loadConfigView(options) {
 			replaceStatusText() {},
 			updateServerSelectionState(updateState) {
 				calls.updateServerSelectionState.push(updateState);
+			},
+			renderStatusSection() {
+				return null;
+			},
+			updateDiagnosticsBanner(summary) {
+				calls.updateDiagnosticsBanner.push(summary);
 			}
 		},
 		service: {
@@ -433,6 +457,14 @@ function loadConfigView(options) {
 					});
 				}
 
+				if (action === 'diagnostics_summary') {
+					return Promise.resolve({
+						code: 0,
+						stdout: JSON.stringify(diagnosticsPayload),
+						stderr: ''
+					});
+				}
+
 				if (action === 'server_catalog') {
 					return Promise.resolve({
 						code: 0,
@@ -448,6 +480,7 @@ function loadConfigView(options) {
 				});
 			},
 			parseExecJsonResponse: parseExecJsonResponse,
+			ensureLuCiRpcTimeout() {},
 			notifyInfo() {},
 			notifyError() {}
 		},
@@ -531,7 +564,8 @@ async function testLoadUsesCachedCountriesWithoutBlockingOnManualCatalog() {
 			return [ call.action, call.args ];
 		})),
 		[
-			[ 'status_json', [] ]
+			[ 'status_json', [] ],
+			[ 'diagnostics_summary', [] ]
 		],
 		'idle manual configuration loads status without blocking initial render on server catalog data'
 	);
@@ -557,7 +591,10 @@ async function testLoadSkipsRefreshesWhenRuntimeBusy() {
 		normalizeValue(harness.calls.service.map(function(call) {
 			return [ call.action, call.args ];
 		})),
-		[ [ 'status_json', [] ] ],
+		[
+			[ 'status_json', [] ],
+			[ 'diagnostics_summary', [] ]
+		],
 		'busy runtime skips country refresh and server catalog loading'
 	);
 	assert.equal(data[2], null, 'load never returns a synchronous server catalog response');
@@ -606,7 +643,7 @@ async function testRenderWiresInitialStateAndLiveHandlers() {
 			preferred_server_station: 'uy123'
 		}
 	});
-	const node = await harness.view.render([ countryRaw, statusResult, catalogResult ]);
+	const node = await harness.view.render([ countryRaw, statusResult, catalogResult, emptyDiagnosticsExecResult() ]);
 	const countryOption = harness.formHarness.findOption('vpn_country');
 	const preferredServerOption = harness.formHarness.findOption('preferred_server_station');
 
@@ -614,6 +651,8 @@ async function testRenderWiresInitialStateAndLiveHandlers() {
 	assert.equal(harness.state.appliedEnabled, true, 'render stores the applied enabled flag');
 	assert.equal(harness.state.appliedCountryCode, 'UY', 'render normalizes the applied country');
 	assert.equal(harness.state.currentLocalStatusFresh, true, 'fresh status_json response is marked fresh');
+	assert.equal(harness.state.currentDiagnosticsSummaryFresh, true, 'fresh diagnostics_summary response is marked fresh');
+	assert.equal(harness.calls.updateDiagnosticsBanner.length, 1, 'render applies the initial diagnostics banner');
 	assert.equal(harness.state.currentOperationStatus, 'idle', 'render stores the current operation status');
 	assert.equal(harness.state.currentServerCatalog.servers.length, 1, 'render stores the initial server catalog');
 	assert.equal(harness.state.serverCatalogIndex.uy123.hostname, 'uy123.nordvpn.com', 'render builds a station index for server-selection UI');
@@ -647,6 +686,35 @@ async function testRenderWiresInitialStateAndLiveHandlers() {
 	assert.equal(harness.calls.onModeChanged, 1, 'mode select change delegates to manager-actions');
 }
 
+async function testRenderMarksInvalidDiagnosticsPayloadStale() {
+	const harness = loadConfigView({
+		uciValues: {
+			enabled: '1',
+			vpn_country: '',
+			server_selection_mode: 'auto',
+			preferred_server_station: ''
+		}
+	});
+
+	await harness.view.render([
+		'[]',
+		{
+			code: 0,
+			stdout: JSON.stringify({ desired_enabled: true, operation_status: 'idle' }),
+			stderr: ''
+		},
+		null,
+		{
+			code: 0,
+			stdout: 'not-json',
+			stderr: ''
+		}
+	]);
+
+	assert.equal(harness.state.currentDiagnosticsSummaryFresh, false,
+		'diagnostics_summary with invalid JSON is not marked fresh');
+}
+
 async function testRenderLoadsManualCatalogInBackgroundAfterInitialPaint() {
 	const statusResult = {
 		code: 0,
@@ -670,7 +738,7 @@ async function testRenderLoadsManualCatalogInBackgroundAfterInitialPaint() {
 		}
 	});
 
-	await harness.view.render([ JSON.stringify([ { name: 'Uruguay', code: 'UY' } ]), statusResult, null ]);
+	await harness.view.render([ JSON.stringify([ { name: 'Uruguay', code: 'UY' } ]), statusResult, null, emptyDiagnosticsExecResult() ]);
 	await Promise.resolve();
 
 	assert.equal(harness.state.currentServerCatalog.servers.length, 0, 'initial render is not blocked by server catalog data');
@@ -712,7 +780,7 @@ async function testRenderRefreshesEmptyCountryCacheInBackground() {
 		}
 	});
 
-	await harness.view.render([ '[]', statusResult, null ]);
+	await harness.view.render([ '[]', statusResult, null, emptyDiagnosticsExecResult() ]);
 	await Promise.resolve();
 	await Promise.resolve();
 	await Promise.resolve();
@@ -741,6 +809,7 @@ Promise.resolve().then(async function() {
 	await testLoadUsesCachedCountriesWithoutBlockingOnManualCatalog();
 	await testLoadSkipsRefreshesWhenRuntimeBusy();
 	await testRenderWiresInitialStateAndLiveHandlers();
+	await testRenderMarksInvalidDiagnosticsPayloadStale();
 	await testRenderLoadsManualCatalogInBackgroundAfterInitialPaint();
 	await testRenderRefreshesEmptyCountryCacheInBackground();
 	console.log('test-config.js: ok');

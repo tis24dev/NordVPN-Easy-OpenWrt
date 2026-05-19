@@ -20,16 +20,26 @@ printf '%s' "$LIST_JSON" | jq -er '
 	.status == {} and
 	.connect == {} and
 	.disconnect == {} and
+	.stop_vpn == {} and
 	.reconnect == {} and
 	.reconcile == {} and
 	.refresh_countries.force == "Boolean" and
 	.refresh_servers.country == "String" and
 	.refresh_servers.force == "Boolean" and
-	.diagnostics == {}
+	.diagnostics == {} and
+	.diagnostics_summary == {}
 ' >/dev/null
 
 jq -er '
 	."luci-app-nordvpn-easy".write.ubus."nordvpn.easy" | index("reconcile")
+' "$ACL_FILE" >/dev/null
+
+jq -er '
+	."luci-app-nordvpn-easy".write.ubus."nordvpn.easy" | index("stop_vpn")
+' "$ACL_FILE" >/dev/null
+
+jq -er '
+	."luci-app-nordvpn-easy".read.ubus."nordvpn.easy" | index("diagnostics_summary")
 ' "$ACL_FILE" >/dev/null
 
 UNKNOWN_JSON="$(printf '{}' | NORDVPN_EASY_LIB_DIR="$LIB_DIR" sh "$RPCD_SCRIPT" call unknown)"
@@ -90,6 +100,9 @@ case "$1" in
 		printf '%s\n' 'diag stderr' >&2
 		exit 7
 		;;
+	diagnostics_summary)
+		printf '%s\n' '{"generated_at":1,"vpn_if":"wg0","primary_finding":{"code":"none","message":"none detected","action":""},"findings":[]}'
+		;;
 	*)
 		exit 1
 		;;
@@ -125,6 +138,17 @@ printf '%s' "$DIAG_JSON" | jq -er '
 	.stdout == "diag stdout\n" and
 	.stderr == "diag stderr\n" and
 	(.message | contains("diagnostics export failed: diag stderr"))
+' >/dev/null
+
+SUMMARY_JSON="$(
+	printf '{}' |
+		NORDVPN_EASY_LIB_DIR="$LIB_DIR" \
+		NORDVPN_EASY_INIT_SCRIPT="$FAKE_INIT" \
+		sh "$RPCD_SCRIPT" call diagnostics_summary
+)"
+printf '%s' "$SUMMARY_JSON" | jq -er '
+	.primary_finding.code == "none" and
+	(.findings | length) == 0
 ' >/dev/null
 
 TX_INIT="$TMP_DIR/init-transactional"

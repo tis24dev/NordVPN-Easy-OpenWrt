@@ -5,6 +5,8 @@ set -eu
 ROOT_DIR="$(CDPATH='' cd -- "$(dirname "$0")/../.." && pwd)"
 COMMON_LIB="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/common.sh"
 RUNTIME_LIB="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/runtime.sh"
+WIREGUARD_LIB="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/wireguard.sh"
+DIAGNOSTICS_LIB="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/diagnostics.sh"
 TMP_DIR="$(mktemp -d)"
 
 cleanup() {
@@ -17,6 +19,16 @@ trap cleanup EXIT HUP INT TERM
 . "$COMMON_LIB"
 # shellcheck disable=SC1090
 . "$RUNTIME_LIB"
+# shellcheck disable=SC1090
+. "$WIREGUARD_LIB"
+# shellcheck disable=SC1090
+. "$DIAGNOSTICS_LIB"
+
+pick_ping_ip() {
+	printf '%s\n' '1.1.1.1'
+}
+
+NORDVPN_EASY_DIAGNOSTICS_ACTIVE_PROBES='0'
 
 assert_eq() {
 	expected="$1"
@@ -181,5 +193,50 @@ DIAG_SUMMARY="$(nordvpn_easy_print_diagnostics_health_summary wg0)"
 
 assert_eq 'private_key,addresses,peerdns,delegate,force_link' "$(printf '%s\n' "$DIAG_SUMMARY" | sed -n 's/^required_interface_keys_missing=//p')" 'diagnostics report incomplete WireGuard interface keys separately'
 assert_eq 'wireguard interface is incomplete (private_key,addresses,peerdns,delegate,force_link)' "$(printf '%s\n' "$DIAG_SUMMARY" | sed -n 's/^probable_issue=//p')" 'diagnostics prioritize incomplete interface before runtime peer symptoms'
+assert_eq 'config.interface_incomplete' "$(printf '%s\n' "$DIAG_SUMMARY" | sed -n 's/^probable_issue_code=//p')" 'diagnostics expose machine-readable issue code'
+
+HANDSHAKE_EPOCH="$(date +%s)"
+WG_SNAPSHOT_DUMP="$(printf '%b\n' \
+	'private\tpublic\t51820\t' \
+	"peerpub\tpsk\tes12.nordvpn.com:51820\t10.5.0.2/32\t${HANDSHAKE_EPOCH}\t2048\t4096\t15")"
+
+wg() {
+	case "$1 $2 $3" in
+		'show wg0 dump')
+			printf '%b\n' "$WG_SNAPSHOT_DUMP"
+			;;
+		'show wg0 peers')
+			printf '%s\n' 'peerpub'
+			;;
+		*)
+			return 1
+			;;
+	esac
+}
+
+ip() {
+	case "$*" in
+		'link show dev wg0') return 0 ;;
+		'route show dev wg0') printf '%s\n' '10.5.0.2/32 proto kernel scope link src 10.5.0.2' ;;
+		*) return 1 ;;
+	esac
+}
+
+nordvpn_easy_collect_wireguard_runtime_snapshot wg0
+
+assert_eq 'yes' "$NORDVPN_EASY_WG_RT_CONNECTED" 'wireguard snapshot marks connected when handshake is recent'
+assert_eq 'es12.nordvpn.com:51820' "$NORDVPN_EASY_WG_RT_ENDPOINT" 'wireguard snapshot exposes endpoint from wg dump'
+assert_eq '2048' "$NORDVPN_EASY_WG_RT_TRANSFER_RX_BYTES" 'wireguard snapshot exposes rx bytes'
+assert_eq '4096' "$NORDVPN_EASY_WG_RT_TRANSFER_TX_BYTES" 'wireguard snapshot exposes tx bytes'
+assert_eq 'none' "$NORDVPN_EASY_WG_RT_TRANSFER_ASYMMETRY" 'connected snapshot has no transfer asymmetry'
+assert_eq 'connected' "$(nordvpn_easy_enterprise_state_value 1 0 yes yes idle)" 'enterprise state helper treats connected idle runtime as connected'
+
+rm -rf "$LOCK_DIR"
+
+SNAPSHOT_STATUS_JSON="$(nordvpn_easy_emit_status_json)"
+
+assert_eq 'true' "$(printf '%s' "$SNAPSHOT_STATUS_JSON" | jq -r '.connected')" 'status json uses wireguard snapshot for connected flag'
+assert_eq "$HANDSHAKE_EPOCH" "$(printf '%s' "$SNAPSHOT_STATUS_JSON" | jq -r '.latest_handshake_epoch')" 'status json uses wireguard snapshot handshake epoch'
+assert_eq 'connected' "$(printf '%s' "$SNAPSHOT_STATUS_JSON" | jq -r '.state')" 'status json uses shared enterprise state helper when tunnel is up'
 
 printf '%s\n' 'test-runtime.sh: ok'

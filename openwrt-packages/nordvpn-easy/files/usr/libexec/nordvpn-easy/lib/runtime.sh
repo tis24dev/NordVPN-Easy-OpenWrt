@@ -5,6 +5,8 @@ NORDVPN_EASY_STATUS_CACHE="${NORDVPN_EASY_STATUS_CACHE:-$NORDVPN_EASY_RUN_DIR/st
 NORDVPN_EASY_PUBLIC_IP_CACHE="${NORDVPN_EASY_PUBLIC_IP_CACHE:-$NORDVPN_EASY_RUN_DIR/public_ip}"
 NORDVPN_EASY_PUBLIC_COUNTRY_CACHE="${NORDVPN_EASY_PUBLIC_COUNTRY_CACHE:-$NORDVPN_EASY_RUN_DIR/public_country}"
 NORDVPN_EASY_LAST_ERROR_CACHE="${NORDVPN_EASY_LAST_ERROR_CACHE:-$NORDVPN_EASY_RUN_DIR/last_error}"
+NORDVPN_EASY_ENTERPRISE_STATE_CACHE="${NORDVPN_EASY_ENTERPRISE_STATE_CACHE:-$NORDVPN_EASY_RUN_DIR/enterprise_state_last}"
+NORDVPN_EASY_DIAGNOSTICS_HISTORY="${NORDVPN_EASY_DIAGNOSTICS_HISTORY:-$NORDVPN_EASY_RUN_DIR/diagnostics_history.log}"
 
 nordvpn_easy_pluralize_time_unit() {
 	local value="$1"
@@ -144,6 +146,156 @@ nordvpn_easy_parse_wg_dump_peer() {
 				printf "N/A\t0\t0\t0\n"
 		}
 		'
+}
+
+# Populated by nordvpn_easy_collect_wireguard_runtime_snapshot (single source for status JSON and diagnostics).
+NORDVPN_EASY_WG_RT_VPN_IF=''
+NORDVPN_EASY_WG_RT_LINK_PRESENT='unknown'
+NORDVPN_EASY_WG_RT_ROUTES_COUNT='0'
+NORDVPN_EASY_WG_RT_PEER_COUNT='0'
+NORDVPN_EASY_WG_RT_ENDPOINT='N/A'
+NORDVPN_EASY_WG_RT_HANDSHAKE_EPOCH='0'
+NORDVPN_EASY_WG_RT_HANDSHAKE='Never'
+NORDVPN_EASY_WG_RT_HANDSHAKE_AGE_SECONDS='0'
+NORDVPN_EASY_WG_RT_TRANSFER_RX_BYTES='0'
+NORDVPN_EASY_WG_RT_TRANSFER_TX_BYTES='0'
+NORDVPN_EASY_WG_RT_TRANSFER_RX='0 B'
+NORDVPN_EASY_WG_RT_TRANSFER_TX='0 B'
+NORDVPN_EASY_WG_RT_CONNECTED='no'
+NORDVPN_EASY_WG_RT_TRANSFER_ASYMMETRY='none'
+
+nordvpn_easy_truthy() {
+	case "$1" in
+		1|true|yes|on)
+			return 0
+			;;
+	esac
+
+	return 1
+}
+
+nordvpn_easy_wg_runtime_non_negative_int() {
+	case "$1" in
+		''|*[!0-9]*)
+			printf '%s\n' '0'
+			;;
+		*)
+			printf '%s\n' "$1"
+			;;
+	esac
+}
+
+nordvpn_easy_collect_wireguard_runtime_snapshot() {
+	local vpn_if="${1:-${VPN_IF:-wg0}}"
+	local wg_dump=''
+
+	NORDVPN_EASY_WG_RT_VPN_IF="$vpn_if"
+	NORDVPN_EASY_WG_RT_LINK_PRESENT='unknown'
+	NORDVPN_EASY_WG_RT_ROUTES_COUNT='0'
+	NORDVPN_EASY_WG_RT_PEER_COUNT='0'
+	NORDVPN_EASY_WG_RT_ENDPOINT='N/A'
+	NORDVPN_EASY_WG_RT_HANDSHAKE_EPOCH='0'
+	NORDVPN_EASY_WG_RT_HANDSHAKE='Never'
+	NORDVPN_EASY_WG_RT_HANDSHAKE_AGE_SECONDS='0'
+	NORDVPN_EASY_WG_RT_TRANSFER_RX_BYTES='0'
+	NORDVPN_EASY_WG_RT_TRANSFER_TX_BYTES='0'
+	NORDVPN_EASY_WG_RT_TRANSFER_RX='0 B'
+	NORDVPN_EASY_WG_RT_TRANSFER_TX='0 B'
+	NORDVPN_EASY_WG_RT_CONNECTED='no'
+	NORDVPN_EASY_WG_RT_TRANSFER_ASYMMETRY='none'
+
+	if command -v ip >/dev/null 2>&1; then
+		if ip link show dev "$vpn_if" >/dev/null 2>&1; then
+			NORDVPN_EASY_WG_RT_LINK_PRESENT='yes'
+		else
+			NORDVPN_EASY_WG_RT_LINK_PRESENT='no'
+		fi
+		NORDVPN_EASY_WG_RT_ROUTES_COUNT="$(ip route show dev "$vpn_if" 2>/dev/null | awk 'END { print NR + 0 }')"
+	fi
+
+	if command -v wg >/dev/null 2>&1; then
+		NORDVPN_EASY_WG_RT_PEER_COUNT="$(wg show "$vpn_if" peers 2>/dev/null | awk 'NF { count++ } END { print count + 0 }')"
+		wg_dump="$(wg show "$vpn_if" dump 2>/dev/null)"
+		if [ -n "$wg_dump" ]; then
+			IFS="$(printf '\t')" read -r NORDVPN_EASY_WG_RT_ENDPOINT NORDVPN_EASY_WG_RT_HANDSHAKE_EPOCH \
+				NORDVPN_EASY_WG_RT_TRANSFER_RX_BYTES NORDVPN_EASY_WG_RT_TRANSFER_TX_BYTES <<EOF
+$(nordvpn_easy_parse_wg_dump_peer "$wg_dump")
+EOF
+		fi
+	fi
+
+	NORDVPN_EASY_WG_RT_TRANSFER_RX_BYTES="$(nordvpn_easy_wg_runtime_non_negative_int "$NORDVPN_EASY_WG_RT_TRANSFER_RX_BYTES")"
+	NORDVPN_EASY_WG_RT_TRANSFER_TX_BYTES="$(nordvpn_easy_wg_runtime_non_negative_int "$NORDVPN_EASY_WG_RT_TRANSFER_TX_BYTES")"
+	NORDVPN_EASY_WG_RT_HANDSHAKE="$(nordvpn_easy_humanize_handshake_age "$NORDVPN_EASY_WG_RT_HANDSHAKE_EPOCH")"
+	NORDVPN_EASY_WG_RT_HANDSHAKE_AGE_SECONDS="$(nordvpn_easy_handshake_age_seconds "$NORDVPN_EASY_WG_RT_HANDSHAKE_EPOCH")"
+	NORDVPN_EASY_WG_RT_TRANSFER_RX="$(nordvpn_easy_format_human_bytes "$NORDVPN_EASY_WG_RT_TRANSFER_RX_BYTES")"
+	NORDVPN_EASY_WG_RT_TRANSFER_TX="$(nordvpn_easy_format_human_bytes "$NORDVPN_EASY_WG_RT_TRANSFER_TX_BYTES")"
+
+	if nordvpn_easy_handshake_epoch_indicates_connection "$NORDVPN_EASY_WG_RT_HANDSHAKE_EPOCH"; then
+		NORDVPN_EASY_WG_RT_CONNECTED='yes'
+	fi
+
+	if [ "$NORDVPN_EASY_WG_RT_CONNECTED" != 'yes' ] &&
+		[ "$NORDVPN_EASY_WG_RT_TRANSFER_RX_BYTES" -eq 0 ] &&
+		[ "$NORDVPN_EASY_WG_RT_TRANSFER_TX_BYTES" -gt 0 ]; then
+		NORDVPN_EASY_WG_RT_TRANSFER_ASYMMETRY='stuck_tunnel_suspected'
+	fi
+}
+
+nordvpn_easy_wg_connected_json() {
+	if nordvpn_easy_truthy "$NORDVPN_EASY_WG_RT_CONNECTED"; then
+		printf '%s' 'true'
+	else
+		printf '%s' 'false'
+	fi
+}
+
+nordvpn_easy_enterprise_state_value() {
+	local desired_enabled="$1"
+	local interface_disabled="$2"
+	local runtime_configured="$3"
+	local connected="$4"
+	local operation="$5"
+
+	if ! nordvpn_easy_truthy "$desired_enabled"; then
+		printf '%s\n' 'disabled'
+		return 0
+	fi
+
+	if nordvpn_easy_truthy "$interface_disabled"; then
+		printf '%s\n' 'disabled'
+		return 0
+	fi
+
+	if [ "$operation" = 'idle' ]; then
+		if nordvpn_easy_truthy "$connected"; then
+			printf '%s\n' 'connected'
+			return 0
+		fi
+
+		if nordvpn_easy_truthy "$runtime_configured"; then
+			printf '%s\n' 'degraded'
+			return 0
+		fi
+
+		printf '%s\n' 'idle'
+		return 0
+	fi
+
+	case "$operation" in
+		busy:check)
+			printf '%s\n' 'recovering'
+			;;
+		busy:setup|busy:rotate)
+			printf '%s\n' 'connecting'
+			;;
+		busy:disable_runtime)
+			printf '%s\n' 'disabled'
+			;;
+		*)
+			printf '%s\n' 'recovering'
+			;;
+	esac
 }
 
 nordvpn_easy_handshake_age_seconds() {
@@ -337,7 +489,6 @@ nordvpn_easy_emit_status_json() {
 	local operation_lock_action=''
 	local operation_lock_age_seconds='0'
 	local peer_section=''
-	local wg_dump=''
 	local endpoint='N/A'
 	local endpoint_port="${VPN_PORT:-51820}"
 	local wireguard_keepalive="${WIREGUARD_PERSISTENT_KEEPALIVE:-15}"
@@ -394,47 +545,22 @@ nordvpn_easy_emit_status_json() {
 
 	updated_at="$(date +%s 2>/dev/null || printf '%s' '0')"
 	firewall_mtu_fix="$(nordvpn_easy_status_firewall_mtu_fix "$VPN_IF")"
-	wg_dump="$(wg show "$VPN_IF" dump 2>/dev/null)"
-
-	if [ -n "$wg_dump" ]; then
-		IFS="$(printf '\t')" read -r endpoint latest_handshake_epoch transfer_rx_bytes transfer_tx_bytes <<EOF
-$(nordvpn_easy_parse_wg_dump_peer "$wg_dump")
-EOF
-
-		latest_handshake="$(nordvpn_easy_humanize_handshake_age "$latest_handshake_epoch")"
-		handshake_age_seconds="$(nordvpn_easy_handshake_age_seconds "$latest_handshake_epoch")"
-		transfer_rx="$(nordvpn_easy_format_human_bytes "$transfer_rx_bytes")"
-		transfer_tx="$(nordvpn_easy_format_human_bytes "$transfer_tx_bytes")"
-
-		if nordvpn_easy_handshake_epoch_indicates_connection "$latest_handshake_epoch"; then
-			connected='true'
-		fi
-	fi
-
-	if [ "$desired_enabled" != '1' ] || [ "$interface_disabled" = 'true' ]; then
-		enterprise_state='disabled'
-	elif [ "$operation" = 'idle' ] && [ "$connected" = 'true' ]; then
-		enterprise_state='connected'
-	elif [ "$operation" = 'idle' ] && [ "$runtime_configured" = 'true' ]; then
-		enterprise_state='degraded'
-	elif [ "$operation" = 'idle' ]; then
-		enterprise_state='idle'
-	else
-		case "$operation" in
-			busy:check)
-				enterprise_state='recovering'
-				;;
-			busy:setup|busy:rotate)
-				enterprise_state='connecting'
-				;;
-			busy:disable_runtime)
-				enterprise_state='disabled'
-				;;
-			*)
-				enterprise_state='recovering'
-				;;
-		esac
-	fi
+	nordvpn_easy_collect_wireguard_runtime_snapshot "$VPN_IF"
+	endpoint="$NORDVPN_EASY_WG_RT_ENDPOINT"
+	latest_handshake="$NORDVPN_EASY_WG_RT_HANDSHAKE"
+	latest_handshake_epoch="$NORDVPN_EASY_WG_RT_HANDSHAKE_EPOCH"
+	handshake_age_seconds="$NORDVPN_EASY_WG_RT_HANDSHAKE_AGE_SECONDS"
+	transfer_rx="$NORDVPN_EASY_WG_RT_TRANSFER_RX"
+	transfer_rx_bytes="$NORDVPN_EASY_WG_RT_TRANSFER_RX_BYTES"
+	transfer_tx="$NORDVPN_EASY_WG_RT_TRANSFER_TX"
+	transfer_tx_bytes="$NORDVPN_EASY_WG_RT_TRANSFER_TX_BYTES"
+	connected="$(nordvpn_easy_wg_connected_json)"
+	enterprise_state="$(nordvpn_easy_enterprise_state_value \
+		"$desired_enabled" \
+		"$interface_disabled" \
+		"$runtime_configured" \
+		"$NORDVPN_EASY_WG_RT_CONNECTED" \
+		"$operation")"
 
 	[ -r "$NORDVPN_EASY_PUBLIC_IP_CACHE" ] && public_ip_cached="$(sed -n '1p' "$NORDVPN_EASY_PUBLIC_IP_CACHE" 2>/dev/null)"
 	[ -r "$NORDVPN_EASY_PUBLIC_COUNTRY_CACHE" ] && public_country_cached="$(sed -n '1p' "$NORDVPN_EASY_PUBLIC_COUNTRY_CACHE" 2>/dev/null)"

@@ -45,6 +45,22 @@ if (!String.prototype.format) {
 	});
 }
 
+function loadManagerDataModule() {
+	const source = fs.readFileSync(managerDataPath, 'utf8');
+
+	return vm.runInNewContext(`(function(){\n${source}\n})();`, {
+		baseclass: {
+			extend(api) {
+				return api;
+			}
+		}
+	}, {
+		filename: managerDataPath
+	});
+}
+
+const managerData = loadManagerDataModule();
+
 function loadManagerActionsModule(overrides) {
 	const source = fs.readFileSync(managerActionsPath, 'utf8');
 	const context = {
@@ -68,6 +84,15 @@ function loadManagerActionsModule(overrides) {
 			},
 			parseLocalStatus() {
 				return {};
+			},
+			emptyDiagnosticsSummary() {
+				return managerData.emptyDiagnosticsSummary();
+			},
+			parseDiagnosticsSummary(raw) {
+				return managerData.parseDiagnosticsSummary(raw);
+			},
+			diagnosticsHasAlert(summary) {
+				return managerData.diagnosticsHasAlert(summary);
 			}
 		},
 		managerFormat: {
@@ -87,7 +112,9 @@ function loadManagerActionsModule(overrides) {
 				throw new Error('runExclusive should not be used in this test');
 			}
 		},
-		managerUI: {},
+		managerUI: {
+			updateDiagnosticsBanner() {}
+		},
 		service: {},
 		ui: {},
 		uci: {},
@@ -149,22 +176,7 @@ function loadManagerActionsModule(overrides) {
 	};
 }
 
-function loadManagerDataModule() {
-	const source = fs.readFileSync(managerDataPath, 'utf8');
-
-	return vm.runInNewContext(`(function(){\n${source}\n})();`, {
-		baseclass: {
-			extend(api) {
-				return api;
-			}
-		}
-	}, {
-		filename: managerDataPath
-	});
-}
-
 const managerActions = loadManagerActionsModule().managerActions;
-const managerData = loadManagerDataModule();
 
 function normalizeValue(value) {
 	return JSON.parse(JSON.stringify(value));
@@ -197,7 +209,40 @@ assert.equal(typeof managerActions.hasServerSelectionChanged, 'function', 'hasSe
 assert.equal(typeof managerActions.deriveServerSelectionDrift, 'function', 'deriveServerSelectionDrift is exported');
 assert.equal(typeof managerActions.maybeAutoReconcileSelectionDrift, 'function', 'maybeAutoReconcileSelectionDrift is exported');
 assert.equal(typeof managerActions.deriveRuntimeActionPlan, 'function', 'deriveRuntimeActionPlan is exported');
+assert.equal(typeof managerActions.mergeSavedConfigWithSubmittedValues, 'function', 'mergeSavedConfigWithSubmittedValues is exported');
+assert.equal(typeof managerActions.syncSubmittedRuntimeConfigToUci, 'function', 'syncSubmittedRuntimeConfigToUci is exported');
 assert.equal(typeof managerActions.renderLocalStatusSnapshot, 'function', 'renderLocalStatusSnapshot is exported');
+
+{
+	const merged = managerActions.mergeSavedConfigWithSubmittedValues({
+		enabled: true,
+		country: 'IE',
+		mode: 'auto',
+		preferredStation: ''
+	}, {
+		country: 'NG',
+		mode: 'auto',
+		enabled: true,
+		preferredStation: ''
+	});
+
+	assert.equal(merged.country, 'NG', 'form country overrides stale disk country in saved runtime config');
+	assert.equal(merged.mode, 'auto', 'form mode is preserved in merged saved runtime config');
+	assert.equal(merged.enabled, true, 'form enabled flag is preserved in merged saved runtime config');
+}
+
+assert.deepEqual(
+	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'IE', 'NG', 'auto', 'auto', '', '', Object.assign({}, healthyRuntime, {
+		current_server_country: 'IE',
+		current_server_station: 'ie142'
+	}))),
+	{
+		actions: [ 'stop_vpn', 'connect' ],
+		successMessage: 'NordVPN Easy stopped the VPN, cleared caches, and connected to the selected automatic server.',
+		serverSelectionChanged: true
+	},
+	'IE to NG country change uses stop_vpn then connect'
+);
 assert.equal(managerData.parseEnabledFlag(undefined), false, 'missing enabled option is treated as disabled');
 assert.equal(managerData.parseEnabledFlag('0'), false, 'explicit disabled value is treated as disabled');
 assert.equal(managerData.parseEnabledFlag('1'), true, 'explicit enabled value is treated as enabled');
@@ -249,41 +294,41 @@ assert.deepEqual(
 assert.deepEqual(
 	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'AT', 'UY', 'auto', 'auto', '', '', healthyRuntime)),
 	{
-		actions: [ 'reconnect' ],
-		successMessage: 'NordVPN Easy cleanly reconnected and synchronized the automatic server selection.',
+		actions: [ 'stop_vpn', 'connect' ],
+		successMessage: 'NordVPN Easy stopped the VPN, cleared caches, and connected to the selected automatic server.',
 		serverSelectionChanged: true
 	},
-	'enabled country changes use transactional reconnect'
+	'enabled country changes use stop_vpn then connect'
 );
 
 assert.deepEqual(
 	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'UY', 'UY', 'auto', 'manual', '', 'uy123', healthyRuntime)),
 	{
-		actions: [ 'reconnect' ],
-		successMessage: 'NordVPN Easy cleanly reconnected and synchronized the selected manual server.',
+		actions: [ 'stop_vpn', 'connect' ],
+		successMessage: 'NordVPN Easy stopped the VPN, cleared caches, and connected to the selected manual server.',
 		serverSelectionChanged: true
 	},
-	'enabled mode changes use transactional reconnect'
+	'enabled mode changes use stop_vpn then connect'
 );
 
 assert.deepEqual(
 	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'UY', 'UY', 'manual', 'manual', 'uy123', 'uy456', healthyRuntime)),
 	{
-		actions: [ 'reconnect' ],
-		successMessage: 'NordVPN Easy cleanly reconnected and synchronized the selected manual server.',
+		actions: [ 'stop_vpn', 'connect' ],
+		successMessage: 'NordVPN Easy stopped the VPN, cleared caches, and connected to the selected manual server.',
 		serverSelectionChanged: true
 	},
-	'enabled manual preferred server changes use transactional reconnect'
+	'enabled manual preferred server changes use stop_vpn then connect'
 );
 
 assert.deepEqual(
 	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'UY', 'UY', 'auto', 'auto', '', '', healthyRuntime)),
 	{
-		actions: [ 'reconnect' ],
-		successMessage: 'NordVPN Easy cleanly reconnected with the saved configuration.',
+		actions: [],
+		successMessage: 'Configuration saved successfully.',
 		serverSelectionChanged: false
 	},
-	'enabled Save & Apply cleanly reconnects even without an explicit server-selection delta'
+	'enabled Save & Apply without selection drift only saves configuration'
 );
 
 assert.deepEqual(
@@ -292,11 +337,11 @@ assert.deepEqual(
 		current_server_station: 'at123'
 	}))),
 	{
-		actions: [ 'reconnect' ],
-		successMessage: 'NordVPN Easy cleanly reconnected and synchronized the automatic server selection.',
+		actions: [ 'stop_vpn', 'connect' ],
+		successMessage: 'NordVPN Easy stopped the VPN, cleared caches, and connected to the selected automatic server.',
 		serverSelectionChanged: false
 	},
-	'unchanged country with runtime country drift uses transactional reconnect'
+	'unchanged country with runtime country drift uses stop_vpn then connect'
 );
 
 assert.deepEqual(
@@ -305,51 +350,51 @@ assert.deepEqual(
 		current_server_station: 'uy999'
 	}))),
 	{
-		actions: [ 'reconnect' ],
-		successMessage: 'NordVPN Easy cleanly reconnected and synchronized the selected manual server.',
+		actions: [ 'stop_vpn', 'connect' ],
+		successMessage: 'NordVPN Easy stopped the VPN, cleared caches, and connected to the selected manual server.',
 		serverSelectionChanged: false
 	},
-	'unchanged manual preference with runtime station drift uses transactional reconnect'
+	'unchanged manual preference with runtime station drift uses stop_vpn then connect'
 );
 
 assert.deepEqual(
 	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'UY', 'UY', 'auto', 'auto', '', '', disabledRuntime)),
 	{
-		actions: [ 'reconnect' ],
-		successMessage: 'NordVPN Easy cleanly reconnected and synchronized the automatic server selection.',
+		actions: [ 'stop_vpn', 'connect' ],
+		successMessage: 'NordVPN Easy stopped the VPN, cleared caches, and connected to the selected automatic server.',
 		serverSelectionChanged: false
 	},
-	'disabled runtime with unchanged config uses clean reconnect'
+	'disabled runtime with unchanged config uses stop_vpn then connect'
 );
 
 assert.deepEqual(
 	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'UY', 'UY', 'auto', 'auto', '', '', missingRuntime)),
 	{
-		actions: [ 'reconnect' ],
-		successMessage: 'NordVPN Easy cleanly reconnected and synchronized the automatic server selection.',
+		actions: [ 'stop_vpn', 'connect' ],
+		successMessage: 'NordVPN Easy stopped the VPN, cleared caches, and connected to the selected automatic server.',
 		serverSelectionChanged: false
 	},
-	'missing runtime with unchanged config uses clean reconnect'
+	'missing runtime with unchanged config uses stop_vpn then connect'
 );
 
 assert.deepEqual(
 	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'UY', 'UY', 'auto', 'auto', '', '', unknownRuntime)),
 	{
-		actions: [ 'reconnect' ],
-		successMessage: 'NordVPN Easy cleanly reconnected and synchronized the automatic server selection.',
+		actions: [ 'stop_vpn', 'connect' ],
+		successMessage: 'NordVPN Easy stopped the VPN, cleared caches, and connected to the selected automatic server.',
 		serverSelectionChanged: false
 	},
-	'unknown runtime snapshot with unchanged config uses clean reconnect'
+	'unknown runtime snapshot with unchanged config uses stop_vpn then connect'
 );
 
 assert.deepEqual(
 	normalizeValue(managerActions.deriveRuntimeActionPlan(true, true, 'UY', 'UY', 'auto', 'auto', '', '', null)),
 	{
-		actions: [ 'reconnect' ],
-		successMessage: 'NordVPN Easy cleanly reconnected and synchronized the automatic server selection.',
+		actions: [ 'stop_vpn', 'connect' ],
+		successMessage: 'NordVPN Easy stopped the VPN, cleared caches, and connected to the selected automatic server.',
 		serverSelectionChanged: false
 	},
-	'null runtime snapshot with unchanged config uses clean reconnect'
+	'null runtime snapshot with unchanged config uses stop_vpn then connect'
 );
 
 function buildUpdateLocalStatusHarness(serviceOverrides) {
@@ -860,6 +905,10 @@ function buildHandleSaveApplyHarness(options) {
 	const calls = {
 		handleSave: 0,
 		apply: 0,
+		applyEndpoint: 0,
+		commit: 0,
+		changes: 0,
+		setIndicator: [],
 		uciLoad: 0,
 		uciUnload: 0
 	};
@@ -1030,7 +1079,45 @@ function buildHandleSaveApplyHarness(options) {
 						});
 					}
 					return Promise.resolve();
+				},
+				setIndicator(value) {
+					calls.setIndicator.push(value);
 				}
+			}
+		},
+		L: {
+			env: {
+				sessionid: 'test-session',
+				token: 'test-token'
+			},
+			url() {
+				return Array.prototype.slice.call(arguments).join('/');
+			}
+		},
+		request: {
+			request(url, options) {
+				calls.applyEndpoint++;
+				assert.equal(url, 'admin/uci/apply_unchecked', 'Save & Apply uses the LuCI unchecked apply endpoint');
+				assert.equal(options && options.method, 'post', 'LuCI apply endpoint is called with POST');
+				assert.equal(options && options.query && options.query.sid, 'test-session', 'LuCI apply endpoint carries the active session id');
+				return Promise.resolve({ status: opts.applyStatus || 204 });
+			}
+		},
+		rpc: {
+			declare(spec) {
+				if (spec.object === 'uci' && spec.method === 'commit') {
+					return function(config) {
+						calls.commit++;
+
+						if (opts.commitReject)
+							return Promise.reject(opts.commitReject);
+
+						assert.equal(config, 'nordvpn_easy', 'Save & Apply commits only nordvpn_easy');
+						return Promise.resolve(0);
+					};
+				}
+
+				throw new Error('unexpected rpc declaration');
 			}
 		},
 		uci: {
@@ -1050,6 +1137,10 @@ function buildHandleSaveApplyHarness(options) {
 				if (opts.uciLoadReject)
 					return Promise.reject(opts.uciLoadReject);
 				return Promise.resolve();
+			},
+			changes() {
+				calls.changes++;
+				return Promise.resolve(opts.pendingChanges || {});
 			}
 		},
 		document: {
@@ -1130,7 +1221,7 @@ async function testHandleSaveApplyRejectsManualModeWithoutCountry() {
 	await harness.actions.handleSaveApply(harness.viewState, harness.state, {}, '1');
 
 	assert.equal(harness.calls.handleSave, 0, 'manual mode without country does not save the form');
-	assert.equal(harness.calls.apply, 0, 'manual mode without country does not apply LuCI changes');
+	assert.equal(harness.calls.apply, 0, 'manual mode without country does not run the legacy LuCI apply path');
 	assert.deepEqual(harness.uciSets, [], 'manual mode without country does not mutate preferred server UCI fields');
 	assert.equal(harness.notifications.length, 1, 'manual mode without country reports one validation error');
 	assert.match(harness.notifications[0].message, /Manual mode requires a selected country/, 'manual mode country validation reports the expected error');
@@ -1151,7 +1242,7 @@ async function testHandleSaveApplyRejectsManualModeWithoutCatalogServer() {
 	await harness.actions.handleSaveApply(harness.viewState, harness.state, {}, '1');
 
 	assert.equal(harness.calls.handleSave, 0, 'manual mode without catalog server does not save the form');
-	assert.equal(harness.calls.apply, 0, 'manual mode without catalog server does not apply LuCI changes');
+	assert.equal(harness.calls.apply, 0, 'manual mode without catalog server does not run the legacy LuCI apply path');
 	assert.equal(harness.notifications.length, 1, 'manual mode without catalog server reports one validation error');
 	assert.match(harness.notifications[0].message, /valid preferred server/, 'manual mode catalog validation reports the expected error');
 }
@@ -1171,12 +1262,12 @@ async function testHandleSaveApplyCancellationStopsRuntimeChange() {
 
 	assert.equal(harness.confirmations.length, 1, 'server-selection changes ask for confirmation');
 	assert.equal(harness.calls.handleSave, 0, 'cancelled confirmation does not save the form');
-	assert.equal(harness.calls.apply, 0, 'cancelled confirmation does not apply LuCI changes');
+	assert.equal(harness.calls.apply, 0, 'cancelled confirmation does not run the legacy LuCI apply path');
 	assert.deepEqual(harness.runtimeActions, [], 'cancelled confirmation does not queue runtime actions');
 	assert.deepEqual(harness.pollingTransitions, [], 'cancelled confirmation leaves polling untouched');
 }
 
-async function testHandleSaveApplyTimesOutWhenUciAppliedEventIsMissing() {
+async function testHandleSaveApplyTimesOutWhenPostSaveSyncNeverFinishes() {
 	const harness = buildHandleSaveApplyHarness({
 		previousEnabled: false,
 		currentEnabled: true,
@@ -1184,7 +1275,7 @@ async function testHandleSaveApplyTimesOutWhenUciAppliedEventIsMissing() {
 		currentCountry: '',
 		savedEnabled: '1',
 		savedCountry: '',
-		emitUciApplied: false,
+		uciLoadReject: new Error('uci reload failed'),
 		timeoutMs: 25
 	});
 	let rejected = null;
@@ -1193,13 +1284,14 @@ async function testHandleSaveApplyTimesOutWhenUciAppliedEventIsMissing() {
 		rejected = err;
 	});
 	await Promise.resolve();
+	await Promise.resolve();
 
 	assert.equal(harness.calls.handleSave, 1, 'enable flow saves the form once');
-	assert.equal(harness.calls.apply, 1, 'enable flow applies LuCI changes once');
-	assert.match(rejected && rejected.message, /Configuration apply timed out/, 'missing uci-applied event rejects through the apply timeout');
-	assert.deepEqual(normalizeValue(harness.runtimeActions), [], 'missing uci-applied event does not run runtime actions before apply confirmation');
-	assert.equal(harness.state.pendingOperationLabel, '', 'timeout clears pending state when uci-applied is missing');
-	assert.equal(harness.pollingTransitions[harness.pollingTransitions.length - 1], 'resume', 'timeout resumes polling when uci-applied is missing');
+	assert.equal(harness.calls.apply, 0, 'save flow does not use the legacy LuCI apply path');
+	assert.equal(rejected && rejected.message, 'uci reload failed', 'post-save sync failure rejects with the original error');
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [], 'post-save sync failure does not queue runtime actions');
+	assert.equal(harness.state.pendingOperationLabel, '', 'post-save sync failure clears pending state');
+	assert.equal(harness.pollingTransitions[harness.pollingTransitions.length - 1], 'resume', 'post-save sync failure resumes polling');
 }
 
 async function testHandleSaveApplyClearsBusyStateWhenPostApplySyncFails() {
@@ -1225,7 +1317,7 @@ async function testHandleSaveApplyClearsBusyStateWhenPostApplySyncFails() {
 	assert.equal(harness.pollingTransitions[harness.pollingTransitions.length - 1], 'resume', 'post-apply sync failure resumes polling');
 	assert.ok(harness.serviceCalls.indexOf('status_json') !== -1, 'post-apply sync failure refreshes local status');
 	assert.ok(harness.serviceCalls.indexOf('public_ip') !== -1, 'post-apply sync failure refreshes public IP state');
-	assert.match(harness.notifications[harness.notifications.length - 1].message, /Automatic runtime sync failed: uci reload failed/, 'post-apply sync failure reports a readable notification');
+	assert.match(harness.notifications[harness.notifications.length - 1].message, /Save & Apply failed: uci reload failed/, 'post-apply sync failure reports a readable notification');
 }
 
 async function testHandleSaveApplyAutoModeClearsManualSelectionAndReconnects() {
@@ -1258,8 +1350,8 @@ async function testHandleSaveApplyAutoModeClearsManualSelectionAndReconnects() {
 	assert.equal(harness.confirmations.length, 1, 'manual-to-auto changes ask for runtime confirmation');
 	assert.match(harness.confirmations[0].lines.join('\n'), /Automatic mode will use NordVPN recommended servers/, 'manual-to-auto confirmation explains automatic selection');
 	assert.equal(harness.calls.handleSave, 1, 'confirmed server-selection change saves the form once');
-	assert.equal(harness.calls.apply, 1, 'confirmed server-selection change applies LuCI changes once');
-	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'reconnect' ] ], 'manual-to-auto changes queue a reconnect after UCI apply');
+	assert.equal(harness.calls.apply, 0, 'confirmed server-selection change does not use the legacy LuCI apply path');
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn', 'connect' ] ], 'manual-to-auto changes queue a reconnect after UCI apply');
 	assert.equal(harness.viewState.initialMode, 'auto', 'view state tracks saved automatic mode');
 	assert.equal(harness.viewState.initialPreferredStation, '', 'view state clears saved preferred station');
 	assert.equal(harness.state.pendingOperationLabel, '', 'runtime action completion clears pending operation label');
@@ -1295,9 +1387,38 @@ async function testHandleSaveApplyReconcilesDisabledRuntimeAfterSave() {
 	await Promise.resolve();
 	await Promise.resolve();
 
-	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'reconnect' ] ], 'unchanged enabled config cleanly reconnects a disabled runtime after Save & Apply');
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn', 'connect' ] ], 'unchanged enabled config cleanly reconnects a disabled runtime after Save & Apply');
 	assert.equal(harness.state.pendingOperationLabel, '', 'reconnect completion clears pending operation label');
 	assert.ok(harness.serviceCalls.indexOf('status_json') !== -1, 'reconnect flow refreshes status before choosing runtime action');
+}
+
+async function testHandleSaveApplyQueuesReconnectWhenSavedCountryDriftsFromPeer() {
+	const harness = buildHandleSaveApplyHarness({
+		previousEnabled: true,
+		previousCountry: 'AU',
+		currentEnabled: true,
+		currentMode: 'auto',
+		currentCountry: 'AU',
+		savedCountry: 'AU',
+		statusPayload: {
+			desired_enabled: true,
+			runtime_disabled: false,
+			interface_disabled: false,
+			runtime_configured: true,
+			operation_status: 'idle',
+			selected_country: 'AU',
+			server_selection_mode: 'auto',
+			current_server_country: 'BZ',
+			current_server_station: '45.95.162.3'
+		}
+	});
+
+	await harness.actions.handleSaveApply(harness.viewState, harness.state, {}, '1');
+	await Promise.resolve();
+	await Promise.resolve();
+
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn', 'connect' ] ],
+		'saved country that drifts from the active peer queues reconnect on Save & Apply');
 }
 
 async function testAutoReconcileRunsForCountryDrift() {
@@ -1335,11 +1456,57 @@ async function testAutoReconcileRunsForCountryDrift() {
 
 	await harness.actions.maybeAutoReconcileSelectionDrift(harness.state, driftStatus);
 
-	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'reconnect' ] ], 'country drift queues exactly one reconnect');
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn', 'connect' ] ], 'country drift queues exactly one reconnect');
 	assert.equal(harness.state.pendingOperationLabel, '', 'auto reconcile clears the pending label after completion');
 	assert.ok(harness.phaseTransitions.indexOf('runtime_busy') !== -1, 'auto reconcile enters runtime-busy phase');
 	assert.ok(harness.serviceCalls.indexOf('status_json') !== -1, 'auto reconcile refreshes status after completion');
 	assert.ok(harness.serviceCalls.indexOf('public_ip') !== -1, 'auto reconcile refreshes public IP after completion');
+}
+
+async function testAutoReconcileSkipsWhileSaveApplyInProgress() {
+	const harness = buildHandleSaveApplyHarness({
+		previousEnabled: true,
+		savedCountry: 'AU',
+		statusPayload: {
+			desired_enabled: true,
+			runtime_disabled: false,
+			interface_disabled: false,
+			runtime_configured: true,
+			operation_status: 'idle',
+			selected_country: 'AU',
+			server_selection_mode: 'auto',
+			current_server_country: 'BO',
+			current_server_station: '45.134.189.1'
+		}
+	});
+	const driftStatus = {
+		desired_enabled: true,
+		runtime_disabled: false,
+		interface_disabled: false,
+		runtime_configured: true,
+		operation_status: 'idle',
+		selected_country: 'AU',
+		server_selection_mode: 'auto',
+		current_server_country: 'BO',
+		current_server_station: '45.134.189.1'
+	};
+
+	harness.state.appliedCountryCode = 'AU';
+	harness.state.currentLocalStatus = driftStatus;
+	harness.state.saveApplyInProgress = true;
+	harness.state.phase = 'saving';
+
+	await harness.actions.maybeAutoReconcileSelectionDrift(harness.state, driftStatus);
+
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [], 'auto reconcile does not run during Save & Apply');
+
+	harness.state.saveApplyInProgress = false;
+	harness.state.phase = 'idle';
+	harness.state.runtimeActionCooldownUntil = Date.now() + 60000;
+
+	await harness.actions.maybeAutoReconcileSelectionDrift(harness.state, driftStatus);
+
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [], 'auto reconcile does not run during runtime action cooldown');
 }
 
 async function testAutoReconcileThrottlesSuccessfulNoChange() {
@@ -1378,7 +1545,7 @@ async function testAutoReconcileThrottlesSuccessfulNoChange() {
 	await harness.actions.maybeAutoReconcileSelectionDrift(harness.state, driftStatus);
 	await harness.actions.maybeAutoReconcileSelectionDrift(harness.state, harness.state.currentLocalStatus);
 
-	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'reconnect' ] ], 'successful reconnect that leaves the same drift is throttled');
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn', 'connect' ] ], 'successful reconnect that leaves the same drift is throttled');
 	assert.equal(harness.state.lastAutoReconcileFailureKey, 'auto:AU:BM', 'unchanged success records the drift key');
 	assert.match(harness.notifications[harness.notifications.length - 1].message, /still out of sync/, 'unchanged success reports a readable sync error');
 }
@@ -1510,10 +1677,44 @@ async function testAutoReconcileThrottlesRepeatedFailures() {
 	await harness.actions.maybeAutoReconcileSelectionDrift(harness.state, driftStatus);
 	await harness.actions.maybeAutoReconcileSelectionDrift(harness.state, driftStatus);
 
-	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'reconnect' ] ], 'failed auto reconnect is throttled for the same drift');
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn', 'connect' ] ], 'failed auto reconnect is throttled for the same drift');
 	assert.match(harness.notifications[harness.notifications.length - 1].message, /Automatic runtime sync failed: reconnect exploded/, 'auto reconnect failure is reported once');
 	assert.equal(harness.notifications.length, 1, 'throttled auto reconcile does not repeat notifications');
 	assert.equal(harness.state.lastAutoReconcileFailureKey, 'auto:AU:BM', 'throttle records the drift key');
+}
+
+function testDiagnosticsHasAlertHonorsPrimaryFinding() {
+	const empty = managerData.emptyDiagnosticsSummary();
+
+	assert.equal(managerData.diagnosticsHasAlert(empty), false, 'empty diagnostics summary has no alert');
+	assert.equal(managerData.diagnosticsHasAlert({
+		primary_finding: { code: 'none', message: '', action: '' }
+	}), false, 'none primary finding has no alert');
+	assert.equal(managerData.diagnosticsHasAlert({
+		primary_finding: { code: 'runtime.no_handshake', message: 'x', action: 'y' }
+	}), true, 'actionable primary finding triggers alert');
+}
+
+function testParseDiagnosticsSummaryNormalizesPayload() {
+	const parsed = managerData.parseDiagnosticsSummary({
+		generated_at: 42,
+		primary_finding: { code: 'routing.blackhole_default_via_vpn', message: 'm', action: 'a' },
+		findings: [
+			{ code: 'runtime.no_handshake', message: 'hs', action: 'fix', severity: 'critical' }
+		],
+		status: { state: 'connected', connected: true },
+		health: { wireguard_connected: false },
+		connectivity: { routing_blackhole_risk: 'yes' },
+		caches: { last_error: '' }
+	});
+
+	assert.equal(parsed.generated_at, 42, 'parseDiagnosticsSummary keeps generated_at');
+	assert.equal(parsed.primary_finding.code, 'routing.blackhole_default_via_vpn', 'parseDiagnosticsSummary keeps primary code');
+	assert.equal(parsed.findings.length, 1, 'parseDiagnosticsSummary normalizes findings array');
+	assert.equal(parsed.findings[0].severity, 'critical', 'parseDiagnosticsSummary keeps finding severity');
+	assert.equal(parsed.connectivity.routing_blackhole_risk, 'yes', 'parseDiagnosticsSummary keeps connectivity block');
+	assert.equal(parsed.status && parsed.status.state, 'connected', 'parseDiagnosticsSummary keeps status block');
+	assert.equal(parsed.caches && parsed.caches.last_error, '', 'parseDiagnosticsSummary keeps caches block');
 }
 
 Promise.resolve().then(async function() {
@@ -1526,14 +1727,17 @@ Promise.resolve().then(async function() {
 	await testHandleSaveApplyRejectsManualModeWithoutCountry();
 	await testHandleSaveApplyRejectsManualModeWithoutCatalogServer();
 	await testHandleSaveApplyCancellationStopsRuntimeChange();
-	await testHandleSaveApplyTimesOutWhenUciAppliedEventIsMissing();
+	await testHandleSaveApplyTimesOutWhenPostSaveSyncNeverFinishes();
 	await testHandleSaveApplyClearsBusyStateWhenPostApplySyncFails();
 	await testHandleSaveApplyAutoModeClearsManualSelectionAndReconnects();
 	await testHandleSaveApplyReconcilesDisabledRuntimeAfterSave();
+	await testHandleSaveApplyQueuesReconnectWhenSavedCountryDriftsFromPeer();
 	await testAutoReconcileRunsForCountryDrift();
 	await testAutoReconcileThrottlesSuccessfulNoChange();
 	await testAutoReconcileSkipsNonDriftCases();
 	await testAutoReconcileThrottlesRepeatedFailures();
+	testDiagnosticsHasAlertHonorsPrimaryFinding();
+	testParseDiagnosticsSummaryNormalizesPayload();
 	console.log('test-manager-actions.js: ok');
 }).catch(function(err) {
 	console.error(err);

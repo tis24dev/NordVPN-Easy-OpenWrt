@@ -32,9 +32,6 @@ enable_hotplug
 hotplug_debounce_seconds
 kill_switch_enabled
 failure_retry_delay
-server_rotate_threshold
-interface_restart_threshold
-max_interface_restarts
 interface_restart_delay
 post_restart_delay
 config_schema_version
@@ -69,9 +66,6 @@ enable_hotplug ENABLE_HOTPLUG
 hotplug_debounce_seconds HOTPLUG_DEBOUNCE_SECONDS
 kill_switch_enabled KILL_SWITCH_ENABLED
 failure_retry_delay FAILURE_RETRY_DELAY
-server_rotate_threshold SERVER_ROTATE_THRESHOLD
-interface_restart_threshold INTERFACE_RESTART_THRESHOLD
-max_interface_restarts MAX_INTERFACE_RESTARTS
 interface_restart_delay INTERFACE_RESTART_DELAY
 post_restart_delay POST_RESTART_DELAY
 EOF
@@ -110,9 +104,6 @@ nordvpn_easy_default() {
 		hotplug_debounce_seconds) printf '%s\n' '30' ;;
 		kill_switch_enabled) printf '%s\n' '0' ;;
 		failure_retry_delay) printf '%s\n' '6' ;;
-		server_rotate_threshold) printf '%s\n' '5' ;;
-		interface_restart_threshold) printf '%s\n' '10' ;;
-		max_interface_restarts) printf '%s\n' '3' ;;
 		interface_restart_delay) printf '%s\n' '10' ;;
 		post_restart_delay) printf '%s\n' '60' ;;
 		config_schema_version) printf '%s\n' "$NORDVPN_EASY_SCHEMA_VERSION" ;;
@@ -135,7 +126,7 @@ nordvpn_easy_is_bool_option() {
 
 nordvpn_easy_is_uint_option() {
 	case "$1" in
-		server_cache_ttl|vpn_port|hotplug_debounce_seconds|failure_retry_delay|server_rotate_threshold|interface_restart_threshold|max_interface_restarts|interface_restart_delay|post_restart_delay)
+		server_cache_ttl|vpn_port|hotplug_debounce_seconds|failure_retry_delay|interface_restart_delay|post_restart_delay)
 			return 0
 			;;
 		*)

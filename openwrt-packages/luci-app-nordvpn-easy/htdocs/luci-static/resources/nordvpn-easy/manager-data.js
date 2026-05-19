@@ -122,6 +122,72 @@ function parseServerCatalog(raw) {
 	};
 }
 
+function emptyDiagnosticsSummary() {
+	return {
+		generated_at: 0,
+		primary_finding: {
+			code: 'none',
+			message: '',
+			action: ''
+		},
+		findings: [],
+		status: null,
+		health: {},
+		connectivity: {},
+		caches: {}
+	};
+}
+
+function parseDiagnosticsSummary(raw) {
+	const summary = (raw && typeof raw === 'object' && !Array.isArray(raw)) ?
+		raw :
+		parseJson(raw, emptyDiagnosticsSummary());
+
+	if (!summary || typeof summary !== 'object')
+		return emptyDiagnosticsSummary();
+
+	const primary = (summary.primary_finding && typeof summary.primary_finding === 'object') ?
+		summary.primary_finding :
+		emptyDiagnosticsSummary().primary_finding;
+
+	return {
+		generated_at: Number(summary.generated_at || 0),
+		primary_finding: {
+			code: String(primary.code || 'none'),
+			message: String(primary.message || ''),
+			action: String(primary.action || ''),
+			severity: String(primary.severity || 'none'),
+			priority: Number(primary.priority || 0)
+		},
+		findings: Array.isArray(summary.findings) ? summary.findings.map(function(finding) {
+			return {
+				code: String((finding && finding.code) || ''),
+				message: String((finding && finding.message) || ''),
+				action: String((finding && finding.action) || ''),
+				severity: String((finding && finding.severity) || 'warning')
+			};
+		}) : [],
+		status: (summary.status && typeof summary.status === 'object' && !Array.isArray(summary.status)) ?
+			summary.status :
+			null,
+		health: (summary.health && typeof summary.health === 'object') ? summary.health : {},
+		connectivity: (summary.connectivity && typeof summary.connectivity === 'object') ? summary.connectivity : {},
+		caches: (summary.caches && typeof summary.caches === 'object') ? summary.caches : {}
+	};
+}
+
+function diagnosticsHasAlert(summary) {
+	const code = String((summary && summary.primary_finding && summary.primary_finding.code) || 'none');
+
+	return code !== '' && code !== 'none';
+}
+
+function isDiagnosticsSummaryPayload(value) {
+	return !!value && typeof value === 'object' && !Array.isArray(value) &&
+		(Object.prototype.hasOwnProperty.call(value, 'generated_at') ||
+			(value.primary_finding && typeof value.primary_finding === 'object'));
+}
+
 function buildServerCatalogIndex(catalog) {
 	const index = {};
 
@@ -140,5 +206,9 @@ return baseclass.extend({
 	parseCountries: parseCountries,
 	parseLocalStatus: parseLocalStatus,
 	parseServerCatalog: parseServerCatalog,
-	buildServerCatalogIndex: buildServerCatalogIndex
+	buildServerCatalogIndex: buildServerCatalogIndex,
+	emptyDiagnosticsSummary: emptyDiagnosticsSummary,
+	parseDiagnosticsSummary: parseDiagnosticsSummary,
+	diagnosticsHasAlert: diagnosticsHasAlert,
+	isDiagnosticsSummaryPayload: isDiagnosticsSummaryPayload
 });

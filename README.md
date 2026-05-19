@@ -92,22 +92,22 @@ The runtime model is service-driven and one-shot based:
 
 - `/etc/config/nordvpn_easy` stores user configuration generated from the packaged template
 - `/etc/init.d/nordvpn-easy` manages setup and recurring hooks
-- `/usr/libexec/nordvpn-easy/core.sh` contains setup, check and rotation logic
+- `/usr/libexec/nordvpn-easy/core.sh` provisions the VPN through a single `provision` path
 - `cron` runs periodic checks
 - `hotplug` triggers checks when WAN or VPN interfaces change state
 
 There is no permanently running watchdog loop.
 
+**Connect, Reconnect, Setup, and Reconcile** always perform a clean reprovision: tear down any existing WireGuard UCI, fetch fresh NordLynx credentials and server data over the WAN, recreate `wg0`, then validate connectivity. Stale peer configuration is not reused.
+
 ## How checks work
 
 Each `check` execution is one-shot and does this:
 
-- ensures the VPN interface exists
-- ensures firewall membership is correct
-- verifies VPN connectivity
-- attempts recovery if the VPN is degraded but WAN is still working
-- rotates server after repeated failures
-- restarts the VPN interface or related services when necessary
+- pings the VPN interface
+- skips recovery when WAN is down
+- reprovisions the VPN when the runtime is degraded (for example no WireGuard handshake while the default route uses `wg0`)
+- waits briefly and reprovisions again if ping still fails while WAN is up
 
 This makes the project a service-managed maintenance job rather than a daemon
 that loops forever.
@@ -128,7 +128,7 @@ files and NordVPN Easy runtime/cache residues. Key settings include:
 - `wireguard_persistent_keepalive` (default `15`)
 - `wireguard_mtu` (empty means automatic)
 - `firewall_mtu_fix` (default `1`)
-- recovery thresholds and timing values
+- health-check timing values (`failure_retry_delay`, `post_restart_delay`, and related delays)
 
 Country filtering is supported. The backend resolves the requested country and
 then asks NordVPN for recommended WireGuard servers inside that country. City
@@ -137,8 +137,48 @@ selection is not implemented.
 ## WireGuard stability troubleshooting
 
 NordLynx uses WireGuard over UDP. For routers behind NAT, NordVPN Easy keeps the
-peer alive with `wireguard_persistent_keepalive=15` by default and repairs older
-peer configurations that miss the setting during setup/reconnect.
+peer alive with `wireguard_persistent_keepalive=15` by default on every provision.
+
+## Diagnostics
+
+Use **Services → NordVPN Easy → Diagnostics** for a structured assessment and
+full log export. The main NordVPN Easy page also shows an alert banner when a
+primary issue is detected (for example routing blackhole, missing handshake, or
+kill switch active without a tunnel).
+
+Common `probable_issue_code` values:
+
+| Code | Typical cause |
+|------|----------------|
+| `routing.blackhole_default_via_vpn` | Default route uses the VPN before WireGuard connects |
+| `runtime.no_handshake` | Peer configured but no recent handshake |
+| `operational.kill_switch_active` | Kill switch on while the tunnel is down |
+| `connectivity.wan_down` | WAN probe failed while VPN is enabled |
+| `runtime.endpoint_unreachable` | NordVPN endpoint host not reachable from WAN |
+
+Background `diagnostics_summary` polls from the main page and LuCI view refresh
+skip active WAN/DNS probes to avoid extra load. A full log download or manual
+assessment refresh runs the complete probe set (typically under a few seconds).
+
+Findings are ranked by severity: routing blackhole and WAN/DNS failures surface
+before handshake or configuration warnings. The summary JSON includes
+`primary_finding.severity`, `health.degraded_since`, and
+`connectivity.vpn_endpoint_reachable` (UDP endpoint probe via WAN when active
+probes are enabled).
+
+When the VPN transitions to **degraded** during a cron or health-check run, the
+service logs `probable_issue_code` to syslog (`logread -e nordvpn-easy`). Example:
+
+```text
+healthcheck: VPN state degraded: probable_issue_code=runtime.no_handshake severity=critical
+healthcheck: VPN state recovered: was probable_issue_code=runtime.no_handshake for 120s; now state=connected
+```
+
+A short rolling history is kept at `/tmp/run/nordvpn-easy/diagnostics_history.log`.
+
+The VPN health-check clears a **routing blackhole** automatically: if the default
+route points at the VPN interface without a WireGuard handshake, it runs `ifdown`
+on the tunnel before attempting API or server-list recovery.
 
 If long-lived streams or downloads drop after roughly 30 seconds while OpenVPN is
 stable, check diagnostics first. Common causes are an aggressive upstream NAT,

@@ -13,6 +13,7 @@ COMMON_LIB="${LIB_DIR}/common.sh"
 CATALOG_LIB="${LIB_DIR}/catalog.sh"
 RUNTIME_LIB="${LIB_DIR}/runtime.sh"
 WIREGUARD_LIB="${LIB_DIR}/wireguard.sh"
+DIAGNOSTICS_LIB="${LIB_DIR}/diagnostics.sh"
 ACTIONS_LIB="${LIB_DIR}/actions.sh"
 
 # shellcheck disable=SC1090
@@ -27,6 +28,8 @@ ACTIONS_LIB="${LIB_DIR}/actions.sh"
 . "$RUNTIME_LIB" || exit 1
 # shellcheck disable=SC1090
 . "$WIREGUARD_LIB" || exit 1
+# shellcheck disable=SC1090
+. "$DIAGNOSTICS_LIB" || exit 1
 # shellcheck disable=SC1090
 . "$ACTIONS_LIB" || exit 1
 
@@ -86,11 +89,12 @@ curl_rc_meaning () {
 
 usage () {
   cat <<EOF
-Usage: $0 [check|reconnect|reconcile|setup|rotate|refresh_countries|refresh_countries_force|server_catalog|public_ip|public_country|operation_status|vpn_status|status_json|diagnostics_log|run|help] [--config config_file] [extra_args]
+Usage: $0 [check|stop_vpn|reconnect|reconcile|setup|rotate|refresh_countries|refresh_countries_force|server_catalog|public_ip|public_country|operation_status|vpn_status|status_json|diagnostics_log|diagnostics_summary|run|help] [--config config_file] [extra_args]
 
 Commands:
   check   Run one VPN health-check cycle (default)
-  reconnect  Close the VPN interface, synchronize server selection, then bring it back up
+  stop_vpn  Stop the VPN interface, clear server caches, and remove WireGuard runtime config
+  reconnect  Compatibility alias for stop_vpn followed by setup (prefer stop_vpn + connect)
   reconcile  Synchronize runtime state with the selected server configuration
   setup   Configure the WireGuard interface and firewall if needed
   rotate  Download a fresh server list and switch server
@@ -104,6 +108,7 @@ Commands:
   vpn_status  Print VPN runtime status (active|inactive|starting|stopping|error)
   status_json  Print runtime status as JSON
   diagnostics_log  Print filtered NordVPN Easy log output
+  diagnostics_summary  Print structured diagnostics summary as JSON
   run     Backward-compatible alias for check
   help    Show this message
 
@@ -214,18 +219,6 @@ vpn_link_is_present () {
 
 log_vpn_interface_state () {
   nordvpn_easy_log_vpn_interface_state "$@"
-}
-
-recover_missing_vpn_interface () {
-  nordvpn_easy_recover_missing_vpn_interface "$@"
-}
-
-ensure_vpn_interface_present () {
-  nordvpn_easy_ensure_vpn_interface_present "$@"
-}
-
-ensure_vpn_interface_enabled () {
-  nordvpn_easy_ensure_vpn_interface_enabled "$@"
 }
 
 pick_ping_ip () {
@@ -708,6 +701,14 @@ resolve_country_filter () {
       ((.name // "" | ascii_downcase) == ($query | ascii_downcase))
     ) ][0] | [.id, .name, .code] | @tsv
   ' "$COUNTRIES_CACHE_FILE" 2>/dev/null) || {
+    if valid_country_code "$COUNTRY_QUERY"; then
+      RESOLVED_COUNTRY_ID=''
+      RESOLVED_COUNTRY_NAME='unknown in NordVPN country cache'
+      RESOLVED_COUNTRY_CODE=$(printf '%s' "$COUNTRY_QUERY" | tr '[:lower:]' '[:upper:]')
+      RESOLVED_COUNTRY_QUERY="$COUNTRY_QUERY"
+      log "WARNING: COUNTRY '$RESOLVED_COUNTRY_CODE' is not in the NordVPN country cache; recommendations will be filtered by country code instead of API country id"
+      return 0
+    fi
     log "ERROR: COUNTRY '$COUNTRY_QUERY' NOT FOUND"
     return 1
   }
@@ -797,6 +798,11 @@ fetch_server_catalog () {
   }
 
   resolve_country_filter "$COUNTRY_QUERY" || return 1
+
+  if [ -z "$RESOLVED_COUNTRY_ID" ]; then
+    log "WARNING: cannot refresh server catalog without API country id for ${RESOLVED_COUNTRY_CODE:-$COUNTRY_QUERY}"
+    return 1
+  fi
 
   if [ "$FORCE_REFRESH" -ne 1 ] && server_catalog_cache_is_fresh "$RESOLVED_COUNTRY_ID"; then
     log "Using cached NordVPN server catalog from $SERVER_CATALOG_FILE for $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
@@ -889,10 +895,6 @@ find_preferred_server_in_catalog () {
   nordvpn_easy_find_preferred_server_in_catalog "$@"
 }
 
-preferred_server_matches_current () {
-  nordvpn_easy_preferred_server_matches_current "$@"
-}
-
 apply_preferred_server_from_catalog () {
   nordvpn_easy_apply_preferred_server_from_catalog "$@"
 }
@@ -929,44 +931,16 @@ set_first_server_from_list () {
   nordvpn_easy_set_first_server_from_list "$@"
 }
 
-current_server_matches_recommendations () {
-  nordvpn_easy_current_server_matches_recommendations "$@"
-}
-
-apply_server_change_runtime () {
-  nordvpn_easy_apply_server_change_runtime "$@"
-}
-
-change_to_preferred_server () {
-  nordvpn_easy_change_to_preferred_server "$@"
-}
-
-sync_server_selection () {
-  nordvpn_easy_sync_server_selection "$@"
-}
-
 reconcile_action () {
   nordvpn_easy_reconcile_action "$@"
 }
 
-clean_reconnect_action () {
-  nordvpn_easy_clean_reconnect_action "$@"
-}
-
-change_vpn_server () {
-  nordvpn_easy_change_vpn_server "$@"
-}
-
-change_manual_server () {
-  nordvpn_easy_change_manual_server "$@"
+provision_vpn () {
+  nordvpn_easy_provision_vpn "$@"
 }
 
 configure_vpn_interface () {
   nordvpn_easy_configure_vpn_interface "$@"
-}
-
-bootstrap_if_needed () {
-  nordvpn_easy_bootstrap_if_needed "$@"
 }
 
 rotate_action () {
@@ -983,7 +957,7 @@ ACTION_STARTED_AT=''
 
 if [ $# -gt 0 ]; then
   case "$1" in
-    check|reconnect|reconcile|setup|rotate|refresh_countries|refresh_countries_force|server_catalog|public_ip|public_country|operation_status|vpn_status|status_json|diagnostics_log|run|help)
+    check|stop_vpn|reconnect|reconcile|setup|rotate|refresh_countries|refresh_countries_force|server_catalog|public_ip|public_country|operation_status|vpn_status|status_json|diagnostics_log|diagnostics_summary|run|help)
       ACTION="$1"
       shift
       ;;
@@ -1017,7 +991,7 @@ if [ -z "$CONFIG_PATH" ] && [ -n "${NORDVPN_CONFIG_FILE:-}" ]; then
 fi
 
 case "$ACTION:${1:-}" in
-  status_json:*|operation_status:*|vpn_status:*|diagnostics_log:*|public_ip:quiet|public_country:quiet)
+  status_json:*|operation_status:*|vpn_status:*|diagnostics_log:*|diagnostics_summary:*|public_ip:quiet|public_country:quiet)
     CORE_QUIET_ACTION=1
     ;;
 esac
@@ -1110,7 +1084,18 @@ fi
 if [ "$ACTION" = 'diagnostics_log' ]; then
   LOG_PHASE='service'
   [ "$CORE_QUIET_ACTION" -eq 1 ] || log 'diagnostics log export requested'
+  NORDVPN_EASY_DIAGNOSTICS_ACTIVE_PROBES=0
   nordvpn_easy_export_diagnostics_log 'nordvpn-easy'
+  exit $?
+fi
+
+if [ "$ACTION" = 'diagnostics_summary' ]; then
+  LOG_PHASE='service'
+  [ "$CORE_QUIET_ACTION" -eq 1 ] || log 'diagnostics summary requested'
+  if [ "$CORE_QUIET_ACTION" -eq 1 ]; then
+    NORDVPN_EASY_DIAGNOSTICS_ACTIVE_PROBES=0
+  fi
+  nordvpn_easy_emit_diagnostics_summary_json "$VPN_IF"
   exit $?
 fi
 
@@ -1150,7 +1135,7 @@ ACTION_RC=0
 
 case "$ACTION" in
   run|check)
-    bootstrap_if_needed && check_once
+    check_once
     ACTION_RC=$?
     ;;
   reconcile)
@@ -1158,14 +1143,22 @@ case "$ACTION" in
     reconcile_action
     ACTION_RC=$?
     ;;
+  stop_vpn)
+    validate_setup_runtime &&
+    nordvpn_easy_stop_vpn_for_server_change
+    ACTION_RC=$?
+    ;;
   reconnect)
     validate_setup_runtime &&
-    clean_reconnect_action
+    nordvpn_easy_stop_vpn_for_server_change &&
+    provision_vpn connect_fresh &&
+    log 'NordVPN reconnect completed (stop_vpn + connect_fresh)'
     ACTION_RC=$?
     ;;
   setup)
     validate_setup_runtime &&
-    bootstrap_if_needed && sync_server_selection && { [ "$PUBLIC_COUNTRY_VERIFIED" -eq 1 ] || verify_public_country_selection; } && log 'NordVPN configuration is ready'
+    provision_vpn connect_fresh &&
+    log 'NordVPN configuration is ready'
     ACTION_RC=$?
     ;;
   rotate)

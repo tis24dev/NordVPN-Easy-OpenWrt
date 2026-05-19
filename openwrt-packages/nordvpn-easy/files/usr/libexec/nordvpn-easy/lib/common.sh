@@ -474,134 +474,6 @@ nordvpn_easy_diagnostics_peer_section_name() {
 	nordvpn_easy_wireguard_peer_section_name "$vpn_if"
 }
 
-nordvpn_easy_print_diagnostics_health_summary() {
-	local vpn_if="${1:-${VPN_IF:-wg0}}"
-	local vpn_proto='unknown'
-	local interface_disabled='unknown'
-	local private_key_state='unknown'
-	local peer_section=''
-	local peer_section_found='no'
-	local peer_sections='none'
-	local link_present='unknown'
-	local routes_via_vpn='unknown'
-	local wg_peer_count='unknown'
-	local missing_interface=''
-	local missing_required=''
-	local server_selection_drift='none'
-	local selection_mode=''
-	local selected_country=''
-	local current_server_country=''
-	local preferred_station=''
-	local current_station=''
-	local probable_issue='none detected'
-	local value=''
-
-	nordvpn_easy_diagnostics_section 'Health summary'
-
-	if command -v uci >/dev/null 2>&1; then
-		vpn_proto="$(uci -q get "network.${vpn_if}.proto" 2>/dev/null || printf '%s' 'absent')"
-		interface_disabled="$(uci -q get "network.${vpn_if}.disabled" 2>/dev/null || printf '%s' '0')"
-		if uci -q get "network.${vpn_if}.private_key" >/dev/null 2>&1; then
-			private_key_state='present'
-		else
-			private_key_state='missing'
-		fi
-
-		if [ "$vpn_proto" = 'wireguard' ]; then
-			for value in private_key addresses peerdns delegate force_link; do
-				if ! uci -q get "network.${vpn_if}.${value}" >/dev/null 2>&1; then
-					missing_interface="$(nordvpn_easy_diagnostics_csv_append "$missing_interface" "$value")"
-				fi
-			done
-		fi
-
-		peer_sections="$(
-			uci show network 2>/dev/null | awk -F '[.=]' '
-				$1 == "network" && $3 ~ /^wireguard_/ {
-					if (out != "")
-						out = out "," $2
-					else
-						out = $2
-				}
-				END { print out }
-			'
-		)"
-		[ -n "$peer_sections" ] || peer_sections='none'
-
-		peer_section="$(nordvpn_easy_diagnostics_peer_section_name "$vpn_if" 2>/dev/null || true)"
-		if [ -n "$peer_section" ]; then
-			peer_section_found='yes'
-			for value in endpoint_host public_key allowed_ips route_allowed_ips; do
-				if ! uci -q get "network.${peer_section}.${value}" >/dev/null 2>&1; then
-					missing_required="$(nordvpn_easy_diagnostics_csv_append "$missing_required" "$value")"
-				fi
-			done
-			current_server_country="$(uci -q get "network.${peer_section}.nordvpn_country_code" 2>/dev/null | tr '[:lower:]' '[:upper:]' || true)"
-			current_station="$(uci -q get "network.${peer_section}.nordvpn_station" 2>/dev/null || true)"
-		else
-			missing_required='peer_section'
-		fi
-
-		selection_mode="$(uci -q get 'nordvpn_easy.main.server_selection_mode' 2>/dev/null || printf '%s' 'auto')"
-		selected_country="$(uci -q get 'nordvpn_easy.main.vpn_country' 2>/dev/null | tr '[:lower:]' '[:upper:]' || true)"
-		preferred_station="$(uci -q get 'nordvpn_easy.main.preferred_server_station' 2>/dev/null || true)"
-	else
-		missing_required='uci_command'
-	fi
-
-	if command -v ip >/dev/null 2>&1; then
-		if ip link show dev "$vpn_if" >/dev/null 2>&1; then
-			link_present='yes'
-		else
-			link_present='no'
-		fi
-		routes_via_vpn="$(ip route show dev "$vpn_if" 2>/dev/null | awk 'END { print NR + 0 }')"
-	fi
-
-	if command -v wg >/dev/null 2>&1; then
-		wg_peer_count="$(wg show "$vpn_if" peers 2>/dev/null | awk 'NF { count++ } END { print count + 0 }')"
-	fi
-
-	if [ "$selection_mode" = 'manual' ]; then
-		if [ -n "$preferred_station" ] && [ -n "$current_station" ] && [ "$preferred_station" != "$current_station" ]; then
-			server_selection_drift="manual preferred server drift (preferred_station=${preferred_station}, current_station=${current_station})"
-		fi
-	elif [ -n "$selected_country" ] && [ -n "$current_server_country" ] && [ "$selected_country" != "$current_server_country" ]; then
-		server_selection_drift="country drift (selected_country=${selected_country}, current_server_country=${current_server_country}, current_station=${current_station:-unknown})"
-	fi
-
-	if [ "$vpn_proto" = 'wireguard' ] && [ -n "$missing_interface" ]; then
-		probable_issue="wireguard interface is incomplete (${missing_interface})"
-	elif [ "$vpn_proto" = 'wireguard' ] && [ "$peer_section_found" != 'yes' ]; then
-		probable_issue='wireguard interface exists but peer section is missing'
-	elif [ "$vpn_proto" = 'wireguard' ] && [ -n "$missing_required" ]; then
-		probable_issue="wireguard peer section is incomplete (${missing_required})"
-	elif [ "$vpn_proto" != 'wireguard' ]; then
-		probable_issue='wireguard interface is not configured'
-	elif [ "$link_present" = 'no' ]; then
-		probable_issue='wireguard link is not present'
-	elif [ "$wg_peer_count" = '0' ]; then
-		probable_issue='wireguard runtime has no peers'
-	elif [ "$server_selection_drift" != 'none' ]; then
-		probable_issue="$server_selection_drift"
-	fi
-
-	printf 'vpn_proto=%s\n' "$vpn_proto"
-	printf 'interface_disabled=%s\n' "$interface_disabled"
-	printf 'private_key=%s\n' "$private_key_state"
-	printf 'required_interface_keys_missing=%s\n' "${missing_interface:-none}"
-	printf 'convention_peer_section=%sserver\n' "$vpn_if"
-	printf 'peer_section_found=%s\n' "$peer_section_found"
-	printf 'peer_section=%s\n' "${peer_section:-none}"
-	printf 'wireguard_peer_sections=%s\n' "$peer_sections"
-	printf 'required_peer_keys_missing=%s\n' "${missing_required:-none}"
-	printf 'link_present=%s\n' "$link_present"
-	printf 'wg_peer_count=%s\n' "$wg_peer_count"
-	printf 'routes_via_%s=%s\n' "$vpn_if" "$routes_via_vpn"
-	printf 'server_selection_drift=%s\n' "$server_selection_drift"
-	printf 'probable_issue=%s\n' "$probable_issue"
-}
-
 nordvpn_easy_export_diagnostics_log() {
 	local service_name="${1:-nordvpn-easy}"
 	local temp_dir=''
@@ -628,7 +500,14 @@ nordvpn_easy_export_diagnostics_log() {
 		nordvpn_easy_print_sanitized_command 'Runtime status JSON' nordvpn_easy_emit_status_json
 	fi
 
-	nordvpn_easy_print_diagnostics_health_summary "$vpn_if" | nordvpn_easy_sanitize_diagnostics_stream
+	if command -v nordvpn_easy_diagnostics_print_health_summary >/dev/null 2>&1; then
+		nordvpn_easy_diagnostics_print_health_summary "$vpn_if" | nordvpn_easy_sanitize_diagnostics_stream
+		nordvpn_easy_diagnostics_print_connectivity_assessment "$vpn_if" | nordvpn_easy_sanitize_diagnostics_stream
+		nordvpn_easy_diagnostics_print_runtime_caches "$vpn_if" | nordvpn_easy_sanitize_diagnostics_stream
+	else
+		nordvpn_easy_diagnostics_section 'Health summary'
+		printf '%s\n' 'diagnostics module not loaded'
+	fi
 
 	if command -v wg >/dev/null 2>&1; then
 		nordvpn_easy_print_sanitized_command 'WireGuard status' wg show "$vpn_if"

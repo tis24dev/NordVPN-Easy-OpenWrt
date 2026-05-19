@@ -156,6 +156,7 @@ nordvpn_easy_ping_interface() {
 }
 
 VPN_IF='wg0'
+WAN_IF='wan'
 VPN_PORT='51820'
 WIREGUARD_PERSISTENT_KEEPALIVE='15'
 WIREGUARD_MTU=''
@@ -224,26 +225,81 @@ WIREGUARD_MTU=''
 nordvpn_easy_apply_wireguard_transport_settings 'wg0server'
 assert_eq '' "$UCI_MTU" 'transport repair removes MTU when automatic is selected'
 
-UCI_PRIVATE_KEY='PRIVATE'
-UCI_ADDRESSES=''
-UCI_PEERDNS=''
-UCI_DNS='1.1.1.1'
-UCI_DELEGATE=''
-UCI_FORCE_LINK=''
-NORDVPN_EASY_UCI_CHANGED=0
+IFDOWN_COUNT=0
+UCI_DELETE_COUNT=0
+NETWORK_RELOAD_COUNT=0
+ifdown() { IFDOWN_COUNT=$((IFDOWN_COUNT + 1)); }
+nordvpn_easy_vpn_link_is_present() { return 0; }
+nordvpn_easy_log_vpn_interface_state() { :; }
+uci() {
+	case "$1" in
+		show)
+			if [ "$2" = 'network' ]; then
+				printf '%s\n' 'network.wg0server=wireguard_wg0' 'network.legacy_peer=wireguard_wg0'
+				return 0
+			fi
+			;;
+		-q)
+			shift
+			case "$1" in
+				delete)
+					UCI_DELETE_COUNT=$((UCI_DELETE_COUNT + 1))
+					return 0
+					;;
+				commit)
+					return 0
+					;;
+				get)
+					case "$2" in
+						network.wan.metric) return 1 ;;
+					esac
+					return 1
+					;;
+			esac
+			;;
+	esac
+	return 0
+}
+NETWORK_RELOAD_COUNT_FILE="$TMP_DIR/network-reload-count"
+mkdir -p "$TMP_DIR/mock-bin/etc/init.d"
+cat > "$TMP_DIR/mock-bin/etc/init.d/network" <<EOF
+#!/bin/sh
+case "\$1" in
+	reload)
+		count="\$(cat "$NETWORK_RELOAD_COUNT_FILE" 2>/dev/null || printf '%s' '0')"
+		printf '%s\n' "\$((count + 1))" > "$NETWORK_RELOAD_COUNT_FILE"
+		exit 0
+		;;
+esac
+exit 1
+EOF
+chmod +x "$TMP_DIR/mock-bin/etc/init.d/network"
+NORDVPN_EASY_NETWORK_INIT="$TMP_DIR/mock-bin/etc/init.d/network"
 
-nordvpn_easy_repair_wireguard_interface_base_settings
+nordvpn_easy_teardown_vpn
 
-assert_eq '1' "$NORDVPN_EASY_UCI_CHANGED" 'base interface repair reports changed UCI'
-assert_eq 'wireguard' "$UCI_PROTO" 'base interface repair preserves WireGuard proto'
-assert_eq '10.5.0.2/32' "$UCI_ADDRESSES" 'base interface repair restores configured address'
-assert_eq '0' "$UCI_PEERDNS" 'base interface repair disables peer DNS when NordVPN DNS is configured'
-assert_eq '103.86.99.99 103.86.96.96' "$UCI_DNS" 'base interface repair replaces stale DNS list'
-assert_eq '0' "$UCI_DELEGATE" 'base interface repair disables IPv6 delegation'
-assert_eq '1' "$UCI_FORCE_LINK" 'base interface repair forces link creation'
+assert_eq '1' "$IFDOWN_COUNT" 'teardown runs ifdown when the VPN link is present'
+assert_eq '4' "$UCI_DELETE_COUNT" 'teardown removes the interface and all wireguard peer sections'
+assert_eq '1' "$(cat "$NETWORK_RELOAD_COUNT_FILE")" 'teardown reloads network after UCI cleanup'
 
-nordvpn_easy_repair_wireguard_interface_base_settings
+wg() {
+	case "$1 $2 $3" in
+		'show wg0 latest-handshakes')
+			printf '%s\n' 'peerpub 0'
+			;;
+		*) return 1 ;;
+	esac
+}
+ip() {
+	case "$*" in
+		'-4 route show default') printf '%s\n' 'default dev wg0 proto static scope link' ;;
+		*) return 0 ;;
+	esac
+}
 
-assert_eq '0' "$NORDVPN_EASY_UCI_CHANGED" 'base interface repair is idempotent once settings match'
+if ! nordvpn_easy_runtime_needs_provision wg0; then
+	printf '%s\n' 'FAIL: runtime without handshake should require provisioning' >&2
+	exit 1
+fi
 
 printf '%s\n' 'test-wireguard.sh: ok'

@@ -4,6 +4,10 @@
 		"order": 70,
 		"action": {
 			"type": "firstchild"
+		},
+		"depends": {
+			"acl": [ "luci-app-nordvpn-easy" ],
+			"uci": { "nordvpn_easy": true }
 		}
 	},
 	"admin/services/nordvpn-easy/setup": {

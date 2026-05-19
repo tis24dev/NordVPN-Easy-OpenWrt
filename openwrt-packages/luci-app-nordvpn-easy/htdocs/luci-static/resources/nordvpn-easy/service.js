@@ -1,95 +1,146 @@
 'use strict';
-/* global baseclass, rpc, ui, document, window, Blob, E, _ */
+/* global baseclass, rpc, ui, document, window, Blob, E, _, L */
 'require baseclass';
 'require rpc';
 'require ui';
 
+// reconnect/reconcile often exceed LuCI default (20s) and stock rpcd (30s).
+const RUNTIME_RPC_TIMEOUT = 120;
+const DIAGNOSTICS_RPC_TIMEOUT = 180;
+// OpenWrt 24 LuCI rpc.js ignores rpc.declare({ timeout }) and uses L.env.rpctimeout only.
+const LUCI_RPC_TIMEOUT_SEC = 180;
+
+function ensureLuCiRpcTimeout(minSeconds) {
+	const min = Number(minSeconds) || LUCI_RPC_TIMEOUT_SEC;
+
+	if (typeof L === 'undefined' || !L.env)
+		return min;
+
+	const current = Number(L.env.rpctimeout) || 20;
+
+	if (current < min)
+		L.env.rpctimeout = min;
+
+	return Number(L.env.rpctimeout) || min;
+}
+
+ensureLuCiRpcTimeout(LUCI_RPC_TIMEOUT_SEC);
+
 const callStatus = rpc.declare({
 	object: 'nordvpn.easy',
-	method: 'status'
+	method: 'status',
+	timeout: 45
 });
 
 const callConnect = rpc.declare({
 	object: 'nordvpn.easy',
-	method: 'connect'
+	method: 'connect',
+	timeout: RUNTIME_RPC_TIMEOUT
 });
 
 const callDisconnect = rpc.declare({
 	object: 'nordvpn.easy',
-	method: 'disconnect'
+	method: 'disconnect',
+	timeout: RUNTIME_RPC_TIMEOUT
 });
 
 const callReconnect = rpc.declare({
 	object: 'nordvpn.easy',
-	method: 'reconnect'
+	method: 'reconnect',
+	timeout: RUNTIME_RPC_TIMEOUT
+});
+
+const callStopVpn = rpc.declare({
+	object: 'nordvpn.easy',
+	method: 'stop_vpn',
+	timeout: RUNTIME_RPC_TIMEOUT
 });
 
 const callReconcile = rpc.declare({
 	object: 'nordvpn.easy',
-	method: 'reconcile'
+	method: 'reconcile',
+	timeout: RUNTIME_RPC_TIMEOUT
 });
 
 const callRotate = rpc.declare({
 	object: 'nordvpn.easy',
-	method: 'rotate'
+	method: 'rotate',
+	timeout: RUNTIME_RPC_TIMEOUT
 });
 
 const callSetup = rpc.declare({
 	object: 'nordvpn.easy',
-	method: 'setup'
+	method: 'setup',
+	timeout: RUNTIME_RPC_TIMEOUT
 });
 
 const callCheck = rpc.declare({
 	object: 'nordvpn.easy',
-	method: 'check'
+	method: 'check',
+	timeout: RUNTIME_RPC_TIMEOUT
 });
 
 const callInstallHooks = rpc.declare({
 	object: 'nordvpn.easy',
-	method: 'install_hooks'
+	method: 'install_hooks',
+	timeout: RUNTIME_RPC_TIMEOUT
 });
 
 const callRemoveHooks = rpc.declare({
 	object: 'nordvpn.easy',
-	method: 'remove_hooks'
+	method: 'remove_hooks',
+	timeout: RUNTIME_RPC_TIMEOUT
 });
 
 const callDisableRuntime = rpc.declare({
 	object: 'nordvpn.easy',
-	method: 'disable_runtime'
+	method: 'disable_runtime',
+	timeout: RUNTIME_RPC_TIMEOUT
 });
 
 const callPublicIp = rpc.declare({
 	object: 'nordvpn.easy',
-	method: 'public_ip'
+	method: 'public_ip',
+	timeout: 45
 });
 
 const callPublicCountry = rpc.declare({
 	object: 'nordvpn.easy',
-	method: 'public_country'
+	method: 'public_country',
+	timeout: 45
 });
 
 const callDiagnostics = rpc.declare({
 	object: 'nordvpn.easy',
-	method: 'diagnostics'
+	method: 'diagnostics',
+	timeout: DIAGNOSTICS_RPC_TIMEOUT
+});
+
+const callDiagnosticsSummary = rpc.declare({
+	object: 'nordvpn.easy',
+	method: 'diagnostics_summary',
+	timeout: DIAGNOSTICS_RPC_TIMEOUT
 });
 
 const callRefreshCountries = rpc.declare({
 	object: 'nordvpn.easy',
 	method: 'refresh_countries',
-	params: [ 'force' ]
+	params: [ 'force' ],
+	timeout: 90
 });
 
 const callServerCatalog = rpc.declare({
 	object: 'nordvpn.easy',
 	method: 'server_catalog',
-	params: [ 'country', 'force' ]
+	params: [ 'country', 'force' ],
+	timeout: 90
 });
 
 const callRefreshServers = rpc.declare({
 	object: 'nordvpn.easy',
 	method: 'refresh_servers',
-	params: [ 'country', 'force' ]
+	params: [ 'country', 'force' ],
+	timeout: 90
 });
 
 function rpcErrorMessage(err) {
@@ -167,7 +218,11 @@ function normalizeExecResult(action, payload) {
 		stdout = String(payload.stdout);
 	else if (payload.log != null)
 		stdout = String(payload.log);
-	else if (payload.code == null && payload.success == null)
+	else if (action === 'diagnostics_log' && payload.message != null && !payload.stderr)
+		stdout = String(payload.message);
+	else if (payload.stdout == null && payload.log == null &&
+		(payload.code == null && payload.success == null || payload.success === false ||
+			Object.prototype.hasOwnProperty.call(payload, 'generated_at')))
 		stdout = JSON.stringify(payload);
 
 	if (payload.stderr != null)
@@ -204,6 +259,8 @@ function callSimpleAction(action) {
 		return callDisconnect();
 	case 'reconnect':
 		return callReconnect();
+	case 'stop_vpn':
+		return callStopVpn();
 	case 'reconcile':
 		return callReconcile();
 	case 'rotate':
@@ -249,6 +306,9 @@ function execService(action, extraArgs) {
 		break;
 	case 'diagnostics_log':
 		request = callDiagnostics();
+		break;
+	case 'diagnostics_summary':
+		request = callDiagnosticsSummary();
 		break;
 	default:
 		request = callSimpleAction(action);
@@ -349,6 +409,8 @@ function downloadTextFile(name, content) {
 }
 
 return baseclass.extend({
+	LUCI_RPC_TIMEOUT_SEC: LUCI_RPC_TIMEOUT_SEC,
+	ensureLuCiRpcTimeout: ensureLuCiRpcTimeout,
 	parseJson: parseJson,
 	parseExecJsonResponse: parseExecJsonResponse,
 	responseMessage: responseMessage,

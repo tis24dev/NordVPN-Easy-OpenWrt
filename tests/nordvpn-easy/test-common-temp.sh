@@ -4,8 +4,11 @@ set -eu
 
 ROOT_DIR="$(CDPATH='' cd -- "$(dirname "$0")/../.." && pwd)"
 COMMON_LIB="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/common.sh"
+RUNTIME_LIB="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/runtime.sh"
 WIREGUARD_LIB="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/wireguard.sh"
+DIAGNOSTICS_LIB="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/diagnostics.sh"
 ORIG_PATH="${PATH:-}"
+HANDSHAKE_EPOCH="$(date +%s)"
 
 cleanup() {
 	PATH="$ORIG_PATH"
@@ -16,7 +19,22 @@ trap cleanup EXIT HUP INT TERM
 # shellcheck disable=SC1090
 . "$COMMON_LIB"
 # shellcheck disable=SC1090
+. "$RUNTIME_LIB"
+# shellcheck disable=SC1090
 . "$WIREGUARD_LIB"
+# shellcheck disable=SC1090
+. "$DIAGNOSTICS_LIB"
+
+pick_ping_ip() {
+	printf '%s\n' '1.1.1.1'
+}
+
+nordvpn_easy_resolve_wan_device() {
+	WAN_DEVICE='eth0'
+	return 0
+}
+
+NORDVPN_EASY_DIAGNOSTICS_ACTIVE_PROBES='0'
 
 assert_eq() {
 	expected="$1"
@@ -119,6 +137,12 @@ nordvpn_easy_find_firewall_zone_section() {
 }
 
 wg() {
+	if [ "$1" = 'show' ] && [ "$2" = 'wg0' ] && [ "${3:-}" = 'dump' ]; then
+		printf '%b\n' \
+			'private\tpublic\t51820\t' \
+			"peer-public-key\tpsk\tit12.nordvpn.com:51820\t10.5.0.2/32\t${HANDSHAKE_EPOCH}\t2048\t4096\t15"
+		return 0
+	fi
 	if [ "$1" = 'show' ] && [ "$2" = 'wg0' ] && [ "${3:-}" = 'peers' ]; then
 		printf '%s\n' 'peer-public-key'
 		return 0
@@ -168,6 +192,15 @@ uci() {
 		'get network.wg0server.route_allowed_ips')
 			printf '%s\n' '1'
 			;;
+		'get nordvpn_easy.main.server_selection_mode')
+			printf '%s\n' 'auto'
+			;;
+		'get nordvpn_easy.main.enabled')
+			printf '%s\n' '1'
+			;;
+		'get nordvpn_easy.main.wan_if')
+			printf '%s\n' 'wan'
+			;;
 		'show network')
 			printf "%s\n" "network.wg0server=wireguard_wg0"
 			;;
@@ -192,7 +225,20 @@ uci() {
 }
 
 ip() {
-	printf '%s\n' "$*"
+	case "$*" in
+		'link show dev wg0')
+			return 0
+			;;
+		'route show dev wg0')
+			printf '%s\n' '10.5.0.2/32 proto kernel scope link src 10.5.0.2'
+			;;
+		'route show default')
+			printf '%s\n' 'default dev eth0 proto static'
+			;;
+		*)
+			printf '%s\n' "$*"
+			;;
+	esac
 }
 
 logread() {
@@ -229,7 +275,10 @@ assert_diagnostics_contains 'convention_peer_section=wg0server' 'FAIL: diagnosti
 assert_diagnostics_contains 'peer_section_found=yes' 'FAIL: diagnostics export should include a useful health summary'
 assert_diagnostics_contains 'required_interface_keys_missing=none' 'FAIL: diagnostics export should include a useful health summary'
 assert_diagnostics_contains 'required_peer_keys_missing=none' 'FAIL: diagnostics export should include a useful health summary'
-assert_diagnostics_contains 'probable_issue=none detected' 'FAIL: diagnostics export should include a useful health summary'
+assert_diagnostics_contains 'probable_issue_code=none' 'FAIL: diagnostics export should include probable issue code'
+assert_diagnostics_contains 'Connectivity assessment' 'FAIL: diagnostics export should include connectivity assessment'
+assert_diagnostics_contains 'Runtime caches & locks' 'FAIL: diagnostics export should include runtime caches section'
+assert_diagnostics_contains 'wireguard_connected=yes' 'FAIL: diagnostics export should report wireguard connected on healthy fixture'
 
 case "$DIAGNOSTICS_OUTPUT" in
 	*token-secret*|*private-secret*)
