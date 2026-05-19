@@ -16,6 +16,13 @@ nordvpn_easy_require_core_action_helpers() {
 	done
 }
 
+nordvpn_easy_try_clear_routing_blackhole_before_api() {
+	local phase="${1:-runtime}"
+
+	command -v nordvpn_easy_try_clear_routing_blackhole >/dev/null 2>&1 || return 0
+	nordvpn_easy_try_clear_routing_blackhole "${VPN_IF:-wg0}" "$phase" || true
+}
+
 nordvpn_easy_find_server_in_catalog() {
 	local target_hostname="${1:-}"
 	local target_station="${2:-}"
@@ -312,6 +319,7 @@ nordvpn_easy_get_servers_list() {
 	local curl_error=''
 	local failure_reason=''
 	SERVER_RECOMMENDATIONS_URL=$(nordvpn_easy_build_server_recommendations_url) || return 1
+	nordvpn_easy_try_clear_routing_blackhole_before_api 'server-list'
 
 	nordvpn_easy_mktemp_dir 'server-list' temp_dir || return 1
 	server_list_tmp="$(nordvpn_easy_temp_file_path "$temp_dir" 'recommendations.json')"
@@ -442,6 +450,7 @@ nordvpn_easy_reconcile_action() {
 nordvpn_easy_clean_reconnect_action() {
 	log 'apply: clean reconnect action started'
 	nordvpn_easy_bootstrap_if_needed || return 1
+	nordvpn_easy_try_clear_routing_blackhole_before_api 'reconnect'
 
 	if nordvpn_easy_vpn_is_configured; then
 		log "apply: closing VPN interface $VPN_IF before reconnecting"
@@ -622,6 +631,7 @@ nordvpn_easy_build_wireguard_peer_section() {
 nordvpn_easy_configure_vpn_interface() {
 	nordvpn_easy_require_core_action_helpers get_private_key || return 1
 	log "apply: $VPN_IF is not configured and will be created"
+	nordvpn_easy_try_clear_routing_blackhole_before_api 'setup'
 	nordvpn_easy_log_vpn_interface_state 'before-create'
 	log "apply: creating WireGuard interface $VPN_IF with address $VPN_ADDR and endpoint port $VPN_PORT"
 
@@ -781,6 +791,7 @@ nordvpn_easy_bootstrap_if_needed() {
 
 	nordvpn_easy_require_core_action_helpers refresh_countries_cache || return 1
 	log "runtime: bootstrap starting for interface $VPN_IF (mode=${SERVER_SELECTION_MODE:-auto}, country=${VPN_COUNTRY:-automatic})"
+	nordvpn_easy_try_clear_routing_blackhole_before_api 'bootstrap'
 	nordvpn_easy_log_vpn_interface_state 'bootstrap-start'
 	refresh_countries_cache || true
 	if [ -n "$VPN_COUNTRY" ]; then
@@ -841,7 +852,7 @@ nordvpn_easy_check_once() {
 	local backoff_steps
 
 	log "healthcheck: starting VPN health-check on interface $VPN_IF (failure_retry_delay=${FAILURE_RETRY_DELAY:-unset}, rotate_threshold=${SERVER_ROTATE_THRESHOLD:-unset}, restart_threshold=${INTERFACE_RESTART_THRESHOLD:-unset}, max_restarts=${max_interface_restarts})"
-	nordvpn_easy_try_clear_routing_blackhole "$VPN_IF" 'healthcheck' || true
+	nordvpn_easy_try_clear_routing_blackhole_before_api 'healthcheck'
 	nordvpn_easy_reconcile_explicit_server_selection_drift 'healthcheck' || return 1
 	if ! nordvpn_easy_server_selection_is_manual; then
 		[ -f "$SERVER_LIST_FILE" ] || nordvpn_easy_get_servers_list || true

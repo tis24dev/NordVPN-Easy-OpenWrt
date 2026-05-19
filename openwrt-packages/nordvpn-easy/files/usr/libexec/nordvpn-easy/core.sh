@@ -809,6 +809,7 @@ fetch_server_catalog () {
 
   SERVER_CATALOG_URL="${SERVER_CATALOG_URL_BASE}&filters[country_id]=$RESOLVED_COUNTRY_ID"
   log "Refreshing NordVPN server catalog for $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
+  nordvpn_easy_try_clear_routing_blackhole_before_api 'server-catalog'
 
   nordvpn_easy_mktemp_dir 'server-catalog' SERVER_CATALOG_TEMP_DIR || return 1
   SERVER_CATALOG_TMP="$(nordvpn_easy_temp_file_path "$SERVER_CATALOG_TEMP_DIR" 'catalog.json')"

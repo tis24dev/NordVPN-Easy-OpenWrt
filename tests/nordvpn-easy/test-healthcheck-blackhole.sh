@@ -53,7 +53,6 @@ nordvpn_easy_ping_interface() {
 }
 nordvpn_easy_ping_wan() { return 0; }
 nordvpn_easy_reconcile_explicit_server_selection_drift() { return 0; }
-nordvpn_easy_get_servers_list() { return 0; }
 nordvpn_easy_server_selection_is_manual() { return 1; }
 
 uci_complete() {
@@ -177,9 +176,53 @@ ip() {
 	esac
 }
 
+nordvpn_easy_get_servers_list() { return 0; }
 nordvpn_easy_check_once
+unset -f nordvpn_easy_get_servers_list 2>/dev/null || true
+# shellcheck disable=SC1090
+. "$ACTIONS_LIB"
 
 assert_eq '1' "$IFDOWN_COUNT" 'health check clears routing blackhole before ping recovery'
 assert_eq '1' "$PING_COUNT" 'health check continues after blackhole recovery'
+
+IFDOWN_COUNT=0
+CURL_COUNT=0
+SERVER_LIST_FILE='/tmp/nordvpn-easy-test-blackhole-missing-server-list.json'
+rm -f "$SERVER_LIST_FILE"
+nordvpn_easy_build_server_recommendations_url() {
+	SERVER_RECOMMENDATIONS_URL='https://example.invalid/recommendations'
+	printf '%s\n' "$SERVER_RECOMMENDATIONS_URL"
+}
+nordvpn_easy_mktemp_dir() {
+	eval "$2=/tmp/nordvpn-easy-test-blackhole-server-list"
+	mkdir -p "/tmp/nordvpn-easy-test-blackhole-server-list"
+	return 0
+}
+nordvpn_easy_temp_file_path() {
+	printf '%s/%s\n' "$1" "$2"
+}
+nordvpn_easy_curl_error_summary() { :; }
+nordvpn_easy_curl_rc_meaning() { printf 'timeout'; }
+curl() {
+	CURL_COUNT=$((CURL_COUNT + 1))
+	return 28
+}
+
+nordvpn_easy_get_servers_list || true
+
+assert_eq '1' "$IFDOWN_COUNT" 'server list refresh clears routing blackhole before API download'
+assert_eq '1' "$CURL_COUNT" 'server list refresh still attempts API after blackhole recovery'
+rm -rf -- /tmp/nordvpn-easy-test-blackhole-server-list
+
+IFDOWN_COUNT=0
+nordvpn_easy_bootstrap_if_needed() { return 0; }
+nordvpn_easy_vpn_is_configured() { return 1; }
+nordvpn_easy_log_server_selection_drift() { return 0; }
+nordvpn_easy_sync_server_selection() { return 0; }
+nordvpn_easy_check_once() { return 0; }
+
+nordvpn_easy_clean_reconnect_action || true
+
+assert_eq '1' "$IFDOWN_COUNT" 'clean reconnect clears routing blackhole before server sync'
 
 printf '%s\n' 'test-healthcheck-blackhole.sh: ok'
