@@ -237,22 +237,7 @@ return view.extend({
 		o.placeholder = '6';
 		o.datatype = 'uinteger';
 		o.rmempty = false;
-
-		o = s.option(form.Value, 'server_rotate_threshold', _('Rotate Threshold'));
-		o.placeholder = '5';
-		o.datatype = 'uinteger';
-		o.rmempty = false;
-
-		o = s.option(form.Value, 'interface_restart_threshold', _('Restart Threshold'));
-		o.placeholder = '10';
-		o.datatype = 'uinteger';
-		o.rmempty = false;
-
-		o = s.option(form.Value, 'max_interface_restarts', _('Max Interface Restarts'));
-		o.placeholder = '3';
-		o.datatype = 'uinteger';
-		o.rmempty = false;
-		o.description = _('Maximum interface restarts per check run. Use 0 to disable interface restarts.');
+		o.description = _('Seconds to wait before reprovisioning the VPN during a health check when ping fails but WAN is up.');
 
 		o = s.option(form.Value, 'interface_restart_delay', _('Interface Restart Delay'));
 		o.placeholder = '10';

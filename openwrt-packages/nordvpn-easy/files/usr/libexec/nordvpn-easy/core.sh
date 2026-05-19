@@ -220,18 +220,6 @@ log_vpn_interface_state () {
   nordvpn_easy_log_vpn_interface_state "$@"
 }
 
-recover_missing_vpn_interface () {
-  nordvpn_easy_recover_missing_vpn_interface "$@"
-}
-
-ensure_vpn_interface_present () {
-  nordvpn_easy_ensure_vpn_interface_present "$@"
-}
-
-ensure_vpn_interface_enabled () {
-  nordvpn_easy_ensure_vpn_interface_enabled "$@"
-}
-
 pick_ping_ip () {
   # Keep this static: analyzer-friendly and no eval for a fixed probe list.
   case "$(awk 'BEGIN { srand(); print int(rand() * 20) }')" in
@@ -809,7 +797,6 @@ fetch_server_catalog () {
 
   SERVER_CATALOG_URL="${SERVER_CATALOG_URL_BASE}&filters[country_id]=$RESOLVED_COUNTRY_ID"
   log "Refreshing NordVPN server catalog for $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
-  nordvpn_easy_try_clear_routing_blackhole_before_api 'server-catalog'
 
   nordvpn_easy_mktemp_dir 'server-catalog' SERVER_CATALOG_TEMP_DIR || return 1
   SERVER_CATALOG_TMP="$(nordvpn_easy_temp_file_path "$SERVER_CATALOG_TEMP_DIR" 'catalog.json')"
@@ -894,10 +881,6 @@ find_preferred_server_in_catalog () {
   nordvpn_easy_find_preferred_server_in_catalog "$@"
 }
 
-preferred_server_matches_current () {
-  nordvpn_easy_preferred_server_matches_current "$@"
-}
-
 apply_preferred_server_from_catalog () {
   nordvpn_easy_apply_preferred_server_from_catalog "$@"
 }
@@ -934,44 +917,16 @@ set_first_server_from_list () {
   nordvpn_easy_set_first_server_from_list "$@"
 }
 
-current_server_matches_recommendations () {
-  nordvpn_easy_current_server_matches_recommendations "$@"
-}
-
-apply_server_change_runtime () {
-  nordvpn_easy_apply_server_change_runtime "$@"
-}
-
-change_to_preferred_server () {
-  nordvpn_easy_change_to_preferred_server "$@"
-}
-
-sync_server_selection () {
-  nordvpn_easy_sync_server_selection "$@"
-}
-
 reconcile_action () {
   nordvpn_easy_reconcile_action "$@"
 }
 
-clean_reconnect_action () {
-  nordvpn_easy_clean_reconnect_action "$@"
-}
-
-change_vpn_server () {
-  nordvpn_easy_change_vpn_server "$@"
-}
-
-change_manual_server () {
-  nordvpn_easy_change_manual_server "$@"
+provision_vpn () {
+  nordvpn_easy_provision_vpn "$@"
 }
 
 configure_vpn_interface () {
   nordvpn_easy_configure_vpn_interface "$@"
-}
-
-bootstrap_if_needed () {
-  nordvpn_easy_bootstrap_if_needed "$@"
 }
 
 rotate_action () {
@@ -1165,7 +1120,7 @@ ACTION_RC=0
 
 case "$ACTION" in
   run|check)
-    bootstrap_if_needed && check_once
+    check_once
     ACTION_RC=$?
     ;;
   reconcile)
@@ -1175,12 +1130,14 @@ case "$ACTION" in
     ;;
   reconnect)
     validate_setup_runtime &&
-    clean_reconnect_action
+    provision_vpn &&
+    log 'NordVPN reconnect completed'
     ACTION_RC=$?
     ;;
   setup)
     validate_setup_runtime &&
-    bootstrap_if_needed && sync_server_selection && { [ "$PUBLIC_COUNTRY_VERIFIED" -eq 1 ] || verify_public_country_selection; } && log 'NordVPN configuration is ready'
+    provision_vpn &&
+    log 'NordVPN configuration is ready'
     ACTION_RC=$?
     ;;
   rotate)

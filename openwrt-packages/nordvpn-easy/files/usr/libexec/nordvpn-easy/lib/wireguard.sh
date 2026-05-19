@@ -43,93 +43,75 @@ nordvpn_easy_log_vpn_interface_state() {
 	log "runtime: interface state [$STATE_CONTEXT]: proto=${VPN_PROTO:-absent}, disabled=${VPN_DISABLED:-0}, link_present=$VPN_LINK_PRESENT, endpoint=${VPN_ENDPOINT:-none}, endpoint_port=${VPN_ENDPOINT_PORT:-${VPN_PORT:-unset}}, keepalive=${VPN_KEEPALIVE:-${WIREGUARD_PERSISTENT_KEEPALIVE:-15}}, mtu=${VPN_MTU:-auto}, mtu_fix=${VPN_MTU_FIX:-unset}"
 }
 
-nordvpn_easy_recover_missing_vpn_interface() {
-	log "runtime: VPN interface $VPN_IF is still not present after ${VPN_INTERFACE_PRESENT_DELAY}s - starting recovery sequence"
-	log_vpn_interface_state 'missing-interface-start'
+nordvpn_easy_teardown_vpn() {
+	local peer_section="${VPN_IF}server"
+	local wan_metric=''
 
-	log "runtime: recovery step 1/3: cycling interface $VPN_IF with ifdown/ifup"
-	ifdown "$VPN_IF" >/dev/null 2>&1 || true
-	ifup "$VPN_IF" >/dev/null 2>&1 || true
-	sleep "$VPN_INTERFACE_PRESENT_DELAY"
+	log "apply: tearing down VPN interface $VPN_IF before provisioning"
+	nordvpn_easy_log_vpn_interface_state 'before-teardown'
 
-	if vpn_link_is_present; then
-		log "runtime: recovery step 1/3 succeeded: interface $VPN_IF is present again"
-		log_vpn_interface_state 'missing-interface-after-ifup'
-		return 0
+	if nordvpn_easy_vpn_link_is_present; then
+		ifdown "$VPN_IF" >/dev/null 2>&1 || true
+		sleep "${INTERFACE_RESTART_DELAY:-2}"
 	fi
 
-	log "runtime: recovery step 2/3: reloading network service because $VPN_IF is still not present"
-	/etc/init.d/network reload || {
-		log 'ERROR: NETWORK RELOAD FAILED DURING MISSING INTERFACE RECOVERY'
-		return 1
-	}
-	sleep "$VPN_INTERFACE_PRESENT_DELAY"
+	uci -q delete "network.${VPN_IF}" || true
+	uci -q delete "network.${peer_section}" || true
 
-	if vpn_link_is_present; then
-		log "runtime: recovery step 2/3 succeeded: interface $VPN_IF is present again"
-		log_vpn_interface_state 'missing-interface-after-reload'
-		return 0
-	fi
+	wan_metric="$(uci -q get "network.${WAN_IF}.metric" 2>/dev/null || true)"
+	[ "$wan_metric" = '1024' ] && uci -q delete "network.${WAN_IF}.metric" || true
 
-	log "runtime: recovery step 3/3: restarting network service because $VPN_IF is still not present"
-	/etc/init.d/network restart || {
-		log 'ERROR: NETWORK RESTART FAILED DURING MISSING INTERFACE RECOVERY'
-		return 1
-	}
-	sleep "$VPN_INTERFACE_PRESENT_DELAY"
-
-	if vpn_link_is_present; then
-		log "runtime: recovery step 3/3 succeeded: interface $VPN_IF is present again"
-		log_vpn_interface_state 'missing-interface-after-restart'
-		return 0
-	fi
-
-	nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "VPN interface $VPN_IF is still not present after the full recovery sequence"
-	log_vpn_interface_state 'missing-interface-final'
-	return 1
-}
-
-nordvpn_easy_ensure_vpn_interface_present() {
-	if vpn_link_is_present; then
-		return 0
-	fi
-
-	log "runtime: VPN interface $VPN_IF is not present, waiting ${VPN_INTERFACE_PRESENT_DELAY}s before recovery"
-	log_vpn_interface_state 'missing-interface-before-wait'
-	sleep "$VPN_INTERFACE_PRESENT_DELAY"
-
-	if vpn_link_is_present; then
-		log "runtime: VPN interface $VPN_IF became present during the wait window"
-		log_vpn_interface_state 'missing-interface-after-wait'
-		return 0
-	fi
-
-	recover_missing_vpn_interface
-}
-
-nordvpn_easy_ensure_vpn_interface_enabled() {
-	[ "$(uci -q get "network.${VPN_IF}.disabled" 2>/dev/null)" = '1' ] || return 0
-
-	log "runtime: re-enabling disabled VPN interface $VPN_IF"
-	log_vpn_interface_state 'before-enable'
-	uci -q delete "network.${VPN_IF}.disabled"
 	uci commit network || {
-		log "ERROR: COULD NOT COMMIT NETWORK CONFIGURATION WHILE ENABLING $VPN_IF"
+		nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "could not commit network configuration while tearing down $VPN_IF"
 		return 1
 	}
 
-	/etc/init.d/network reload || {
-		log "ERROR: NETWORK RELOAD FAILED WHILE ENABLING $VPN_IF"
+	"${NORDVPN_EASY_NETWORK_INIT:-/etc/init.d/network}" reload >/dev/null 2>&1 || {
+		log 'ERROR: NETWORK RELOAD FAILED DURING VPN TEARDOWN'
 		return 1
 	}
 
-	ifup "$VPN_IF" || {
-		log "ERROR: IFUP FAILED WHILE ENABLING $VPN_IF"
-		return 1
-	}
+	log "apply: VPN interface $VPN_IF removed from runtime and UCI"
+	nordvpn_easy_log_vpn_interface_state 'after-teardown'
+}
 
-	log "runtime: VPN interface $VPN_IF has been re-enabled"
-	log_vpn_interface_state 'after-enable'
+nordvpn_easy_default_route_uses_vpn() {
+	local vpn_if="${1:-$VPN_IF}"
+
+	ip -4 route show default 2>/dev/null | grep -q "dev ${vpn_if}[[:space:]]"
+}
+
+nordvpn_easy_wg_handshake_epoch() {
+	local vpn_if="${1:-$VPN_IF}"
+	local epoch=''
+
+	epoch="$(wg show "$vpn_if" latest-handshakes 2>/dev/null | awk 'NR==1 { print $2 }')"
+	case "$epoch" in
+		''|*[!0-9]*)
+			printf '%s\n' '0'
+			;;
+		*)
+			printf '%s\n' "$epoch"
+			;;
+	esac
+}
+
+nordvpn_easy_runtime_needs_provision() {
+	local vpn_if="${1:-$VPN_IF}"
+	local handshake_epoch='0'
+
+	nordvpn_easy_vpn_link_is_present || return 0
+
+	handshake_epoch="$(nordvpn_easy_wg_handshake_epoch "$vpn_if")"
+	if [ "$handshake_epoch" = '0' ]; then
+		return 0
+	fi
+
+	if nordvpn_easy_default_route_uses_vpn "$vpn_if" && ! nordvpn_easy_handshake_epoch_indicates_connection "$handshake_epoch"; then
+		return 0
+	fi
+
+	return 1
 }
 
 nordvpn_easy_ping_interface() {
@@ -298,41 +280,6 @@ nordvpn_easy_set_uci_list_if_changed() {
 	NORDVPN_EASY_UCI_CHANGED=1
 }
 
-nordvpn_easy_repair_wireguard_interface_base_settings() {
-	local dns_values=''
-
-	# Read by actions.sh after base interface settings are repaired.
-	# shellcheck disable=SC2034
-	NORDVPN_EASY_UCI_CHANGED=0
-
-	[ -n "${VPN_ADDR:-}" ] || {
-		nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "VPN address is missing; cannot repair WireGuard interface $VPN_IF"
-		return 1
-	}
-
-	nordvpn_easy_set_uci_option_if_changed "network.${VPN_IF}.proto" 'wireguard' || return 1
-	nordvpn_easy_set_uci_list_if_changed "network.${VPN_IF}.addresses" "$VPN_ADDR" || return 1
-
-	if ! uci -q get "network.${VPN_IF}.private_key" >/dev/null 2>&1; then
-		nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "WireGuard interface $VPN_IF is missing its private key; full setup is required"
-		return 1
-	fi
-
-	if [ -n "${VPN_DNS1:-}" ] || [ -n "${VPN_DNS2:-}" ]; then
-		nordvpn_easy_set_uci_option_if_changed "network.${VPN_IF}.peerdns" '0' || return 1
-		[ -n "${VPN_DNS1:-}" ] && dns_values="$VPN_DNS1"
-		[ -n "${VPN_DNS2:-}" ] && dns_values="${dns_values:+$dns_values }$VPN_DNS2"
-		# shellcheck disable=SC2086 # DNS values are normalized single-token IPs.
-		nordvpn_easy_set_uci_list_if_changed "network.${VPN_IF}.dns" $dns_values || return 1
-	else
-		nordvpn_easy_set_uci_option_if_changed "network.${VPN_IF}.peerdns" '1' || return 1
-		nordvpn_easy_delete_uci_option_if_present "network.${VPN_IF}.dns" || return 1
-	fi
-
-	nordvpn_easy_set_uci_option_if_changed "network.${VPN_IF}.delegate" '0' || return 1
-	nordvpn_easy_set_uci_option_if_changed "network.${VPN_IF}.force_link" '1' || return 1
-}
-
 nordvpn_easy_wireguard_keepalive_value() {
 	case "${WIREGUARD_PERSISTENT_KEEPALIVE:-15}" in
 		''|*[!0-9]*)
@@ -479,52 +426,3 @@ nordvpn_easy_set_vpn_server_in_uci() {
 	log "apply: prepared VPN peer update for server $1 ($2)"
 }
 
-nordvpn_easy_current_server_matches_recommendations() {
-	CURRENT_SERVER=$(current_server_station)
-
-	[ -n "$CURRENT_SERVER" ] || return 1
-
-	jq -e --arg current "$CURRENT_SERVER" --arg country "${RESOLVED_COUNTRY_CODE:-}" '
-		[
-			.[] | select(
-				(.station == $current) and
-				($country == "" or ((.locations[0].country.code // "") == $country))
-			)
-		] | length > 0
-	' "$SERVER_LIST_FILE" >/dev/null 2>&1
-}
-
-nordvpn_easy_apply_server_change_runtime() {
-	local wait_context='network restart'
-
-	# Read by clean reconnect paths to avoid cycling the interface twice.
-	# shellcheck disable=SC2034
-	NORDVPN_EASY_SERVER_CHANGE_APPLIED=0
-
-	if [ "$1" = 'reload' ]; then
-		wait_context="cycling $VPN_IF"
-		log "apply: cycling VPN interface $VPN_IF to apply the new peer configuration"
-		ifdown "$VPN_IF" >/dev/null 2>&1 || true
-		sleep "$INTERFACE_RESTART_DELAY"
-		ifup "$VPN_IF" || {
-			log "ERROR: IFUP FAILED AFTER CHANGING VPN SERVER ON $VPN_IF"
-			return 1
-		}
-	else
-		/etc/init.d/network restart || {
-			log 'ERROR: NETWORK RESTART FAILED'
-			return 1
-		}
-	fi
-
-	if nordvpn_easy_wait_for_vpn_connectivity "$VPN_IF" "$POST_RESTART_DELAY" "$wait_context"; then
-		log 'apply: VPN connection restored after runtime server change'
-		# shellcheck disable=SC2034
-		NORDVPN_EASY_SERVER_CHANGE_APPLIED=1
-		verify_public_country_selection
-		return 0
-	fi
-
-	log 'apply: VPN connection is not OK after runtime server change; trying another server'
-	return 1
-}

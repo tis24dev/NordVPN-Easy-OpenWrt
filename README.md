@@ -92,22 +92,22 @@ The runtime model is service-driven and one-shot based:
 
 - `/etc/config/nordvpn_easy` stores user configuration generated from the packaged template
 - `/etc/init.d/nordvpn-easy` manages setup and recurring hooks
-- `/usr/libexec/nordvpn-easy/core.sh` contains setup, check and rotation logic
+- `/usr/libexec/nordvpn-easy/core.sh` provisions the VPN through a single `provision` path
 - `cron` runs periodic checks
 - `hotplug` triggers checks when WAN or VPN interfaces change state
 
 There is no permanently running watchdog loop.
 
+**Connect, Reconnect, Setup, and Reconcile** always perform a clean reprovision: tear down any existing WireGuard UCI, fetch fresh NordLynx credentials and server data over the WAN, recreate `wg0`, then validate connectivity. Stale peer configuration is not reused.
+
 ## How checks work
 
 Each `check` execution is one-shot and does this:
 
-- ensures the VPN interface exists
-- ensures firewall membership is correct
-- verifies VPN connectivity
-- attempts recovery if the VPN is degraded but WAN is still working
-- rotates server after repeated failures
-- restarts the VPN interface or related services when necessary
+- pings the VPN interface
+- skips recovery when WAN is down
+- reprovisions the VPN when the runtime is degraded (for example no WireGuard handshake while the default route uses `wg0`)
+- waits briefly and reprovisions again if ping still fails while WAN is up
 
 This makes the project a service-managed maintenance job rather than a daemon
 that loops forever.
@@ -128,7 +128,7 @@ files and NordVPN Easy runtime/cache residues. Key settings include:
 - `wireguard_persistent_keepalive` (default `15`)
 - `wireguard_mtu` (empty means automatic)
 - `firewall_mtu_fix` (default `1`)
-- recovery thresholds and timing values
+- health-check timing values (`failure_retry_delay`, `post_restart_delay`, and related delays)
 
 Country filtering is supported. The backend resolves the requested country and
 then asks NordVPN for recommended WireGuard servers inside that country. City
@@ -137,8 +137,7 @@ selection is not implemented.
 ## WireGuard stability troubleshooting
 
 NordLynx uses WireGuard over UDP. For routers behind NAT, NordVPN Easy keeps the
-peer alive with `wireguard_persistent_keepalive=15` by default and repairs older
-peer configurations that miss the setting during setup/reconnect.
+peer alive with `wireguard_persistent_keepalive=15` by default on every provision.
 
 ## Diagnostics
 

@@ -34,16 +34,13 @@ assert_eq() {
 }
 
 VPN_IF='wg0'
-SERVER_LIST_FILE='/tmp/nordvpn-easy-test-healthcheck-server-list.json'
+WAN_IF='wan'
 INTERFACE_RESTART_DELAY=0
 IFDOWN_COUNT=0
 PING_COUNT=0
 PING_FAIL_UNTIL=0
-SERVER_SELECTION_MODE='auto'
-FAILURE_RETRY_DELAY=1
-SERVER_ROTATE_THRESHOLD=99
-INTERFACE_RESTART_THRESHOLD=99
-MAX_INTERFACE_RESTARTS=0
+PROVISION_COUNT=0
+FAILURE_RETRY_DELAY=0
 
 log() { :; }
 ifdown() { IFDOWN_COUNT=$((IFDOWN_COUNT + 1)); }
@@ -52,8 +49,12 @@ nordvpn_easy_ping_interface() {
 	[ "$PING_COUNT" -gt "$PING_FAIL_UNTIL" ]
 }
 nordvpn_easy_ping_wan() { return 0; }
-nordvpn_easy_reconcile_explicit_server_selection_drift() { return 0; }
-nordvpn_easy_server_selection_is_manual() { return 1; }
+nordvpn_easy_provision_vpn() {
+	PROVISION_COUNT=$((PROVISION_COUNT + 1))
+	IFDOWN_COUNT=$((IFDOWN_COUNT + 1))
+	return 0
+}
+nordvpn_easy_check_once_finish() { :; }
 
 uci_complete() {
 	case "$*" in
@@ -94,6 +95,9 @@ wg() {
 				'private\tpublic\t51820\t' \
 				"peerpub\tpsk\t185.225.234.11:51820\t10.5.0.2/32\t0\t0\t1184\t15"
 			;;
+		'show wg0 latest-handshakes')
+			printf '%s\n' 'peerpub 0'
+			;;
 		'show wg0 peers')
 			printf '%s\n' 'peerpub'
 			;;
@@ -104,6 +108,7 @@ wg() {
 ip() {
 	case "$*" in
 		'link show dev wg0') return 0 ;;
+		'-4 route show default') printf '%s\n' 'default dev wg0 proto static scope link' ;;
 		'route show dev wg0') printf '%s\n' 'default proto static scope link' ;;
 		'route show default') printf '%s\n' 'default dev wg0 proto static scope link' ;;
 		*) return 0 ;;
@@ -130,6 +135,9 @@ wg() {
 				'private\tpublic\t51820\t' \
 				"peerpub\tpsk\t185.225.234.11:51820\t10.5.0.2/32\t$(date +%s)\t4096\t4096\t15"
 			;;
+		'show wg0 latest-handshakes')
+			printf '%s\n' "peerpub $(date +%s)"
+			;;
 		'show wg0 peers')
 			printf '%s\n' 'peerpub'
 			;;
@@ -139,6 +147,7 @@ wg() {
 ip() {
 	case "$*" in
 		'link show dev wg0') return 0 ;;
+		'-4 route show default') printf '%s\n' 'default dev eth0 proto static' ;;
 		'route show dev wg0') printf '%s\n' '10.5.0.2/32 proto kernel scope link src 10.5.0.2' ;;
 		'route show default') printf '%s\n' 'default dev eth0 proto static' ;;
 		*) return 0 ;;
@@ -154,12 +163,17 @@ assert_eq '0' "$IFDOWN_COUNT" 'healthy routing does not run ifdown'
 
 IFDOWN_COUNT=0
 PING_COUNT=0
+PING_FAIL_UNTIL=1
+PROVISION_COUNT=0
 wg() {
 	case "$1 $2 $3" in
 		'show wg0 dump')
 			printf '%b\n' \
 				'private\tpublic\t51820\t' \
 				"peerpub\tpsk\t185.225.234.11:51820\t10.5.0.2/32\t0\t0\t1184\t15"
+			;;
+		'show wg0 latest-handshakes')
+			printf '%s\n' 'peerpub 0'
 			;;
 		'show wg0 peers')
 			printf '%s\n' 'peerpub'
@@ -170,59 +184,68 @@ wg() {
 ip() {
 	case "$*" in
 		'link show dev wg0') return 0 ;;
+		'-4 route show default') printf '%s\n' 'default dev wg0 proto static scope link' ;;
 		'route show dev wg0') printf '%s\n' 'default proto static scope link' ;;
 		'route show default') printf '%s\n' 'default dev wg0 proto static scope link' ;;
 		*) return 0 ;;
 	esac
 }
 
-nordvpn_easy_get_servers_list() { return 0; }
 nordvpn_easy_check_once
-unset -f nordvpn_easy_get_servers_list 2>/dev/null || true
-# shellcheck disable=SC1090
-. "$ACTIONS_LIB"
 
-assert_eq '1' "$IFDOWN_COUNT" 'health check clears routing blackhole before ping recovery'
-assert_eq '1' "$PING_COUNT" 'health check continues after blackhole recovery'
+assert_eq '1' "$PROVISION_COUNT" 'health check reprovisions when runtime is degraded'
+assert_eq '1' "$PING_COUNT" 'health check probes VPN connectivity before recovery'
 
 IFDOWN_COUNT=0
-CURL_COUNT=0
-SERVER_LIST_FILE='/tmp/nordvpn-easy-test-blackhole-missing-server-list.json'
-rm -f "$SERVER_LIST_FILE"
-nordvpn_easy_build_server_recommendations_url() {
-	SERVER_RECOMMENDATIONS_URL='https://example.invalid/recommendations'
-	printf '%s\n' "$SERVER_RECOMMENDATIONS_URL"
-}
-nordvpn_easy_mktemp_dir() {
-	eval "$2=/tmp/nordvpn-easy-test-blackhole-server-list"
-	mkdir -p "/tmp/nordvpn-easy-test-blackhole-server-list"
+UCI_DELETE_COUNT=0
+NETWORK_RELOAD_COUNT=0
+nordvpn_easy_vpn_link_is_present() { return 0; }
+nordvpn_easy_log_vpn_interface_state() { :; }
+uci() {
+	case "$1" in
+		-q)
+			shift
+			case "$1" in
+				delete)
+					UCI_DELETE_COUNT=$((UCI_DELETE_COUNT + 1))
+					return 0
+					;;
+				commit)
+					return 0
+					;;
+				get)
+					case "$2" in
+						network.wan.metric) return 1 ;;
+					esac
+					return 1
+					;;
+			esac
+			;;
+	esac
 	return 0
 }
-nordvpn_easy_temp_file_path() {
-	printf '%s/%s\n' "$1" "$2"
-}
-nordvpn_easy_curl_error_summary() { :; }
-nordvpn_easy_curl_rc_meaning() { printf 'timeout'; }
-curl() {
-	CURL_COUNT=$((CURL_COUNT + 1))
-	return 28
-}
+TEARDOWN_TMP_DIR="$(mktemp -d)"
+TEARDOWN_RELOAD_COUNT_FILE="$TEARDOWN_TMP_DIR/network-reload-count"
+mkdir -p "$TEARDOWN_TMP_DIR/mock-bin/etc/init.d"
+cat > "$TEARDOWN_TMP_DIR/mock-bin/etc/init.d/network" <<EOF
+#!/bin/sh
+case "\$1" in
+	reload)
+		count="\$(cat "$TEARDOWN_RELOAD_COUNT_FILE" 2>/dev/null || printf '%s' '0')"
+		printf '%s\n' "\$((count + 1))" > "$TEARDOWN_RELOAD_COUNT_FILE"
+		exit 0
+		;;
+esac
+exit 1
+EOF
+chmod +x "$TEARDOWN_TMP_DIR/mock-bin/etc/init.d/network"
+NORDVPN_EASY_NETWORK_INIT="$TEARDOWN_TMP_DIR/mock-bin/etc/init.d/network"
 
-nordvpn_easy_get_servers_list || true
+nordvpn_easy_teardown_vpn
 
-assert_eq '1' "$IFDOWN_COUNT" 'server list refresh clears routing blackhole before API download'
-assert_eq '1' "$CURL_COUNT" 'server list refresh still attempts API after blackhole recovery'
-rm -rf -- /tmp/nordvpn-easy-test-blackhole-server-list
-
-IFDOWN_COUNT=0
-nordvpn_easy_bootstrap_if_needed() { return 0; }
-nordvpn_easy_vpn_is_configured() { return 1; }
-nordvpn_easy_log_server_selection_drift() { return 0; }
-nordvpn_easy_sync_server_selection() { return 0; }
-nordvpn_easy_check_once() { return 0; }
-
-nordvpn_easy_clean_reconnect_action || true
-
-assert_eq '1' "$IFDOWN_COUNT" 'clean reconnect clears routing blackhole before server sync'
+assert_eq '1' "$IFDOWN_COUNT" 'teardown runs ifdown when the VPN link is present'
+assert_eq '2' "$UCI_DELETE_COUNT" 'teardown removes the interface and peer sections'
+assert_eq '1' "$(cat "$TEARDOWN_RELOAD_COUNT_FILE")" 'teardown reloads network after UCI cleanup'
+rm -rf "$TEARDOWN_TMP_DIR"
 
 printf '%s\n' 'test-healthcheck-blackhole.sh: ok'
