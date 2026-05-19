@@ -851,3 +851,64 @@ nordvpn_easy_print_diagnostics_health_summary() {
 nordvpn_easy_diagnostics_summary_json() {
 	nordvpn_easy_emit_diagnostics_summary_json "$@"
 }
+
+nordvpn_easy_read_enterprise_state_snapshot_cache() {
+	local cache_file="${1:-${NORDVPN_EASY_ENTERPRISE_STATE_CACHE:-/tmp/run/nordvpn-easy/enterprise_state_last}}"
+
+	NORDVPN_EASY_CACHED_ENTERPRISE_STATE=''
+	NORDVPN_EASY_CACHED_PROBABLE_ISSUE_CODE='none'
+	[ -r "$cache_file" ] || return 1
+
+	NORDVPN_EASY_CACHED_ENTERPRISE_STATE="$(sed -n 's/^enterprise_state=//p' "$cache_file" | sed -n '1p')"
+	NORDVPN_EASY_CACHED_PROBABLE_ISSUE_CODE="$(sed -n 's/^probable_issue_code=//p' "$cache_file" | sed -n '1p')"
+	[ -n "$NORDVPN_EASY_CACHED_ENTERPRISE_STATE" ]
+}
+
+nordvpn_easy_write_enterprise_state_snapshot_cache() {
+	local state="$1"
+	local issue_code="$2"
+	local cache_file="${3:-${NORDVPN_EASY_ENTERPRISE_STATE_CACHE:-/tmp/run/nordvpn-easy/enterprise_state_last}}"
+	local cache_dir cache_tmp
+
+	[ -n "$state" ] || return 1
+	[ -n "$issue_code" ] || issue_code='none'
+
+	cache_dir="$(dirname "$cache_file")"
+	mkdir -p "$cache_dir" || return 1
+	cache_tmp="${cache_file}.$$"
+	{
+		printf 'enterprise_state=%s\n' "$state"
+		printf 'probable_issue_code=%s\n' "$issue_code"
+	} > "$cache_tmp" || {
+		rm -f "$cache_tmp"
+		return 1
+	}
+	mv "$cache_tmp" "$cache_file"
+}
+
+nordvpn_easy_log_enterprise_state_if_degraded() {
+	local vpn_if="${1:-${VPN_IF:-wg0}}"
+	local phase="${2:-healthcheck}"
+	local previous_state=''
+	local previous_active_probes="${NORDVPN_EASY_DIAGNOSTICS_ACTIVE_PROBES:-1}"
+
+	command -v nordvpn_easy_diagnostics_collect >/dev/null 2>&1 || return 0
+
+	nordvpn_easy_read_enterprise_state_snapshot_cache || true
+	previous_state="${NORDVPN_EASY_CACHED_ENTERPRISE_STATE:-}"
+
+	NORDVPN_EASY_DIAGNOSTICS_ACTIVE_PROBES=0
+	nordvpn_easy_diagnostics_collect "$vpn_if"
+	NORDVPN_EASY_DIAGNOSTICS_ACTIVE_PROBES="$previous_active_probes"
+
+	nordvpn_easy_write_enterprise_state_snapshot_cache \
+		"$DIAG_ENTERPRISE_STATE" \
+		"$DIAG_PRIMARY_FINDING_CODE" || true
+
+	if [ "$DIAG_ENTERPRISE_STATE" = 'degraded' ] && [ "$previous_state" != 'degraded' ]; then
+		nordvpn_easy_log_phase "$phase" \
+			"VPN state degraded: probable_issue_code=${DIAG_PRIMARY_FINDING_CODE:-none}"
+	fi
+
+	return 0
+}

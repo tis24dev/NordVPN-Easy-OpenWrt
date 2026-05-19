@@ -843,6 +843,10 @@ nordvpn_easy_rotate_action() {
 	nordvpn_easy_change_vpn_server reload
 }
 
+nordvpn_easy_check_once_finish() {
+	nordvpn_easy_log_enterprise_state_if_degraded "${VPN_IF:-wg0}" 'healthcheck' || true
+}
+
 nordvpn_easy_check_once() {
 	# shellcheck disable=SC3043 # OpenWrt /bin/sh is BusyBox ash, which supports local.
 	local failed_pings=0
@@ -853,7 +857,10 @@ nordvpn_easy_check_once() {
 
 	log "healthcheck: starting VPN health-check on interface $VPN_IF (failure_retry_delay=${FAILURE_RETRY_DELAY:-unset}, rotate_threshold=${SERVER_ROTATE_THRESHOLD:-unset}, restart_threshold=${INTERFACE_RESTART_THRESHOLD:-unset}, max_restarts=${max_interface_restarts})"
 	nordvpn_easy_try_clear_routing_blackhole_before_api 'healthcheck'
-	nordvpn_easy_reconcile_explicit_server_selection_drift 'healthcheck' || return 1
+	nordvpn_easy_reconcile_explicit_server_selection_drift 'healthcheck' || {
+		nordvpn_easy_check_once_finish
+		return 1
+	}
 	if ! nordvpn_easy_server_selection_is_manual; then
 		[ -f "$SERVER_LIST_FILE" ] || nordvpn_easy_get_servers_list || true
 	fi
@@ -863,6 +870,7 @@ nordvpn_easy_check_once() {
 		retry_delay="$FAILURE_RETRY_DELAY"
 		nordvpn_easy_ping_wan || {
 			log "healthcheck: WAN connectivity is down while VPN health-check is failing on $VPN_IF; skipping VPN recovery"
+			nordvpn_easy_check_once_finish
 			return 0
 		}
 
@@ -871,6 +879,7 @@ nordvpn_easy_check_once() {
 
 			if nordvpn_easy_server_selection_is_manual; then
 				if nordvpn_easy_try_configured_fallback_server restart 'manual server recovery threshold reached'; then
+					nordvpn_easy_check_once_finish
 					return 0
 				fi
 
@@ -879,12 +888,16 @@ nordvpn_easy_check_once() {
 				else
 					log 'healthcheck: manual server selection is enabled and no fallback server is configured; stopping this health-check without automatic rotation'
 				fi
+				nordvpn_easy_check_once_finish
 				return 1
 			fi
 
 			if nordvpn_easy_get_servers_list; then
 				log 'healthcheck: changing VPN server after repeated failures'
-				nordvpn_easy_change_vpn_server restart && return 0
+				if nordvpn_easy_change_vpn_server restart; then
+					nordvpn_easy_check_once_finish
+					return 0
+				fi
 			else
 				log 'healthcheck: refreshing VPN server list failed'
 			fi
@@ -893,6 +906,7 @@ nordvpn_easy_check_once() {
 		if [ "$failed_pings" -gt "$INTERFACE_RESTART_THRESHOLD" ]; then
 			if [ "$restart_count" -ge "$max_interface_restarts" ]; then
 				log "healthcheck: ping failed $failed_pings times; restart limit reached for $VPN_IF ($restart_count/$max_interface_restarts)"
+				nordvpn_easy_check_once_finish
 				return 1
 			fi
 
@@ -908,17 +922,20 @@ nordvpn_easy_check_once() {
 
 			if nordvpn_easy_ping_interface "$VPN_IF"; then
 				log "healthcheck: interface restart restored connectivity on $VPN_IF"
+				nordvpn_easy_check_once_finish
 				return 0
 			fi
 
 			if nordvpn_easy_server_selection_is_manual; then
 				log 'healthcheck: manual server selection is enabled; not restarting the whole network after interface recovery failed'
+				nordvpn_easy_check_once_finish
 				return 1
 			fi
 
 			log 'healthcheck: restarting network as last automatic recovery fallback'
 			/etc/init.d/network restart || {
 				log 'ERROR: NETWORK RESTART FAILED'
+				nordvpn_easy_check_once_finish
 				return 1
 			}
 			sleep "$POST_RESTART_DELAY"
@@ -940,4 +957,5 @@ nordvpn_easy_check_once() {
 	done
 
 	log "healthcheck: VPN health-check passed on interface $VPN_IF"
+	nordvpn_easy_check_once_finish
 }

@@ -160,6 +160,13 @@ Background `diagnostics_summary` polls from the main page and LuCI view refresh
 skip active WAN/DNS probes to avoid extra load. A full log download or manual
 assessment refresh runs the complete probe set (typically under a few seconds).
 
+When the VPN transitions to **degraded** during a cron or health-check run, the
+service logs `probable_issue_code` to syslog (`logread -e nordvpn-easy`). Example:
+
+```text
+healthcheck: VPN state degraded: probable_issue_code=runtime.no_handshake
+```
+
 The VPN health-check clears a **routing blackhole** automatically: if the default
 route points at the VPN interface without a WireGuard handshake, it runs `ifdown`
 on the tunnel before attempting API or server-list recovery.
