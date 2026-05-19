@@ -1070,6 +1070,7 @@ fi
 if [ "$ACTION" = 'diagnostics_log' ]; then
   LOG_PHASE='service'
   [ "$CORE_QUIET_ACTION" -eq 1 ] || log 'diagnostics log export requested'
+  NORDVPN_EASY_DIAGNOSTICS_ACTIVE_PROBES=0
   nordvpn_easy_export_diagnostics_log 'nordvpn-easy'
   exit $?
 fi

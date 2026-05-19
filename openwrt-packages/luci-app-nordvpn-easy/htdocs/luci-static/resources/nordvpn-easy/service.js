@@ -71,12 +71,14 @@ const callPublicCountry = rpc.declare({
 
 const callDiagnostics = rpc.declare({
 	object: 'nordvpn.easy',
-	method: 'diagnostics'
+	method: 'diagnostics',
+	timeout: 120
 });
 
 const callDiagnosticsSummary = rpc.declare({
 	object: 'nordvpn.easy',
-	method: 'diagnostics_summary'
+	method: 'diagnostics_summary',
+	timeout: 60
 });
 
 const callRefreshCountries = rpc.declare({

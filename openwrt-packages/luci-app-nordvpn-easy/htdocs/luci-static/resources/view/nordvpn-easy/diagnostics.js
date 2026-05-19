@@ -1,8 +1,27 @@
 'use strict';
 /* global service, ui, view, E, _ */
+'require nordvpn-easy/manager-data as managerData';
 'require nordvpn-easy/service as service';
 'require ui';
 'require view';
+
+function parseDiagnosticsLoadResult(summaryResult) {
+	let payload;
+
+	if (!summaryResult)
+		return managerData.emptyDiagnosticsSummary();
+
+	if (summaryResult.generated_at != null ||
+		(summaryResult.primary_finding && typeof summaryResult.primary_finding === 'object'))
+		return managerData.parseDiagnosticsSummary(summaryResult);
+
+	if (summaryResult.code != null || summaryResult.stdout != null) {
+		payload = service.parseExecJsonResponse(summaryResult, null);
+		return managerData.parseDiagnosticsSummary(payload);
+	}
+
+	return managerData.parseDiagnosticsSummary(summaryResult);
+}
 
 function formatStatusValue(value) {
 	if (value === true || value === 'true')
@@ -151,7 +170,7 @@ return view.extend({
 	},
 
 	render: function(summaryResult) {
-		const summary = service.parseExecJsonResponse(summaryResult, null);
+		const summary = parseDiagnosticsLoadResult(summaryResult);
 		const findings = findingsRows(summary);
 		const view = this;
 
