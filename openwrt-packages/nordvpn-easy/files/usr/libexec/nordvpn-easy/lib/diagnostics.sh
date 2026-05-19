@@ -40,6 +40,7 @@ DIAG_ENTERPRISE_STATE='unknown'
 DIAG_VPN_STATUS='unknown'
 DIAG_DESIRED_ENABLED='0'
 DIAG_SERVICE_ENABLED='0'
+DIAG_KILL_SWITCH_ENABLED='0'
 DIAG_SERVICE_ENABLED_MISMATCH='no'
 
 # Routing layer
@@ -353,6 +354,7 @@ nordvpn_easy_emit_diagnostics_summary_json() {
 		--arg operation_lock_state "$DIAG_OPERATION_LOCK_STATE" \
 		--arg operation_lock_action "${DIAG_OPERATION_LOCK_ACTION:-}" \
 		--arg service_enabled_mismatch "$DIAG_SERVICE_ENABLED_MISMATCH" \
+		--argjson kill_switch_enabled "$([ "$DIAG_KILL_SWITCH_ENABLED" = '1' ] && printf '%s' 'true' || printf '%s' 'false')" \
 		'{
 			generated_at: $generated_at,
 			vpn_if: $vpn_if,
@@ -371,7 +373,8 @@ nordvpn_easy_emit_diagnostics_summary_json() {
 				transfer_asymmetry: $transfer_asymmetry,
 				transfer_rx_bytes: $transfer_rx_bytes,
 				transfer_tx_bytes: $transfer_tx_bytes,
-				service_enabled_mismatch: $service_enabled_mismatch
+				service_enabled_mismatch: $service_enabled_mismatch,
+				kill_switch_enabled: $kill_switch_enabled
 			},
 			connectivity: {
 				routing_blackhole_risk: $routing_blackhole_risk,
@@ -481,6 +484,15 @@ nordvpn_easy_diagnostics_collect_config() {
 			;;
 	esac
 	DIAG_WAN_IF="$(uci -q get 'nordvpn_easy.main.wan_if' 2>/dev/null || printf '%s' 'wan')"
+	DIAG_KILL_SWITCH_ENABLED="$(uci -q get 'nordvpn_easy.main.kill_switch_enabled' 2>/dev/null || printf '%s' '0')"
+	case "$DIAG_KILL_SWITCH_ENABLED" in
+		1|true|yes|on)
+			DIAG_KILL_SWITCH_ENABLED='1'
+			;;
+		*)
+			DIAG_KILL_SWITCH_ENABLED='0'
+			;;
+	esac
 
 	if [ "$DIAG_SELECTION_MODE" = 'manual' ]; then
 		if [ -n "$DIAG_PREFERRED_STATION" ] && [ -n "$DIAG_CURRENT_STATION" ] &&
@@ -727,6 +739,13 @@ nordvpn_easy_diagnostics_compute_findings() {
 			'runtime.stuck_tunnel' \
 			'WireGuard is sending traffic but receiving none (stuck tunnel suspected)' \
 			'Verify endpoint reachability, firewall UDP rules, and try another NordVPN server'
+	fi
+
+	if [ "$DIAG_KILL_SWITCH_ENABLED" = '1' ] && [ "$DIAG_WG_CONNECTED" != 'yes' ]; then
+		nordvpn_easy_diagnostics_add_finding \
+			'operational.kill_switch_active' \
+			'Kill switch is enabled while the VPN tunnel is not connected' \
+			'Restore VPN connectivity or disable kill switch if all traffic is blocked'
 	fi
 
 	if [ "$DIAG_DESIRED_ENABLED" = '1' ] && [ "$DIAG_WAN_PING" = 'no' ]; then

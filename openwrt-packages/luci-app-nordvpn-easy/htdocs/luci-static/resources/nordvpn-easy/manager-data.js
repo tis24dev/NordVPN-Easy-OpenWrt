@@ -122,6 +122,58 @@ function parseServerCatalog(raw) {
 	};
 }
 
+function emptyDiagnosticsSummary() {
+	return {
+		generated_at: 0,
+		primary_finding: {
+			code: 'none',
+			message: '',
+			action: ''
+		},
+		findings: [],
+		health: {},
+		connectivity: {}
+	};
+}
+
+function parseDiagnosticsSummary(raw) {
+	const summary = (raw && typeof raw === 'object' && !Array.isArray(raw)) ?
+		raw :
+		parseJson(raw, emptyDiagnosticsSummary());
+
+	if (!summary || typeof summary !== 'object')
+		return emptyDiagnosticsSummary();
+
+	const primary = (summary.primary_finding && typeof summary.primary_finding === 'object') ?
+		summary.primary_finding :
+		emptyDiagnosticsSummary().primary_finding;
+
+	return {
+		generated_at: Number(summary.generated_at || 0),
+		primary_finding: {
+			code: String(primary.code || 'none'),
+			message: String(primary.message || ''),
+			action: String(primary.action || '')
+		},
+		findings: Array.isArray(summary.findings) ? summary.findings.map(function(finding) {
+			return {
+				code: String((finding && finding.code) || ''),
+				message: String((finding && finding.message) || ''),
+				action: String((finding && finding.action) || ''),
+				severity: String((finding && finding.severity) || 'warning')
+			};
+		}) : [],
+		health: (summary.health && typeof summary.health === 'object') ? summary.health : {},
+		connectivity: (summary.connectivity && typeof summary.connectivity === 'object') ? summary.connectivity : {}
+	};
+}
+
+function diagnosticsHasAlert(summary) {
+	const code = String((summary && summary.primary_finding && summary.primary_finding.code) || 'none');
+
+	return code !== '' && code !== 'none';
+}
+
 function buildServerCatalogIndex(catalog) {
 	const index = {};
 
@@ -140,5 +192,8 @@ return baseclass.extend({
 	parseCountries: parseCountries,
 	parseLocalStatus: parseLocalStatus,
 	parseServerCatalog: parseServerCatalog,
-	buildServerCatalogIndex: buildServerCatalogIndex
+	buildServerCatalogIndex: buildServerCatalogIndex,
+	emptyDiagnosticsSummary: emptyDiagnosticsSummary,
+	parseDiagnosticsSummary: parseDiagnosticsSummary,
+	diagnosticsHasAlert: diagnosticsHasAlert
 });

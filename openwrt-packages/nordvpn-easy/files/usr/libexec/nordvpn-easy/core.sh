@@ -1121,6 +1121,9 @@ fi
 if [ "$ACTION" = 'diagnostics_summary' ]; then
   LOG_PHASE='service'
   [ "$CORE_QUIET_ACTION" -eq 1 ] || log 'diagnostics summary requested'
+  if [ "$CORE_QUIET_ACTION" -eq 1 ]; then
+    NORDVPN_EASY_DIAGNOSTICS_ACTIVE_PROBES=0
+  fi
   nordvpn_easy_emit_diagnostics_summary_json "$VPN_IF"
   exit $?
 fi

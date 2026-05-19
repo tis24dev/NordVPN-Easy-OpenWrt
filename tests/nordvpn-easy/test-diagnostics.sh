@@ -206,6 +206,48 @@ ip() {
 }
 
 nordvpn_easy_diagnostics_reset_state
+wg() {
+	wg_blackhole "$@"
+}
+ip() {
+	ip_healthy "$@"
+}
+uci_kill_switch() {
+	case "$*" in
+		'get nordvpn_easy.main.kill_switch_enabled') printf '%s\n' '1' ;;
+		*) uci_complete "$@" ;;
+	esac
+}
+uci() {
+	if [ "$1" = '-q' ]; then
+		shift
+	fi
+	uci_kill_switch "$@"
+}
+KILL_SWITCH_JSON="$(nordvpn_easy_emit_diagnostics_summary_json wg0)"
+assert_eq 'true' \
+	"$(printf '%s' "$KILL_SWITCH_JSON" | jq -r '.health.kill_switch_enabled')" \
+	'kill switch scenario exposes kill_switch_enabled in summary json'
+assert_contains 'operational.kill_switch_active' \
+	"$(printf '%s' "$KILL_SWITCH_JSON" | jq -r '.findings[].code' | tr '\n' ' ')" \
+	'kill switch scenario lists kill switch finding when tunnel is down'
+
+uci() {
+	if [ "$1" = '-q' ]; then
+		shift
+	fi
+	uci_complete "$@"
+}
+
+wg() {
+	wg_connected "$@"
+}
+
+ip() {
+	ip_healthy "$@"
+}
+
+nordvpn_easy_diagnostics_reset_state
 HEALTHY_SUMMARY="$(nordvpn_easy_diagnostics_print_health_summary wg0)"
 
 assert_eq 'none' \

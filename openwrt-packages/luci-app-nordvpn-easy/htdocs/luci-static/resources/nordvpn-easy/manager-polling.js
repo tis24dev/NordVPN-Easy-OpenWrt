@@ -35,6 +35,13 @@ function start(state) {
 
 		return managerActions.updatePublicIp(state, { quiet: true });
 	}, 60);
+
+	poll.add(function() {
+		if (shouldSkipBackgroundPoll(state) || !state.appliedEnabled)
+			return Promise.resolve();
+
+		return managerActions.updateDiagnosticsSummary(state);
+	}, 120);
 }
 
 return baseclass.extend({

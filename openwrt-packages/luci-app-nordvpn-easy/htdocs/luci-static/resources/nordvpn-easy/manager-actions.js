@@ -651,6 +651,37 @@ function updatePublicCountry(state, options) {
 	});
 }
 
+function renderDiagnosticsSnapshot(state, summary) {
+	state.currentDiagnosticsSummary = summary;
+	state.currentDiagnosticsSummaryFresh = true;
+	managerUI.updateDiagnosticsBanner(summary);
+}
+
+function updateDiagnosticsSummary(state, options) {
+	const opts = options || {};
+
+	if (state.pollingSuspended && !opts.force)
+		return Promise.resolve(state.currentDiagnosticsSummary);
+
+	if (!state.appliedEnabled) {
+		renderDiagnosticsSnapshot(state, managerData.emptyDiagnosticsSummary());
+		return Promise.resolve(state.currentDiagnosticsSummary);
+	}
+
+	return managerStore.runExclusive(state, 'diagnostics', function() {
+		return service.execService('diagnostics_summary').then(function(res) {
+			const summary = managerData.parseDiagnosticsSummary(service.parseExecJsonResponse(res, null));
+
+			renderDiagnosticsSnapshot(state, summary);
+			return summary;
+		}).catch(function() {
+			state.currentDiagnosticsSummaryFresh = false;
+			renderDiagnosticsSnapshot(state, managerData.emptyDiagnosticsSummary());
+			return state.currentDiagnosticsSummary;
+		});
+	});
+}
+
 function updateLocalStatus(state, options) {
 	const opts = options || {};
 
@@ -673,6 +704,10 @@ function updateLocalStatus(state, options) {
 			renderLocalStatusSnapshot(state, status);
 			if (localStatusSnapshot.fresh && !opts.suppressAutoReconcile)
 				void maybeAutoReconcileSelectionDrift(state, status);
+			if (desiredEnabled)
+				void updateDiagnosticsSummary(state, { force: opts.force });
+			else
+				renderDiagnosticsSnapshot(state, managerData.emptyDiagnosticsSummary());
 			return status;
 		}).catch(function(err) {
 			state.currentLocalStatusFresh = false;
@@ -1057,6 +1092,7 @@ function handleSaveApply(viewState, state, ev, mode) {
 	updatePublicIp: updatePublicIp,
 	updatePublicCountry: updatePublicCountry,
 	updateLocalStatus: updateLocalStatus,
+	updateDiagnosticsSummary: updateDiagnosticsSummary,
 	onCountryChanged: onCountryChanged,
 	onModeChanged: onModeChanged,
 	handleRefreshServerCatalog: handleRefreshServerCatalog,

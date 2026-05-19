@@ -45,6 +45,22 @@ if (!String.prototype.format) {
 	});
 }
 
+function loadManagerDataModule() {
+	const source = fs.readFileSync(managerDataPath, 'utf8');
+
+	return vm.runInNewContext(`(function(){\n${source}\n})();`, {
+		baseclass: {
+			extend(api) {
+				return api;
+			}
+		}
+	}, {
+		filename: managerDataPath
+	});
+}
+
+const managerData = loadManagerDataModule();
+
 function loadManagerActionsModule(overrides) {
 	const source = fs.readFileSync(managerActionsPath, 'utf8');
 	const context = {
@@ -68,6 +84,15 @@ function loadManagerActionsModule(overrides) {
 			},
 			parseLocalStatus() {
 				return {};
+			},
+			emptyDiagnosticsSummary() {
+				return managerData.emptyDiagnosticsSummary();
+			},
+			parseDiagnosticsSummary(raw) {
+				return managerData.parseDiagnosticsSummary(raw);
+			},
+			diagnosticsHasAlert(summary) {
+				return managerData.diagnosticsHasAlert(summary);
 			}
 		},
 		managerFormat: {
@@ -87,7 +112,9 @@ function loadManagerActionsModule(overrides) {
 				throw new Error('runExclusive should not be used in this test');
 			}
 		},
-		managerUI: {},
+		managerUI: {
+			updateDiagnosticsBanner() {}
+		},
 		service: {},
 		ui: {},
 		uci: {},
@@ -149,22 +176,7 @@ function loadManagerActionsModule(overrides) {
 	};
 }
 
-function loadManagerDataModule() {
-	const source = fs.readFileSync(managerDataPath, 'utf8');
-
-	return vm.runInNewContext(`(function(){\n${source}\n})();`, {
-		baseclass: {
-			extend(api) {
-				return api;
-			}
-		}
-	}, {
-		filename: managerDataPath
-	});
-}
-
 const managerActions = loadManagerActionsModule().managerActions;
-const managerData = loadManagerDataModule();
 
 function normalizeValue(value) {
 	return JSON.parse(JSON.stringify(value));
@@ -1516,6 +1528,36 @@ async function testAutoReconcileThrottlesRepeatedFailures() {
 	assert.equal(harness.state.lastAutoReconcileFailureKey, 'auto:AU:BM', 'throttle records the drift key');
 }
 
+function testDiagnosticsHasAlertHonorsPrimaryFinding() {
+	const empty = managerData.emptyDiagnosticsSummary();
+
+	assert.equal(managerData.diagnosticsHasAlert(empty), false, 'empty diagnostics summary has no alert');
+	assert.equal(managerData.diagnosticsHasAlert({
+		primary_finding: { code: 'none', message: '', action: '' }
+	}), false, 'none primary finding has no alert');
+	assert.equal(managerData.diagnosticsHasAlert({
+		primary_finding: { code: 'runtime.no_handshake', message: 'x', action: 'y' }
+	}), true, 'actionable primary finding triggers alert');
+}
+
+function testParseDiagnosticsSummaryNormalizesPayload() {
+	const parsed = managerData.parseDiagnosticsSummary({
+		generated_at: 42,
+		primary_finding: { code: 'routing.blackhole_default_via_vpn', message: 'm', action: 'a' },
+		findings: [
+			{ code: 'runtime.no_handshake', message: 'hs', action: 'fix', severity: 'critical' }
+		],
+		health: { wireguard_connected: false },
+		connectivity: { routing_blackhole_risk: 'yes' }
+	});
+
+	assert.equal(parsed.generated_at, 42, 'parseDiagnosticsSummary keeps generated_at');
+	assert.equal(parsed.primary_finding.code, 'routing.blackhole_default_via_vpn', 'parseDiagnosticsSummary keeps primary code');
+	assert.equal(parsed.findings.length, 1, 'parseDiagnosticsSummary normalizes findings array');
+	assert.equal(parsed.findings[0].severity, 'critical', 'parseDiagnosticsSummary keeps finding severity');
+	assert.equal(parsed.connectivity.routing_blackhole_risk, 'yes', 'parseDiagnosticsSummary keeps connectivity block');
+}
+
 Promise.resolve().then(async function() {
 	await testUpdateLocalStatusMarksSnapshotsStaleOnFailedResponse();
 	await testUpdateLocalStatusMarksSnapshotsStaleOnRejectedExec();
@@ -1534,6 +1576,8 @@ Promise.resolve().then(async function() {
 	await testAutoReconcileThrottlesSuccessfulNoChange();
 	await testAutoReconcileSkipsNonDriftCases();
 	await testAutoReconcileThrottlesRepeatedFailures();
+	testDiagnosticsHasAlertHonorsPrimaryFinding();
+	testParseDiagnosticsSummaryNormalizesPayload();
 	console.log('test-manager-actions.js: ok');
 }).catch(function(err) {
 	console.error(err);

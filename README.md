@@ -140,6 +140,22 @@ NordLynx uses WireGuard over UDP. For routers behind NAT, NordVPN Easy keeps the
 peer alive with `wireguard_persistent_keepalive=15` by default and repairs older
 peer configurations that miss the setting during setup/reconnect.
 
+## Diagnostics
+
+Use **Services → NordVPN Easy → Diagnostics** for a structured assessment and
+full log export. The main NordVPN Easy page also shows an alert banner when a
+primary issue is detected (for example routing blackhole, missing handshake, or
+kill switch active without a tunnel).
+
+Common `probable_issue_code` values:
+
+| Code | Typical cause |
+|------|----------------|
+| `routing.blackhole_default_via_vpn` | Default route uses the VPN before WireGuard connects |
+| `runtime.no_handshake` | Peer configured but no recent handshake |
+| `operational.kill_switch_active` | Kill switch on while the tunnel is down |
+| `connectivity.wan_down` | WAN probe failed while VPN is enabled |
+
 If long-lived streams or downloads drop after roughly 30 seconds while OpenVPN is
 stable, check diagnostics first. Common causes are an aggressive upstream NAT,
 MTU/MSS blackholes, or a bad VPN server path rather than an OpenWrt log-visible

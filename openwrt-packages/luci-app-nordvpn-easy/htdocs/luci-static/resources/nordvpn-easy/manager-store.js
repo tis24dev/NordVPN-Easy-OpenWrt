@@ -29,6 +29,8 @@ function createState() {
 		currentLocalStatusFresh: false,
 		currentLocalStatusLastUpdated: 0,
 		currentServerCatalog: managerData.emptyServerCatalog(),
+		currentDiagnosticsSummary: managerData.emptyDiagnosticsSummary(),
+		currentDiagnosticsSummaryFresh: false,
 		serverCatalogIndex: {},
 		latestServerCatalogRequestId: 0,
 		lastAutoReconcileFailureKey: '',
@@ -38,6 +40,7 @@ function createState() {
 		lastError: '',
 		inFlight: {
 			status: null,
+			diagnostics: null,
 			publicIp: null,
 			publicCountry: null,
 			catalog: null,
