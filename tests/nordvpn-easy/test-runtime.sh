@@ -5,6 +5,8 @@ set -eu
 ROOT_DIR="$(CDPATH='' cd -- "$(dirname "$0")/../.." && pwd)"
 COMMON_LIB="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/common.sh"
 RUNTIME_LIB="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/runtime.sh"
+WIREGUARD_LIB="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/wireguard.sh"
+DIAGNOSTICS_LIB="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/diagnostics.sh"
 TMP_DIR="$(mktemp -d)"
 
 cleanup() {
@@ -17,6 +19,16 @@ trap cleanup EXIT HUP INT TERM
 . "$COMMON_LIB"
 # shellcheck disable=SC1090
 . "$RUNTIME_LIB"
+# shellcheck disable=SC1090
+. "$WIREGUARD_LIB"
+# shellcheck disable=SC1090
+. "$DIAGNOSTICS_LIB"
+
+pick_ping_ip() {
+	printf '%s\n' '1.1.1.1'
+}
+
+NORDVPN_EASY_DIAGNOSTICS_ACTIVE_PROBES='0'
 
 assert_eq() {
 	expected="$1"
@@ -181,5 +193,6 @@ DIAG_SUMMARY="$(nordvpn_easy_print_diagnostics_health_summary wg0)"
 
 assert_eq 'private_key,addresses,peerdns,delegate,force_link' "$(printf '%s\n' "$DIAG_SUMMARY" | sed -n 's/^required_interface_keys_missing=//p')" 'diagnostics report incomplete WireGuard interface keys separately'
 assert_eq 'wireguard interface is incomplete (private_key,addresses,peerdns,delegate,force_link)' "$(printf '%s\n' "$DIAG_SUMMARY" | sed -n 's/^probable_issue=//p')" 'diagnostics prioritize incomplete interface before runtime peer symptoms'
+assert_eq 'config.interface_incomplete' "$(printf '%s\n' "$DIAG_SUMMARY" | sed -n 's/^probable_issue_code=//p')" 'diagnostics expose machine-readable issue code'
 
 printf '%s\n' 'test-runtime.sh: ok'

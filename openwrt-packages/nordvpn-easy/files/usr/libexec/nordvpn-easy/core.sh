@@ -13,6 +13,7 @@ COMMON_LIB="${LIB_DIR}/common.sh"
 CATALOG_LIB="${LIB_DIR}/catalog.sh"
 RUNTIME_LIB="${LIB_DIR}/runtime.sh"
 WIREGUARD_LIB="${LIB_DIR}/wireguard.sh"
+DIAGNOSTICS_LIB="${LIB_DIR}/diagnostics.sh"
 ACTIONS_LIB="${LIB_DIR}/actions.sh"
 
 # shellcheck disable=SC1090
@@ -27,6 +28,8 @@ ACTIONS_LIB="${LIB_DIR}/actions.sh"
 . "$RUNTIME_LIB" || exit 1
 # shellcheck disable=SC1090
 . "$WIREGUARD_LIB" || exit 1
+# shellcheck disable=SC1090
+. "$DIAGNOSTICS_LIB" || exit 1
 # shellcheck disable=SC1090
 . "$ACTIONS_LIB" || exit 1
 
