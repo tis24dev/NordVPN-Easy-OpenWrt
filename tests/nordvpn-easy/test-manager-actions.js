@@ -1576,8 +1576,10 @@ function testParseDiagnosticsSummaryNormalizesPayload() {
 		findings: [
 			{ code: 'runtime.no_handshake', message: 'hs', action: 'fix', severity: 'critical' }
 		],
+		status: { state: 'connected', connected: true },
 		health: { wireguard_connected: false },
-		connectivity: { routing_blackhole_risk: 'yes' }
+		connectivity: { routing_blackhole_risk: 'yes' },
+		caches: { last_error: '' }
 	});
 
 	assert.equal(parsed.generated_at, 42, 'parseDiagnosticsSummary keeps generated_at');
@@ -1585,6 +1587,8 @@ function testParseDiagnosticsSummaryNormalizesPayload() {
 	assert.equal(parsed.findings.length, 1, 'parseDiagnosticsSummary normalizes findings array');
 	assert.equal(parsed.findings[0].severity, 'critical', 'parseDiagnosticsSummary keeps finding severity');
 	assert.equal(parsed.connectivity.routing_blackhole_risk, 'yes', 'parseDiagnosticsSummary keeps connectivity block');
+	assert.equal(parsed.status && parsed.status.state, 'connected', 'parseDiagnosticsSummary keeps status block');
+	assert.equal(parsed.caches && parsed.caches.last_error, '', 'parseDiagnosticsSummary keeps caches block');
 }
 
 Promise.resolve().then(async function() {

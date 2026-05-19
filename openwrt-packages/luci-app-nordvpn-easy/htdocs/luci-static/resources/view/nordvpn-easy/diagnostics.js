@@ -11,13 +11,34 @@ function parseDiagnosticsLoadResult(summaryResult) {
 	if (!summaryResult)
 		return managerData.emptyDiagnosticsSummary();
 
-	if (summaryResult.generated_at != null ||
-		(summaryResult.primary_finding && typeof summaryResult.primary_finding === 'object'))
+	if (managerData.isDiagnosticsSummaryPayload(summaryResult))
 		return managerData.parseDiagnosticsSummary(summaryResult);
 
-	if (summaryResult.code != null || summaryResult.stdout != null) {
-		payload = service.parseExecJsonResponse(summaryResult, null);
-		return managerData.parseDiagnosticsSummary(payload);
+	if (summaryResult.code != null || summaryResult.stdout != null || summaryResult.message != null) {
+		if (summaryResult.stdout)
+			payload = service.parseJson(summaryResult.stdout, null);
+
+		if (!payload)
+			payload = service.parseExecJsonResponse(summaryResult, null);
+
+		if (payload && managerData.isDiagnosticsSummaryPayload(payload))
+			return managerData.parseDiagnosticsSummary(payload);
+
+		if (summaryResult.loadFailed || summaryResult.code !== 0) {
+			return managerData.parseDiagnosticsSummary({
+				generated_at: 0,
+				primary_finding: {
+					code: 'operational.summary_failed',
+					message: summaryResult.message ||
+						_('Diagnostics summary is unavailable.'),
+					action: _('Use Refresh assessment or review NordVPN Easy logs.'),
+					severity: 'critical'
+				},
+				findings: [],
+				health: {},
+				connectivity: {}
+			});
+		}
 	}
 
 	return managerData.parseDiagnosticsSummary(summaryResult);
@@ -29,6 +50,13 @@ function formatStatusValue(value) {
 
 	if (value === false || value === 'false')
 		return _('No');
+
+	return value || _('Unknown');
+}
+
+function formatProbeValue(value) {
+	if (value === 'skipped')
+		return _('Skipped (background refresh)');
 
 	return value || _('Unknown');
 }
@@ -96,11 +124,11 @@ function assessmentRows(summary) {
 		},
 		{
 			label: _('WAN Ping'),
-			value: connectivity.wan_ping || _('Unknown')
+			value: formatProbeValue(connectivity.wan_ping)
 		},
 		{
 			label: _('API DNS (api.nordvpn.com)'),
-			value: connectivity.dns_api_nordvpn_com || _('Unknown')
+			value: formatProbeValue(connectivity.dns_api_nordvpn_com)
 		},
 		{
 			label: _('Kill Switch'),
@@ -160,8 +188,13 @@ return view.extend({
 	handleReset: null,
 
 	load: function() {
-		return service.execService('diagnostics_summary').catch(function() {
-			return null;
+		return service.execService('diagnostics_summary').catch(function(err) {
+			return {
+				code: -1,
+				stdout: '',
+				message: (err && err.message) ? err.message : String(err),
+				loadFailed: true
+			};
 		});
 	},
 

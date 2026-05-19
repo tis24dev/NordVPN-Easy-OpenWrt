@@ -131,8 +131,10 @@ function emptyDiagnosticsSummary() {
 			action: ''
 		},
 		findings: [],
+		status: null,
 		health: {},
-		connectivity: {}
+		connectivity: {},
+		caches: {}
 	};
 }
 
@@ -165,8 +167,12 @@ function parseDiagnosticsSummary(raw) {
 				severity: String((finding && finding.severity) || 'warning')
 			};
 		}) : [],
+		status: (summary.status && typeof summary.status === 'object' && !Array.isArray(summary.status)) ?
+			summary.status :
+			null,
 		health: (summary.health && typeof summary.health === 'object') ? summary.health : {},
-		connectivity: (summary.connectivity && typeof summary.connectivity === 'object') ? summary.connectivity : {}
+		connectivity: (summary.connectivity && typeof summary.connectivity === 'object') ? summary.connectivity : {},
+		caches: (summary.caches && typeof summary.caches === 'object') ? summary.caches : {}
 	};
 }
 

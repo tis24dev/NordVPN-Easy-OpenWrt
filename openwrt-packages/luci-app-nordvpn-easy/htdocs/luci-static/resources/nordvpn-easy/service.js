@@ -193,7 +193,9 @@ function normalizeExecResult(action, payload) {
 		stdout = String(payload.stdout);
 	else if (payload.log != null)
 		stdout = String(payload.log);
-	else if (payload.code == null && payload.success == null)
+	else if (payload.stdout == null && payload.log == null &&
+		(payload.code == null && payload.success == null || payload.success === false ||
+			Object.prototype.hasOwnProperty.call(payload, 'generated_at')))
 		stdout = JSON.stringify(payload);
 
 	if (payload.stderr != null)
