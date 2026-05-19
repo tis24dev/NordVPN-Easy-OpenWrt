@@ -20,6 +20,7 @@ printf '%s' "$LIST_JSON" | jq -er '
 	.status == {} and
 	.connect == {} and
 	.disconnect == {} and
+	.stop_vpn == {} and
 	.reconnect == {} and
 	.reconcile == {} and
 	.refresh_countries.force == "Boolean" and

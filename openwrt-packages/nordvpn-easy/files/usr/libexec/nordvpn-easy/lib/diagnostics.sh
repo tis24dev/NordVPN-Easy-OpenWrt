@@ -920,7 +920,7 @@ nordvpn_easy_diagnostics_compute_findings() {
 		nordvpn_easy_diagnostics_add_finding \
 			'selection.drift' \
 			"$DIAG_SERVER_SELECTION_DRIFT" \
-			'Run Reconcile or Connect to apply the selected country or preferred server'
+			'Run Save & Apply on the config page to stop the VPN, clear caches, and connect with the selected country or preferred server'
 	fi
 
 	if [ "$DIAG_WG_PEER_COUNT" = '0' ] && [ "$DIAG_LINK_PRESENT" = 'yes' ]; then

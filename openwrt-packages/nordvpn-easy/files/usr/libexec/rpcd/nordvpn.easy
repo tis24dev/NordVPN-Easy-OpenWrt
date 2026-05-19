@@ -157,6 +157,10 @@ rpc_reconnect() {
 	rpc_command_result 'reconnect' "$INIT_SCRIPT" reconnect
 }
 
+rpc_stop_vpn() {
+	rpc_command_result 'stop_vpn' "$INIT_SCRIPT" stop_vpn
+}
+
 rpc_diagnostics_summary() {
 	local tmp_dir out_file err_file rc err_msg
 
@@ -241,6 +245,9 @@ rpc_call() {
 		reconnect)
 			rpc_reconnect
 			;;
+		stop_vpn)
+			rpc_stop_vpn
+			;;
 		reconcile)
 			rpc_command_result 'reconcile' "$INIT_SCRIPT" reconcile
 			;;
@@ -294,6 +301,7 @@ case "$1" in
   "connect": {},
   "disconnect": {},
   "reconnect": {},
+  "stop_vpn": {},
   "reconcile": {},
   "rotate": {},
   "setup": {},

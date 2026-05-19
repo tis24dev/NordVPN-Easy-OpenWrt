@@ -20,11 +20,12 @@ SERVICE_BACKEND_PAYLOAD_SIGNATURE='render-contract-v3'
 NORDVPN_EASY_RC_BUSY="${NORDVPN_EASY_RC_BUSY:-75}"
 # OpenWrt rc.common consumes the command/help metadata.
 # shellcheck disable=SC2034
-EXTRA_COMMANDS='connect disconnect reconnect reconcile setup check rotate refresh_countries refresh_countries_force server_catalog public_ip public_country operation_status vpn_status status_json diagnostics_log diagnostics_summary install_hooks remove_hooks disable_runtime render_runtime_config'
+EXTRA_COMMANDS='connect disconnect stop_vpn reconnect reconcile setup check rotate refresh_countries refresh_countries_force server_catalog public_ip public_country operation_status vpn_status status_json diagnostics_log diagnostics_summary install_hooks remove_hooks disable_runtime render_runtime_config'
 # shellcheck disable=SC2034
 EXTRA_HELP='  connect               Enable, run setup, then install hooks transactionally
   disconnect            Disable runtime and remove hooks
-  reconnect             Close the VPN interface, synchronize server selection, then install hooks
+  stop_vpn              Stop VPN, clear caches, and remove WireGuard runtime config
+  reconnect             Compatibility alias for stop_vpn then connect
   reconcile             Synchronize runtime state with the saved UCI config
   setup                 Run setup immediately
   check                 Run one health check immediately
@@ -532,15 +533,22 @@ disconnect() {
 	disable_vpn_runtime
 }
 
+stop_vpn() {
+	load_service_config || return 1
+	log_service_info "stop_vpn requested; stopping VPN runtime and clearing server caches; $(nordvpn_easy_service_debug_summary 'cfg_')"
+	remove_hooks
+	run_core_action stop_vpn || return $?
+}
+
 reconnect() {
 	load_service_config || return 1
-	log_service_info "reconnect requested; clean runtime restart and hooks will run transactionally; $(nordvpn_easy_service_debug_summary 'cfg_')"
+	log_service_info "reconnect requested (compatibility: stop_vpn then connect); $(nordvpn_easy_service_debug_summary 'cfg_')"
 	if [ "$cfg_enabled" -ne 1 ]; then
 		log_service_error 'reconnect refused because enabled=0; use connect to enable the runtime'
 		return 1
 	fi
-	run_core_action reconnect || return $?
-	install_hooks
+	stop_vpn || return $?
+	connect
 }
 
 reconcile() {
@@ -583,8 +591,9 @@ reconcile() {
 		return "$rc"
 	fi
 
-	log_service_info 'reconcile: runtime reconciliation did not validate the runtime; running reconnect'
-	reconnect
+	log_service_info 'reconcile: runtime reconciliation did not validate the runtime; running stop_vpn then connect'
+	stop_vpn || return $?
+	connect
 }
 
 setup() {

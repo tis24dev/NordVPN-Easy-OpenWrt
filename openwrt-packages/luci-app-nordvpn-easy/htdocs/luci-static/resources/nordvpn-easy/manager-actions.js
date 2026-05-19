@@ -1,15 +1,21 @@
 'use strict';
-/* global baseclass, managerData, managerFormat, managerStore, managerUI, service, ui, uci, document, Date, setTimeout, clearTimeout, E, _ */
+/* global baseclass, managerData, managerFormat, managerStore, managerUI, service, ui, uci, rpc, request, L, document, Date, setTimeout, clearTimeout, E, _ */
 'require baseclass';
 'require nordvpn-easy/manager-data as managerData';
 'require nordvpn-easy/manager-format as managerFormat';
 'require nordvpn-easy/manager-store as managerStore';
 'require nordvpn-easy/manager-ui as managerUI';
 'require nordvpn-easy/service as service';
+'require rpc';
+'require request';
 'require ui';
 'require uci';
 
+
 const AUTO_RECONCILE_RETRY_DELAY_MS = 5 * 60 * 1000;
+const SAVE_APPLY_TIMEOUT_MS = 150000;
+const RUNTIME_ACTION_COOLDOWN_MS = SAVE_APPLY_TIMEOUT_MS + 30000;
+let callUciCommit = null;
 
 function formatDebugValue(value, fallback) {
 	const normalized = String(value != null ? value : '').trim();
@@ -161,11 +167,26 @@ function deriveServerSelectionDrift(state, status) {
 	};
 }
 
+function runtimeActionCooldownActive(state) {
+	return Date.now() < Number((state && state.runtimeActionCooldownUntil) || 0);
+}
+
+function markRuntimeActionCooldown(state) {
+	if (!state)
+		return;
+
+	state.runtimeActionCooldownUntil = Date.now() + RUNTIME_ACTION_COOLDOWN_MS;
+}
+
 function autoReconcileIsAllowed(state, status, drift) {
 	const runtimeStatus = status || (state && state.currentLocalStatus) || {};
 
 	return !!drift &&
 		!!state &&
+		!state.saveApplyInProgress &&
+		!runtimeActionCooldownActive(state) &&
+		state.phase !== managerStore.PHASES.SAVING &&
+		state.phase !== managerStore.PHASES.RUNTIME_BUSY &&
 		!!state.appliedEnabled &&
 		!!runtimeStatus.desired_enabled &&
 		!!runtimeStatus.runtime_configured &&
@@ -209,13 +230,14 @@ function maybeAutoReconcileSelectionDrift(state, status) {
 		if (!autoReconcileIsAllowed(state, latestStatus, latestDrift) || autoReconcileFailureIsThrottled(state, latestDrift))
 			return Promise.resolve(false);
 
-		state.pendingOperationLabel = 'reconnect';
-		state.currentOperationStatus = 'busy:reconnect';
+		markRuntimeActionCooldown(state);
+		state.pendingOperationLabel = 'stop_vpn + connect';
+		state.currentOperationStatus = 'busy:stop_vpn + connect';
 		managerStore.setPhase(state, managerStore.PHASES.RUNTIME_BUSY);
 		renderLocalStatusSnapshot(state, latestStatus);
 		notifyDebugBlock(_('Automatic runtime sync queued'), autoReconcileDebugLines(latestDrift));
 
-		return service.runActions([ 'reconnect' ]).then(function() {
+		return service.runActions([ 'stop_vpn', 'connect' ]).then(function() {
 			return refreshAfterSaveApply(state, true, { suppressAutoReconcile: true }).then(function() {
 				const remainingDrift = deriveServerSelectionDrift(state, state.currentLocalStatus);
 				let unchangedError;
@@ -321,20 +343,169 @@ function deriveRuntimeActionPlan(previousEnabled, enabled, previousCountry, coun
 	}
 
 	if (currentEnabled) {
-		plan.actions = [ 'reconnect' ];
-		if (currentMode === 'manual') {
-			plan.successMessage = _('NordVPN Easy cleanly reconnected and synchronized the selected manual server.');
-		}
-		else if (serverSelectionChanged || serverSelectionDrift || peerCountryMismatch || runtimeNeedsReconciliation(runtimeStatus)) {
-			plan.successMessage = _('NordVPN Easy cleanly reconnected and synchronized the automatic server selection.');
+		if (serverSelectionChanged || serverSelectionDrift || peerCountryMismatch || runtimeNeedsReconciliation(runtimeStatus)) {
+			plan.actions = [ 'stop_vpn', 'connect' ];
+			if (currentMode === 'manual') {
+				plan.successMessage = _('NordVPN Easy stopped the VPN, cleared caches, and connected to the selected manual server.');
+			}
+			else {
+				plan.successMessage = _('NordVPN Easy stopped the VPN, cleared caches, and connected to the selected automatic server.');
+			}
 		}
 		else {
-			plan.successMessage = _('NordVPN Easy cleanly reconnected with the saved configuration.');
+			plan.actions = [];
+			plan.successMessage = _('Configuration saved successfully.');
 		}
 		return plan;
 	}
 
 	return plan;
+}
+
+function clearLuCiUnsavedChangesIndicator() {
+	if (typeof ui !== 'undefined' && ui.changes)
+		ui.changes.changes = {};
+
+	if (typeof ui !== 'undefined' && ui.changes && typeof ui.changes.setIndicator === 'function')
+		ui.changes.setIndicator(0);
+}
+
+function countLuCiChanges(changes) {
+	let count = 0;
+
+	if (!changes || typeof changes !== 'object')
+		return 0;
+
+	Object.keys(changes).forEach(function(config) {
+		const records = changes[config];
+
+		if (Array.isArray(records))
+			count += records.length;
+	});
+
+	return count;
+}
+
+function renderLuCiChangeTracker(changes) {
+	const pendingChanges = changes || {};
+
+	if (typeof ui !== 'undefined' && ui.changes) {
+		ui.changes.changes = pendingChanges;
+
+		if (typeof ui.changes.renderChangeIndicator === 'function')
+			ui.changes.renderChangeIndicator(pendingChanges);
+		else if (typeof ui.changes.setIndicator === 'function')
+			ui.changes.setIndicator(countLuCiChanges(pendingChanges));
+	}
+
+	if (!countLuCiChanges(pendingChanges))
+		clearLuCiUnsavedChangesIndicator();
+
+	return pendingChanges;
+}
+
+function refreshLuCiChangeTracker() {
+	if (typeof uci !== 'undefined' && typeof uci.changes === 'function') {
+		return uci.changes().then(function(changes) {
+			const pendingChanges = renderLuCiChangeTracker(changes);
+
+			// #region agent log
+			agentDebugLog('H4', 'manager-actions.js:refreshLuCiChangeTracker', 'luci change tracker refreshed', {
+				pendingChangeCount: countLuCiChanges(pendingChanges),
+				configs: Object.keys(pendingChanges || {})
+			});
+			// #endregion
+
+			return pendingChanges;
+		});
+	}
+
+	if (typeof ui !== 'undefined' && ui.changes && typeof ui.changes.init === 'function') {
+		return ui.changes.init().then(function() {
+			return ui.changes.changes || {};
+		});
+	}
+
+	return Promise.resolve();
+}
+
+function applyLuCiPendingChangesWithSession() {
+	if (typeof request === 'undefined' ||
+		typeof L === 'undefined' ||
+		!L.env ||
+		typeof L.url !== 'function' ||
+		typeof request.request !== 'function') {
+		return Promise.reject(new Error(_('LuCI apply endpoint is unavailable.')));
+	}
+
+	return request.request(L.url('admin/uci', 'apply_unchecked'), {
+		method: 'post',
+		query: {
+			sid: L.env.sessionid,
+			token: L.env.token
+		}
+	}).then(function(res) {
+		const status = Number((res && res.status) || 0);
+
+		// #region agent log
+		agentDebugLog('H5', 'manager-actions.js:applyLuCiPendingChangesWithSession', 'luci apply_unchecked completed', {
+			status: status
+		});
+		// #endregion
+
+		if (status === 200 || status === 204)
+			return refreshLuCiChangeTracker();
+
+		return Promise.reject(new Error(_('LuCI apply request failed with status %s.').format(status || _('unknown'))));
+	});
+}
+
+function commitLuCiPendingChangesFallback() {
+	if (!callUciCommit && typeof rpc !== 'undefined') {
+		callUciCommit = rpc.declare({
+			object: 'uci',
+			method: 'commit',
+			params: [ 'config' ],
+			reject: true
+		});
+	}
+
+	if (!callUciCommit)
+		return Promise.reject(new Error(_('Could not commit UCI changes: LuCI RPC is unavailable.')));
+
+	return callUciCommit('nordvpn_easy').then(function() {
+		// #region agent log
+		agentDebugLog('H3', 'manager-actions.js:flushLuCiPendingChanges', 'uci commit succeeded', {
+			config: 'nordvpn_easy'
+		});
+		// #endregion
+
+		return refreshLuCiChangeTracker();
+	}).catch(function(err) {
+		const message = (err && err.message) ? err.message : String(err);
+
+		// #region agent log
+		agentDebugLog('H3', 'manager-actions.js:flushLuCiPendingChanges', 'uci commit failed', {
+			message: message
+		});
+		// #endregion
+
+		return Promise.reject(new Error(_('Could not commit UCI changes: ') + message));
+	});
+}
+
+function flushLuCiPendingChanges() {
+	return applyLuCiPendingChangesWithSession().catch(function(err) {
+		const message = (err && err.message) ? err.message : String(err);
+
+		// #region agent log
+		agentDebugLog('H5', 'manager-actions.js:flushLuCiPendingChanges', 'luci apply endpoint failed, falling back to rpc commit', {
+			message: message
+		});
+		// #endregion
+
+		return commitLuCiPendingChangesFallback();
+	});
 }
 
 function notifyDebugBlock(title, lines) {
@@ -724,8 +895,7 @@ function updateLocalStatus(state, options) {
 			state.appliedEnabled = desiredEnabled;
 			state.appliedCountryCode = managerData.normalizeCountryCode(status.selected_country || state.appliedCountryCode);
 			renderLocalStatusSnapshot(state, status);
-			if (localStatusSnapshot.fresh && !opts.suppressAutoReconcile)
-				void maybeAutoReconcileSelectionDrift(state, status);
+			// Drift recovery runs from Save & Apply or the diagnostics Apply button only.
 			if (desiredEnabled)
 				void updateDiagnosticsSummary(state, { force: opts.force });
 			else
@@ -834,6 +1004,58 @@ function loadSavedRuntimeConfig() {
 	});
 }
 
+function syncSubmittedRuntimeConfigToUci(submitted) {
+	const country = managerData.normalizeCountryCode((submitted && submitted.country) || '');
+	const mode = normalizeSelectionMode((submitted && submitted.mode) || 'auto');
+
+	uci.set('nordvpn_easy', 'main', 'vpn_country', country);
+	uci.set('nordvpn_easy', 'main', 'server_selection_mode', mode);
+	uci.set('nordvpn_easy', 'main', 'enabled', (submitted && submitted.enabled) ? '1' : '0');
+}
+
+function mergeSavedConfigWithSubmittedValues(savedConfig, submitted) {
+	const merged = Object.assign({}, savedConfig || {});
+	const formCountry = managerData.normalizeCountryCode((submitted && submitted.country) || '');
+
+	if (submitted && Object.prototype.hasOwnProperty.call(submitted, 'country'))
+		merged.country = formCountry;
+
+	if (submitted && submitted.mode)
+		merged.mode = normalizeSelectionMode(submitted.mode);
+
+	if (submitted && Object.prototype.hasOwnProperty.call(submitted, 'enabled'))
+		merged.enabled = !!submitted.enabled;
+
+	if (submitted && Object.prototype.hasOwnProperty.call(submitted, 'preferredStation'))
+		merged.preferredStation = String(submitted.preferredStation || '');
+
+	return merged;
+}
+
+// #region agent log
+function agentDebugLog(hypothesisId, location, message, data) {
+	if (typeof fetch !== 'function')
+		return;
+
+	fetch('http://localhost:7842/ingest/c0328b70-db95-4d07-846a-9cbc9e708094', {
+		method: 'POST',
+		headers: {
+			'Content-Type': 'application/json',
+			'X-Debug-Session-Id': 'cf39b0'
+		},
+		body: JSON.stringify({
+			sessionId: 'cf39b0',
+			runId: 'save-apply',
+			hypothesisId: hypothesisId,
+			location: location,
+			message: message,
+			data: data || {},
+			timestamp: Date.now()
+		})
+	}).catch(function() {});
+}
+// #endregion
+
 function rememberSavedRuntimeConfig(viewState, state, savedConfig) {
 	viewState.initialEnabled = savedConfig.enabled;
 	viewState.initialCountry = savedConfig.country;
@@ -847,6 +1069,7 @@ function refreshAfterSaveApply(state, refreshPublicIp, options) {
 	const opts = options || {};
 
 	state.pendingOperationLabel = '';
+	state.saveApplyInProgress = false;
 	managerStore.resumePolling(state);
 
 	return updateLocalStatus(state, {
@@ -857,18 +1080,8 @@ function refreshAfterSaveApply(state, refreshPublicIp, options) {
 			return updatePublicIp(state, { force: true });
 
 		return null;
-	});
-}
-
-function waitForUciApplied(checked) {
-	return new Promise(function(resolve) {
-		const onApplied = function() {
-			document.removeEventListener('uci-applied', onApplied);
-			resolve();
-		};
-
-		document.addEventListener('uci-applied', onApplied);
-		ui.changes.apply(checked);
+	}).then(function() {
+		return refreshLuCiChangeTracker();
 	});
 }
 
@@ -947,7 +1160,7 @@ function handleSaveApply(viewState, state, ev, mode) {
 		confirmationPromise = managerUI.showConfirmationModal(
 			_('Confirm Server Change'),
 			[
-				_('Applying these changes will reconfigure the current VPN tunnel, cycle the VPN interface, and then reconnect with the selected server settings.'),
+				_('Applying these changes will stop the VPN, clear cached server data, and connect again with the selected server settings.'),
 				currentMode === 'manual'
 					? (selectedServer
 						? _('Preferred server: %s').format(managerFormat.formatServerLabel(selectedServer))
@@ -968,6 +1181,8 @@ function handleSaveApply(viewState, state, ev, mode) {
 		]));
 
 		managerStore.clearError(state);
+		state.saveApplyInProgress = true;
+		markRuntimeActionCooldown(state);
 		managerStore.suspendPolling(state);
 		managerStore.setPhase(state, managerStore.PHASES.SAVING);
 
@@ -1003,6 +1218,7 @@ function handleSaveApply(viewState, state, ev, mode) {
 			const handleRejectedSaveFlow = function(err) {
 				managerStore.setError(state, err);
 				state.pendingOperationLabel = '';
+				state.saveApplyInProgress = false;
 				managerStore.resumePolling(state);
 				updateLocalStatus(state, { force: true });
 				finishReject(err);
@@ -1010,9 +1226,30 @@ function handleSaveApply(viewState, state, ev, mode) {
 
 			cleanup();
 
+			const submittedRuntimeConfig = {
+				country: currentCountry,
+				mode: currentMode,
+				enabled: currentEnabled,
+				preferredStation: preferredStation
+			};
+
+			syncSubmittedRuntimeConfigToUci(submittedRuntimeConfig);
+
 			Promise.resolve(viewState.handleSave(ev)).then(function() {
 				const continueAfterUciApply = function() {
-					return loadSavedRuntimeConfig().then(function(savedConfig) {
+					return flushLuCiPendingChanges().then(function() {
+						return loadSavedRuntimeConfig();
+					}).then(function(savedConfig) {
+						const diskCountry = savedConfig.country;
+
+						savedConfig = mergeSavedConfigWithSubmittedValues(savedConfig, submittedRuntimeConfig);
+						// #region agent log
+						agentDebugLog('H1', 'manager-actions.js:continueAfterUciApply', 'saved config after commit', {
+							formCountry: managerData.normalizeCountryCode(currentCountry || ''),
+							diskCountry: diskCountry,
+							mergedCountry: savedConfig.country
+						});
+						// #endregion
 						rememberSavedRuntimeConfig(viewState, state, savedConfig);
 						return updateLocalStatus(state, {
 							force: true,
@@ -1034,6 +1271,15 @@ function handleSaveApply(viewState, state, ev, mode) {
 							const actions = runtimePlan.actions;
 							const successMessage = runtimePlan.successMessage;
 
+							// #region agent log
+							agentDebugLog('H2', 'manager-actions.js:continueAfterUciApply', 'runtime action plan', {
+								actions: actions,
+								previousCountry: previousCountry,
+								savedCountry: savedConfig.country,
+								serverSelectionChanged: runtimePlan.serverSelectionChanged
+							});
+							// #endregion
+
 							if (!actions.length) {
 								notifyDebugBlock(_('Configuration applied'), [
 									_('UCI changes were saved successfully.'),
@@ -1047,18 +1293,13 @@ function handleSaveApply(viewState, state, ev, mode) {
 							state.pendingOperationLabel = managerFormat.formatActionsLabel(actions);
 							state.currentOperationStatus = 'busy:' + state.pendingOperationLabel;
 							managerStore.setPhase(state, managerStore.PHASES.RUNTIME_BUSY);
-							managerStore.resumePolling(state);
+							markRuntimeActionCooldown(state);
 							notifyDebugBlock(_('Runtime actions queued'), [
 								_('Executing: %s').format(state.pendingOperationLabel),
 								_('Enabled state after save: %s').format(savedConfig.enabled ? _('checked') : _('unchecked'))
 							]);
 
-							return updateLocalStatus(state, {
-								force: true,
-								suppressAutoReconcile: true
-							}).then(function() {
-								return service.runActions(actions);
-							}).then(function() {
+							return service.runActions(actions).then(function() {
 								service.notifyInfo(successMessage);
 								return refreshAfterSaveApply(state, true, { suppressAutoReconcile: true });
 							}).then(function() {
@@ -1076,7 +1317,7 @@ function handleSaveApply(viewState, state, ev, mode) {
 
 						managerStore.setError(state, err);
 						return refreshAfterSaveApply(state, true, { suppressAutoReconcile: true }).then(function() {
-							service.notifyError(new Error(_('Automatic runtime sync failed: ') + message));
+							service.notifyError(new Error(_('Save & Apply failed: ') + message));
 							finishReject(err);
 						});
 					});
@@ -1087,18 +1328,20 @@ function handleSaveApply(viewState, state, ev, mode) {
 
 					managerStore.setError(state, timeoutError);
 					state.pendingOperationLabel = '';
+					state.saveApplyInProgress = false;
 					managerStore.resumePolling(state);
 					updateLocalStatus(state, { force: true });
 					finishReject(timeoutError);
-				}, 60000);
+				}, SAVE_APPLY_TIMEOUT_MS);
 
 				state.pendingOperationLabel = _('configuration');
 				state.currentOperationStatus = 'busy:configuration';
 				managerStore.setPhase(state, managerStore.PHASES.SAVING);
 				updateLocalStatus(state, { force: true });
-				waitForUciApplied(mode === '0').then(continueAfterUciApply).catch(function(err) {
+				continueAfterUciApply().catch(function(err) {
 					managerStore.setError(state, err);
 					state.pendingOperationLabel = '';
+					state.saveApplyInProgress = false;
 					managerStore.resumePolling(state);
 					updateLocalStatus(state, { force: true });
 					finishReject(err);
@@ -1115,6 +1358,8 @@ function handleSaveApply(viewState, state, ev, mode) {
 		deriveServerSelectionDrift: deriveServerSelectionDrift,
 		maybeAutoReconcileSelectionDrift: maybeAutoReconcileSelectionDrift,
 		deriveRuntimeActionPlan: deriveRuntimeActionPlan,
+		syncSubmittedRuntimeConfigToUci: syncSubmittedRuntimeConfigToUci,
+		mergeSavedConfigWithSubmittedValues: mergeSavedConfigWithSubmittedValues,
 		runtimeOperationIsBusy: runtimeOperationIsBusy,
 		loadServerCatalog: loadServerCatalog,
 	renderLocalStatusSnapshot: renderLocalStatusSnapshot,

@@ -138,8 +138,28 @@ nordvpn_easy_server_list_cache_is_usable() {
 	' "$SERVER_LIST_FILE" >/dev/null 2>&1
 }
 
+nordvpn_easy_clear_provision_caches() {
+	log 'apply: clearing VPN server selection and public lookup caches'
+
+	rm -f "${SERVER_LIST_FILE:-/tmp/nordvpn.json}" 2>/dev/null || true
+	rm -f "${SERVER_CATALOG_FILE:-/tmp/nordvpn-easy-servers.json}" \
+		"${SERVER_CATALOG_TS_FILE:-/tmp/nordvpn-easy-servers.timestamp}" 2>/dev/null || true
+
+	if command -v nordvpn_easy_write_runtime_cache_value >/dev/null 2>&1; then
+		nordvpn_easy_write_runtime_cache_value "${NORDVPN_EASY_PUBLIC_IP_CACHE:-}" '' >/dev/null 2>&1 || true
+		nordvpn_easy_write_runtime_cache_value "${NORDVPN_EASY_PUBLIC_COUNTRY_CACHE:-}" '' >/dev/null 2>&1 || true
+		nordvpn_easy_write_runtime_cache_value "${NORDVPN_EASY_LAST_ERROR_CACHE:-}" '' >/dev/null 2>&1 || true
+	fi
+
+	return 0
+}
+
 nordvpn_easy_use_cached_server_list_if_available() {
 	local reason="$1"
+
+	if [ "${NORDVPN_EASY_FORCE_FRESH_SERVER_LIST:-0}" = '1' ]; then
+		return 1
+	fi
 
 	if nordvpn_easy_server_list_cache_is_usable; then
 		log "WARNING: $reason; using existing recommended server cache at $SERVER_LIST_FILE"
@@ -315,7 +335,11 @@ nordvpn_easy_fetch_provision_prerequisites() {
 		nordvpn_easy_require_core_action_helpers fetch_server_catalog || return 1
 		nordvpn_easy_require_manual_server_preference || return 1
 		log "apply: manual mode selected; fetching server catalog for ${VPN_COUNTRY:-unset}"
-		fetch_server_catalog 0 "$VPN_COUNTRY" || return 1
+		if [ "${NORDVPN_EASY_FORCE_FRESH_SERVER_LIST:-0}" = '1' ]; then
+			fetch_server_catalog 1 "$VPN_COUNTRY" || return 1
+		else
+			fetch_server_catalog 0 "$VPN_COUNTRY" || return 1
+		fi
 	else
 		log 'apply: automatic mode selected; fetching NordVPN recommendations'
 		nordvpn_easy_get_servers_list || return 1
@@ -369,6 +393,38 @@ nordvpn_easy_configure_vpn_interface() {
 	nordvpn_easy_log_vpn_interface_state 'after-create'
 }
 
+nordvpn_easy_stop_vpn_for_server_change() {
+	log 'apply: stopping VPN and clearing server selection caches'
+	nordvpn_easy_immediate_vpn_shutdown || return 1
+	nordvpn_easy_clear_provision_caches || return 1
+	nordvpn_easy_teardown_vpn || return 1
+	return 0
+}
+
+nordvpn_easy_provision_vpn_connect_fresh() {
+	NORDVPN_EASY_FORCE_FRESH_SERVER_LIST=1
+
+	log 'apply: connecting with a fresh server list and clean caches'
+	nordvpn_easy_fetch_provision_prerequisites || return 1
+	NORDVPN_EASY_PROVISION_FETCH_DONE=1
+	nordvpn_easy_configure_vpn_interface || return 1
+	unset NORDVPN_EASY_PROVISION_FETCH_DONE NORDVPN_EASY_FORCE_FRESH_SERVER_LIST
+
+	if ! nordvpn_easy_wait_for_vpn_connectivity "$VPN_IF" "$POST_RESTART_DELAY" "provisioning $VPN_IF"; then
+		log 'apply: VPN connection is not OK after provisioning'
+		return 1
+	fi
+
+	verify_public_country_selection || return 1
+	log 'apply: VPN provisioning completed'
+	return 0
+}
+
+nordvpn_easy_provision_vpn_server_change() {
+	nordvpn_easy_stop_vpn_for_server_change || return 1
+	nordvpn_easy_provision_vpn_connect_fresh
+}
+
 nordvpn_easy_provision_vpn() {
 	local mode="${1:-}"
 
@@ -377,6 +433,7 @@ nordvpn_easy_provision_vpn() {
 
 	NORDVPN_EASY_PROVISION_MODE="$mode"
 	NORDVPN_EASY_ROTATE_EXCLUDE_STATION=''
+	NORDVPN_EASY_FORCE_FRESH_SERVER_LIST=0
 	if [ "$mode" = 'rotate' ]; then
 		NORDVPN_EASY_ROTATE_EXCLUDE_STATION="$(nordvpn_easy_current_server_station 2>/dev/null || true)"
 	fi
@@ -385,6 +442,16 @@ nordvpn_easy_provision_vpn() {
 	if [ -n "$VPN_COUNTRY" ]; then
 		nordvpn_easy_require_core_action_helpers resolve_country_filter || return 1
 		resolve_country_filter || return 1
+	fi
+
+	if [ "$mode" = 'server_change' ]; then
+		nordvpn_easy_provision_vpn_server_change
+		return $?
+	fi
+
+	if [ "$mode" = 'connect_fresh' ]; then
+		nordvpn_easy_provision_vpn_connect_fresh
+		return $?
 	fi
 
 	nordvpn_easy_fetch_provision_prerequisites || return 1

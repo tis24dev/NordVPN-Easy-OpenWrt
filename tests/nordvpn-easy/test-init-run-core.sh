@@ -43,8 +43,15 @@ extract_function() {
 eval "$(extract_function run_core_action)"
 eval "$(extract_function connect)"
 eval "$(extract_function disconnect)"
+eval "$(extract_function stop_vpn)"
 eval "$(extract_function reconnect)"
 eval "$(extract_function reconcile)"
+
+REMOVE_HOOKS_COUNT=0
+remove_hooks() {
+	REMOVE_HOOKS_COUNT=$((REMOVE_HOOKS_COUNT + 1))
+	return 0
+}
 
 load_service_config() { :; }
 log_service_info() { printf '%s\n' "$1" >> "$INFO_CAPTURE"; }
@@ -164,35 +171,41 @@ assert_eq '1' "$INSTALL_HOOKS_COUNT" 'successful connect installs hooks once'
 cfg_enabled=1
 cat > "$TMP_DIR/core.sh" <<EOF
 #!/bin/sh
-printf '%s\n' "\$*" > "$CORE_CAPTURE"
+printf '%s\n' "\$*" >> "$CORE_CAPTURE"
 exit "\${CORE_EXIT_RC:-0}"
 EOF
 chmod +x "$TMP_DIR/core.sh"
 CORE_SCRIPT="$TMP_DIR/core.sh"
 CORE_EXIT_RC='1'
 INSTALL_HOOKS_COUNT=0
+SETUP_COUNT=0
+REMOVE_HOOKS_COUNT=0
 rm -f "$CORE_CAPTURE"
 RC=0
 reconnect || RC=$?
-assert_eq '1' "$RC" 'reconnect propagates clean core reconnect failure'
-CORE_ARGS="$(cat "$CORE_CAPTURE")"
-case "$CORE_ARGS" in
-	"reconnect --config $TMP_DIR"/action.*"/nordvpn-easy.reconnect.conf")
-		;;
-	*)
-		printf '%s\n' "FAIL: reconnect should run the core reconnect action: $CORE_ARGS" >&2
-		exit 1
-		;;
-esac
-assert_eq '0' "$INSTALL_HOOKS_COUNT" 'reconnect does not install hooks when clean core reconnect fails'
+assert_eq '1' "$RC" 'reconnect propagates stop_vpn failure'
+grep -q "stop_vpn --config $TMP_DIR"/action.*"/nordvpn-easy.stop_vpn.conf" "$CORE_CAPTURE" || {
+	printf '%s\n' "FAIL: reconnect should run stop_vpn before connect: $(cat "$CORE_CAPTURE")" >&2
+	exit 1
+}
+assert_eq '0' "$SETUP_COUNT" 'reconnect does not run connect when stop_vpn fails'
+assert_eq '0' "$INSTALL_HOOKS_COUNT" 'reconnect does not install hooks when stop_vpn fails'
 
 CORE_EXIT_RC='0'
 INSTALL_HOOKS_COUNT=0
+SETUP_COUNT=0
+REMOVE_HOOKS_COUNT=0
 rm -f "$CORE_CAPTURE"
 RC=0
 reconnect || RC=$?
-assert_eq '0' "$RC" 'reconnect succeeds when clean core reconnect and hook installation succeed'
+assert_eq '0' "$RC" 'reconnect succeeds when stop_vpn, connect, and hook installation succeed'
+grep -q "stop_vpn --config $TMP_DIR"/action.*"/nordvpn-easy.stop_vpn.conf" "$CORE_CAPTURE" || {
+	printf '%s\n' "FAIL: reconnect should run stop_vpn: $(cat "$CORE_CAPTURE")" >&2
+	exit 1
+}
+assert_eq '1' "$SETUP_COUNT" 'successful reconnect runs connect/setup after stop_vpn'
 assert_eq '1' "$INSTALL_HOOKS_COUNT" 'successful reconnect installs hooks once'
+assert_eq '1' "$REMOVE_HOOKS_COUNT" 'reconnect removes hooks before stop_vpn'
 
 cfg_enabled=0
 DISABLE_RUNTIME_COUNT=0
@@ -275,6 +288,7 @@ case "$CORE_ARGS" in
 esac
 assert_eq '1' "$INSTALL_HOOKS_COUNT" 'configured reconcile installs hooks after successful runtime sync'
 
+rm -f "$CORE_CAPTURE"
 : > "$INFO_CAPTURE"
 : > "$ERROR_CAPTURE"
 run_core_action status_json

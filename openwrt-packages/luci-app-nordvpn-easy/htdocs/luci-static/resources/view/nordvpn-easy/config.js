@@ -203,6 +203,7 @@ const TokenValue = form.Value.extend({
 
 	return view.extend({
 	load: function() {
+		service.ensureLuCiRpcTimeout();
 		const uciLoad = uci.load('nordvpn_easy');
 		const countriesCachePromise = L.resolveDefault(fs.read(COUNTRIES_CACHE_PATH), '[]');
 		const statusPromise = L.resolveDefault(service.execService('status_json'), null);
@@ -332,8 +333,7 @@ const TokenValue = form.Value.extend({
 			managerUI.renderServerChoices(managerUI.getSelectElement(managerUI.ids.SERVER_FIELD_ID), state.currentServerCatalog, currentPreferredStation);
 			managerActions.renderLocalStatusSnapshot(state, state.currentLocalStatus);
 			managerUI.updateDiagnosticsBanner(state.currentDiagnosticsSummary);
-			if (state.currentLocalStatusFresh)
-				managerActions.maybeAutoReconcileSelectionDrift(state, state.currentLocalStatus);
+			// Drift recovery runs from Save & Apply or background polling after cooldown.
 			if (!countries.length && !statusPayloadIsBusy(initialStatusPayload))
 				refreshCountriesInBackground(countrySelect, currentCountry);
 

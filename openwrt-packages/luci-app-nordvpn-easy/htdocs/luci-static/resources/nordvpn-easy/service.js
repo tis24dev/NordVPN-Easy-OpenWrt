@@ -1,11 +1,30 @@
 'use strict';
-/* global baseclass, rpc, ui, document, window, Blob, E, _ */
+/* global baseclass, rpc, ui, document, window, Blob, E, _, L */
 'require baseclass';
 'require rpc';
 'require ui';
 
 // reconnect/reconcile often exceed LuCI default (20s) and stock rpcd (30s).
 const RUNTIME_RPC_TIMEOUT = 120;
+const DIAGNOSTICS_RPC_TIMEOUT = 180;
+// OpenWrt 24 LuCI rpc.js ignores rpc.declare({ timeout }) and uses L.env.rpctimeout only.
+const LUCI_RPC_TIMEOUT_SEC = 180;
+
+function ensureLuCiRpcTimeout(minSeconds) {
+	const min = Number(minSeconds) || LUCI_RPC_TIMEOUT_SEC;
+
+	if (typeof L === 'undefined' || !L.env)
+		return min;
+
+	const current = Number(L.env.rpctimeout) || 20;
+
+	if (current < min)
+		L.env.rpctimeout = min;
+
+	return Number(L.env.rpctimeout) || min;
+}
+
+ensureLuCiRpcTimeout(LUCI_RPC_TIMEOUT_SEC);
 
 const callStatus = rpc.declare({
 	object: 'nordvpn.easy',
@@ -28,6 +47,12 @@ const callDisconnect = rpc.declare({
 const callReconnect = rpc.declare({
 	object: 'nordvpn.easy',
 	method: 'reconnect',
+	timeout: RUNTIME_RPC_TIMEOUT
+});
+
+const callStopVpn = rpc.declare({
+	object: 'nordvpn.easy',
+	method: 'stop_vpn',
 	timeout: RUNTIME_RPC_TIMEOUT
 });
 
@@ -88,13 +113,13 @@ const callPublicCountry = rpc.declare({
 const callDiagnostics = rpc.declare({
 	object: 'nordvpn.easy',
 	method: 'diagnostics',
-	timeout: 120
+	timeout: DIAGNOSTICS_RPC_TIMEOUT
 });
 
 const callDiagnosticsSummary = rpc.declare({
 	object: 'nordvpn.easy',
 	method: 'diagnostics_summary',
-	timeout: 60
+	timeout: DIAGNOSTICS_RPC_TIMEOUT
 });
 
 const callRefreshCountries = rpc.declare({
@@ -193,6 +218,8 @@ function normalizeExecResult(action, payload) {
 		stdout = String(payload.stdout);
 	else if (payload.log != null)
 		stdout = String(payload.log);
+	else if (action === 'diagnostics_log' && payload.message != null && !payload.stderr)
+		stdout = String(payload.message);
 	else if (payload.stdout == null && payload.log == null &&
 		(payload.code == null && payload.success == null || payload.success === false ||
 			Object.prototype.hasOwnProperty.call(payload, 'generated_at')))
@@ -232,6 +259,8 @@ function callSimpleAction(action) {
 		return callDisconnect();
 	case 'reconnect':
 		return callReconnect();
+	case 'stop_vpn':
+		return callStopVpn();
 	case 'reconcile':
 		return callReconcile();
 	case 'rotate':
@@ -380,6 +409,8 @@ function downloadTextFile(name, content) {
 }
 
 return baseclass.extend({
+	LUCI_RPC_TIMEOUT_SEC: LUCI_RPC_TIMEOUT_SEC,
+	ensureLuCiRpcTimeout: ensureLuCiRpcTimeout,
 	parseJson: parseJson,
 	parseExecJsonResponse: parseExecJsonResponse,
 	responseMessage: responseMessage,

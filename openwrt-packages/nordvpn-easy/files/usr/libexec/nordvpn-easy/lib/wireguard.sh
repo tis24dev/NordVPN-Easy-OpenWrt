@@ -43,6 +43,22 @@ nordvpn_easy_log_vpn_interface_state() {
 	log "runtime: interface state [$STATE_CONTEXT]: proto=${VPN_PROTO:-absent}, disabled=${VPN_DISABLED:-0}, link_present=$VPN_LINK_PRESENT, endpoint=${VPN_ENDPOINT:-none}, endpoint_port=${VPN_ENDPOINT_PORT:-${VPN_PORT:-unset}}, keepalive=${VPN_KEEPALIVE:-${WIREGUARD_PERSISTENT_KEEPALIVE:-15}}, mtu=${VPN_MTU:-auto}, mtu_fix=${VPN_MTU_FIX:-unset}"
 }
 
+nordvpn_easy_immediate_vpn_shutdown() {
+	log "apply: stopping VPN interface $VPN_IF before server change"
+
+	if nordvpn_easy_vpn_link_is_present; then
+		ifdown "$VPN_IF" >/dev/null 2>&1 || true
+		if command -v wg >/dev/null 2>&1 &&
+			wg show "$VPN_IF" >/dev/null 2>&1; then
+			ip link del dev "$VPN_IF" >/dev/null 2>&1 || true
+		fi
+	elif nordvpn_easy_vpn_is_configured; then
+		ifdown "$VPN_IF" >/dev/null 2>&1 || true
+	fi
+
+	return 0
+}
+
 nordvpn_easy_teardown_vpn() {
 	local peer_section="${VPN_IF}server"
 	local wan_metric=''

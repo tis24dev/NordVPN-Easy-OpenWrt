@@ -23,7 +23,7 @@ function start(state) {
 	state.pollersStarted = true;
 
 	poll.add(function() {
-		if (state.pollingSuspended || documentIsHidden())
+		if (shouldSkipBackgroundPoll(state) || documentIsHidden())
 			return Promise.resolve();
 
 		return managerActions.updateLocalStatus(state);

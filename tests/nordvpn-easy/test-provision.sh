@@ -63,6 +63,14 @@ nordvpn_easy_fetch_provision_prerequisites() {
 	fi
 	return 0
 }
+nordvpn_easy_immediate_vpn_shutdown() {
+	PROVISION_ORDER="${PROVISION_ORDER}shutdown,"
+	return 0
+}
+nordvpn_easy_clear_provision_caches() {
+	PROVISION_ORDER="${PROVISION_ORDER}clear,"
+	return 0
+}
 nordvpn_easy_teardown_vpn() {
 	PROVISION_ORDER="${PROVISION_ORDER}teardown,"
 	return 0
@@ -76,6 +84,18 @@ nordvpn_easy_require_core_action_helpers() { return 0; }
 nordvpn_easy_provision_vpn
 
 assert_eq 'fetch,teardown,configure,' "$PROVISION_ORDER" 'provision fetches prerequisites before teardown and configure'
+
+PROVISION_ORDER=''
+nordvpn_easy_stop_vpn_for_server_change
+assert_eq 'shutdown,clear,teardown,' "$PROVISION_ORDER" 'stop_vpn shuts down VPN and clears caches before connect'
+
+PROVISION_ORDER=''
+nordvpn_easy_provision_vpn connect_fresh
+assert_eq 'fetch,configure,' "$PROVISION_ORDER" 'connect_fresh fetches a new server list after stop_vpn'
+
+PROVISION_ORDER=''
+nordvpn_easy_provision_vpn server_change
+assert_eq 'shutdown,clear,teardown,fetch,configure,' "$PROVISION_ORDER" 'server_change runs stop_vpn then connect_fresh'
 
 PROVISION_ORDER=''
 FETCH_FAIL=1

@@ -44,6 +44,7 @@
 				"nordvpn.easy": [
 					"connect",
 					"disconnect",
+					"stop_vpn",
 					"reconnect",
 					"reconcile",
 					"rotate",

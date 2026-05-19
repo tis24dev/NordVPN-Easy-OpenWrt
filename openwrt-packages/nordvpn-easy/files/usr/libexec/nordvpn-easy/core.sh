@@ -89,11 +89,12 @@ curl_rc_meaning () {
 
 usage () {
   cat <<EOF
-Usage: $0 [check|reconnect|reconcile|setup|rotate|refresh_countries|refresh_countries_force|server_catalog|public_ip|public_country|operation_status|vpn_status|status_json|diagnostics_log|diagnostics_summary|run|help] [--config config_file] [extra_args]
+Usage: $0 [check|stop_vpn|reconnect|reconcile|setup|rotate|refresh_countries|refresh_countries_force|server_catalog|public_ip|public_country|operation_status|vpn_status|status_json|diagnostics_log|diagnostics_summary|run|help] [--config config_file] [extra_args]
 
 Commands:
   check   Run one VPN health-check cycle (default)
-  reconnect  Close the VPN interface, synchronize server selection, then bring it back up
+  stop_vpn  Stop the VPN interface, clear server caches, and remove WireGuard runtime config
+  reconnect  Compatibility alias for stop_vpn followed by setup (prefer stop_vpn + connect)
   reconcile  Synchronize runtime state with the selected server configuration
   setup   Configure the WireGuard interface and firewall if needed
   rotate  Download a fresh server list and switch server
@@ -956,7 +957,7 @@ ACTION_STARTED_AT=''
 
 if [ $# -gt 0 ]; then
   case "$1" in
-    check|reconnect|reconcile|setup|rotate|refresh_countries|refresh_countries_force|server_catalog|public_ip|public_country|operation_status|vpn_status|status_json|diagnostics_log|diagnostics_summary|run|help)
+    check|stop_vpn|reconnect|reconcile|setup|rotate|refresh_countries|refresh_countries_force|server_catalog|public_ip|public_country|operation_status|vpn_status|status_json|diagnostics_log|diagnostics_summary|run|help)
       ACTION="$1"
       shift
       ;;
@@ -1142,15 +1143,21 @@ case "$ACTION" in
     reconcile_action
     ACTION_RC=$?
     ;;
+  stop_vpn)
+    validate_setup_runtime &&
+    nordvpn_easy_stop_vpn_for_server_change
+    ACTION_RC=$?
+    ;;
   reconnect)
     validate_setup_runtime &&
-    provision_vpn &&
-    log 'NordVPN reconnect completed'
+    nordvpn_easy_stop_vpn_for_server_change &&
+    provision_vpn connect_fresh &&
+    log 'NordVPN reconnect completed (stop_vpn + connect_fresh)'
     ACTION_RC=$?
     ;;
   setup)
     validate_setup_runtime &&
-    provision_vpn &&
+    provision_vpn connect_fresh &&
     log 'NordVPN configuration is ready'
     ACTION_RC=$?
     ;;

@@ -35,7 +35,7 @@ if (!String.prototype.format) {
 	});
 }
 
-function loadServiceModule() {
+function buildServiceModule(initialRpctimeout) {
 	const source = fs.readFileSync(servicePath, 'utf8');
 	const calls = [];
 	const responses = [];
@@ -46,21 +46,21 @@ function loadServiceModule() {
 			}
 		},
 		rpc: {
-				declare(spec) {
-					return function() {
-						const args = Array.prototype.slice.call(arguments);
-						const response = responses.length ? responses.shift() : {
-							code: 0,
-							success: true,
-							stdout: JSON.stringify({ method: spec.method, args: args }),
-							stderr: ''
-						};
+			declare(spec) {
+				return function() {
+					const args = Array.prototype.slice.call(arguments);
+					const response = responses.length ? responses.shift() : {
+						code: 0,
+						success: true,
+						stdout: JSON.stringify({ method: spec.method, args: args }),
+						stderr: ''
+					};
 
-						calls.push({ spec: spec, args: args });
-						if (response instanceof Error)
-							return Promise.reject(response);
+					calls.push({ spec: spec, args: args });
+					if (response instanceof Error)
+						return Promise.reject(response);
 
-						return Promise.resolve(response);
+					return Promise.resolve(response);
 				};
 			}
 		},
@@ -88,19 +88,52 @@ function loadServiceModule() {
 			}
 		},
 		Blob: function() {},
-		Promise: Promise
+		Promise: Promise,
+		L: {
+			env: {
+				rpctimeout: initialRpctimeout
+			}
+		}
 	};
 
-		return {
-			service: vm.runInNewContext(`(function(){\n${source}\n})();`, context, {
-				filename: servicePath
-			}),
-			calls: calls,
-			responses: responses
-		};
-	}
+	const service = vm.runInNewContext(`(function(){\n${source}\n})();`, context, {
+		filename: servicePath
+	});
+
+	return {
+		service: service,
+		calls: calls,
+		responses: responses,
+		getRpctimeout() {
+			return context.L.env.rpctimeout;
+		},
+		setRpctimeout(value) {
+			context.L.env.rpctimeout = value;
+		}
+	};
+}
+
+function loadServiceModule(initialRpctimeout) {
+	const built = buildServiceModule(initialRpctimeout == null ? 20 : initialRpctimeout);
+
+	return {
+		service: built.service,
+		calls: built.calls,
+		responses: built.responses,
+		getRpctimeout: built.getRpctimeout,
+		setRpctimeout: built.setRpctimeout
+	};
+}
 
 Promise.resolve().then(async function() {
+	const lowTimeout = loadServiceModule(20);
+	lowTimeout.service.ensureLuCiRpcTimeout();
+	assert.equal(lowTimeout.getRpctimeout(), 180, 'ensureLuCiRpcTimeout raises LuCI global RPC timeout');
+
+	const highTimeout = loadServiceModule(240);
+	highTimeout.service.ensureLuCiRpcTimeout();
+	assert.equal(highTimeout.getRpctimeout(), 240, 'ensureLuCiRpcTimeout keeps larger existing timeouts');
+
 	const loaded = loadServiceModule();
 	const result = await loaded.service.execService('refresh_servers', [ 'UY', '1' ]);
 	const call = loaded.calls[loaded.calls.length - 1];

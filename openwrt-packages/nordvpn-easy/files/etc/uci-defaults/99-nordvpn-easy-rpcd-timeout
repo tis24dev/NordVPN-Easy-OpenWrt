@@ -3,6 +3,7 @@
 
 MIN_RPCD_TIMEOUT=120
 MIN_UHTTPD_SCRIPT_TIMEOUT=120
+MIN_UHTTPD_NETWORK_TIMEOUT=120
 CHANGED=0
 
 bump_uci_min() {
@@ -32,6 +33,7 @@ bump_uci_min rpcd '@rpcd[0]' timeout "$MIN_RPCD_TIMEOUT"
 
 if uci -q get uhttpd.main >/dev/null 2>&1; then
 	bump_uci_min uhttpd main script_timeout "$MIN_UHTTPD_SCRIPT_TIMEOUT"
+	bump_uci_min uhttpd main network_timeout "$MIN_UHTTPD_NETWORK_TIMEOUT"
 fi
 
 [ "$CHANGED" -eq 0 ] && exit 0

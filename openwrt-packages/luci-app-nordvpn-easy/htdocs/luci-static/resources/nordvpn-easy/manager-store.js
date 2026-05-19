@@ -35,6 +35,8 @@ function createState() {
 		latestServerCatalogRequestId: 0,
 		lastAutoReconcileFailureKey: '',
 		lastAutoReconcileFailureAt: 0,
+		saveApplyInProgress: false,
+		runtimeActionCooldownUntil: 0,
 		pollingSuspended: false,
 		pollersStarted: false,
 		lastError: '',

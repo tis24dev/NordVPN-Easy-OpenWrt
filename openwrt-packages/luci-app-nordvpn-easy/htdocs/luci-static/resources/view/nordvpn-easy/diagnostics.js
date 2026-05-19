@@ -5,6 +5,43 @@
 'require ui';
 'require view';
 
+const RUNTIME_IDLE_POLL_MS = 2000;
+const RUNTIME_IDLE_MAX_WAIT_MS = 90000;
+
+function runtimeStatusIsBusy(status) {
+	if (!status || typeof status !== 'object')
+		return false;
+
+	const operationStatus = String(status.operation_status || 'idle');
+
+	return operationStatus === 'busy' ||
+		operationStatus.indexOf('busy:') === 0 ||
+		String(status.operation_lock_state || 'none') === 'held';
+}
+
+function waitForRuntimeIdle() {
+	const deadline = Date.now() + RUNTIME_IDLE_MAX_WAIT_MS;
+
+	return function poll() {
+		return service.execService('status_json').then(function(res) {
+			const status = service.parseExecJsonResponse(res, null);
+
+			if (!runtimeStatusIsBusy(status))
+				return true;
+
+			if (Date.now() >= deadline) {
+				return Promise.reject(new Error(
+					_('NordVPN Easy is busy with another operation. Wait for the current stop/connect cycle to finish, then retry.')
+				));
+			}
+
+			return new Promise(function(resolve) {
+				window.setTimeout(resolve, RUNTIME_IDLE_POLL_MS);
+			}).then(poll);
+		});
+	}();
+}
+
 function parseDiagnosticsLoadResult(summaryResult) {
 	let payload;
 
@@ -188,7 +225,10 @@ return view.extend({
 	handleReset: null,
 
 	load: function() {
-		return service.execService('diagnostics_summary').catch(function(err) {
+		service.ensureLuCiRpcTimeout();
+		return waitForRuntimeIdle().then(function() {
+			return service.execService('diagnostics_summary');
+		}).catch(function(err) {
 			return {
 				code: -1,
 				stdout: '',
@@ -250,7 +290,7 @@ return view.extend({
 					button._nordvpnApplying = true;
 					button.disabled = true;
 
-					return service.runActions([ 'reconnect' ]).then(function() {
+					return service.runActions([ 'stop_vpn', 'connect' ]).then(function() {
 						service.notifyInfo(_('Server selection synchronized.'));
 						return view.poll().then(function(result) {
 							const container = document.querySelector('[data-nordvpn-easy-diagnostics]');
@@ -306,7 +346,9 @@ return view.extend({
 
 								button.disabled = true;
 
-								return service.execService('diagnostics_log').then(function(res) {
+								return waitForRuntimeIdle().then(function() {
+									return service.execService('diagnostics_log');
+								}).then(function(res) {
 									const content = res.stdout || '';
 									const message = res.stderr ? res.stderr.trim() : '';
 
