@@ -203,7 +203,8 @@ const TokenValue = form.Value.extend({
 
 	return view.extend({
 	load: function() {
-		service.ensureLuCiRpcTimeout();
+		if (typeof service.ensureLuCiRpcTimeout === 'function')
+			service.ensureLuCiRpcTimeout();
 		const uciLoad = uci.load('nordvpn_easy');
 		const countriesCachePromise = L.resolveDefault(fs.read(COUNTRIES_CACHE_PATH), '[]');
 		const statusPromise = L.resolveDefault(service.execService('status_json'), null);

@@ -32,7 +32,8 @@ assert_eq() {
 
 VPN_IF='wg0'
 WAN_IF='wan'
-SERVER_LIST_FILE='/tmp/nordvpn-easy-test-provision-server-list.json'
+SERVER_LIST_FILE="$(mktemp /tmp/nordvpn-easy-test-provision-server-list.XXXXXX)"
+trap 'rm -f "$SERVER_LIST_FILE"' EXIT
 SERVER_SELECTION_MODE='auto'
 VPN_COUNTRY=''
 VPN_ADDR='10.5.0.2/32'
@@ -99,7 +100,10 @@ assert_eq 'shutdown,clear,teardown,fetch,configure,' "$PROVISION_ORDER" 'server_
 
 PROVISION_ORDER=''
 FETCH_FAIL=1
-nordvpn_easy_provision_vpn || true
+if nordvpn_easy_provision_vpn; then
+	printf '%s\n' 'FAIL: provision fetch failure must return non-zero' >&2
+	exit 1
+fi
 assert_eq 'fetch,' "$PROVISION_ORDER" 'provision fetch failure leaves existing VPN configuration untouched'
 
 uci() { return 0; }

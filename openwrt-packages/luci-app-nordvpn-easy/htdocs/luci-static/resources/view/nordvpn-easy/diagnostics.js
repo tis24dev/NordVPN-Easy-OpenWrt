@@ -225,7 +225,8 @@ return view.extend({
 	handleReset: null,
 
 	load: function() {
-		service.ensureLuCiRpcTimeout();
+		if (typeof service.ensureLuCiRpcTimeout === 'function')
+			service.ensureLuCiRpcTimeout();
 		return waitForRuntimeIdle().then(function() {
 			return service.execService('diagnostics_summary');
 		}).catch(function(err) {

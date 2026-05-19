@@ -549,7 +549,7 @@ uci() {
 }
 JSON="$(assert_scenario_primary 'operational.last_error' 'operational.last_error is primary when no higher-priority issue matches')"
 assert_scenario_includes "$JSON" 'operational.last_error' 'operational.last_error appears in findings'
-printf '%s\n' > "$NORDVPN_EASY_LAST_ERROR_CACHE"
+: > "$NORDVPN_EASY_LAST_ERROR_CACHE"
 
 wg() { wg_connected "$@"; }
 ip() { ip_healthy "$@"; }
@@ -626,5 +626,8 @@ uci() {
 }
 JSON="$(assert_scenario_primary 'config.not_wireguard' 'config.not_wireguard is primary for non-WireGuard proto')"
 assert_scenario_includes "$JSON" 'config.not_wireguard' 'config.not_wireguard appears in findings'
+
+assert_eq '2001:db8::1' "$(nordvpn_easy_diagnostics_endpoint_host '[2001:db8::1]:51820')" 'bracketed IPv6 endpoint host extraction'
+assert_eq 'hk270.nordvpn.com' "$(nordvpn_easy_diagnostics_endpoint_host 'hk270.nordvpn.com:51820')" 'host:port endpoint host extraction'
 
 printf '%s\n' 'test-diagnostics.sh: ok'

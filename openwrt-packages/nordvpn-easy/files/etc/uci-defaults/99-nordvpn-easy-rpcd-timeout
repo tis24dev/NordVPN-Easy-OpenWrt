@@ -1,9 +1,9 @@
 #!/bin/sh
 # reconnect/reconcile can exceed stock rpcd (30s) and uhttpd script_timeout (60s).
 
-MIN_RPCD_TIMEOUT=120
-MIN_UHTTPD_SCRIPT_TIMEOUT=120
-MIN_UHTTPD_NETWORK_TIMEOUT=120
+MIN_RPCD_TIMEOUT=180
+MIN_UHTTPD_SCRIPT_TIMEOUT=180
+MIN_UHTTPD_NETWORK_TIMEOUT=180
 CHANGED=0
 
 bump_uci_min() {

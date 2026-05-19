@@ -285,12 +285,30 @@ nordvpn_easy_diagnostics_endpoint_host() {
 	local host=''
 
 	case "$endpoint" in
-		''|N/A|*[!0-9A-Za-z.:_-]*)
+		''|N/A)
 			return 1
 			;;
 	esac
 
-	host="${endpoint%%:*}"
+	case "$endpoint" in
+		'['*)
+			case "$endpoint" in
+				*']'*) ;;
+				*)
+					return 1
+					;;
+			esac
+			host="${endpoint#\[}"
+			host="${host%%\]*}"
+			;;
+		*[!0-9A-Za-z.:_-]*)
+			return 1
+			;;
+		*)
+			host="${endpoint%%:*}"
+			;;
+	esac
+
 	[ -n "$host" ] || return 1
 	printf '%s\n' "$host"
 }

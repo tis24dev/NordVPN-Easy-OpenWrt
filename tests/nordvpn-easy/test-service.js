@@ -150,6 +150,16 @@ Promise.resolve().then(async function() {
 	assert.equal(reconcileResult.code, 0, 'reconcile returns normalized success result');
 	assert.equal(reconcileCall.spec.method, 'reconcile', 'reconcile uses the dedicated ubus method');
 
+	const diagnosticsResult = await loaded.service.execService('diagnostics_summary');
+	const diagnosticsCall = loaded.calls[loaded.calls.length - 1];
+	const diagnosticsPayload = JSON.parse(diagnosticsResult.stdout);
+
+	assert.equal(diagnosticsResult.code, 0, 'diagnostics_summary returns normalized success result');
+	assert.equal(diagnosticsCall.spec.object, 'nordvpn.easy', 'diagnostics_summary uses nordvpn.easy ubus object');
+	assert.equal(diagnosticsCall.spec.method, 'diagnostics_summary', 'diagnostics_summary uses the dedicated ubus method');
+	assert.deepEqual(diagnosticsCall.args, [], 'diagnostics_summary forwards no args');
+	assert.deepEqual(diagnosticsPayload.args, [], 'diagnostics_summary preserves rpc payload in stdout');
+
 	loaded.responses.push({
 		code: 75,
 		success: false,

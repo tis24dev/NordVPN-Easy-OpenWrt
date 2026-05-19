@@ -185,7 +185,7 @@ assert_eq 'it45.nordvpn.com|it456' "$LAST_SET_SERVER" 'rotate mode skips the cur
 
 COUNTRIES_CACHE_FILE="$TMP_DIR/countries-bz-only.json"
 COUNTRIES_CACHE_TS_FILE="$TMP_DIR/countries-bz-only.timestamp"
-jq '[{ "id": 22, "name": "Belize", "code": "BZ" }]' > "$COUNTRIES_CACHE_FILE"
+jq -n '[{ "id": 22, "name": "Belize", "code": "BZ" }]' > "$COUNTRIES_CACHE_FILE"
 date +%s > "$COUNTRIES_CACHE_TS_FILE"
 RESOLVED_COUNTRY_ID=''
 RESOLVED_COUNTRY_NAME=''
@@ -225,7 +225,16 @@ resolve_country_filter() {
 $COUNTRY_MATCH
 EOF
 
-	[ -n "$RESOLVED_COUNTRY_ID" ] || return 1
+	[ -n "$RESOLVED_COUNTRY_ID" ] || {
+		if valid_country_code "$COUNTRY_QUERY"; then
+			RESOLVED_COUNTRY_ID=''
+			RESOLVED_COUNTRY_NAME='unknown in NordVPN country cache'
+			RESOLVED_COUNTRY_CODE=$(printf '%s' "$COUNTRY_QUERY" | tr '[:lower:]' '[:upper:]')
+			RESOLVED_COUNTRY_QUERY="$COUNTRY_QUERY"
+			return 0
+		fi
+		return 1
+	}
 	RESOLVED_COUNTRY_QUERY="$COUNTRY_QUERY"
 	return 0
 }

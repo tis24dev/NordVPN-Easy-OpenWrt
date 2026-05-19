@@ -409,13 +409,6 @@ function refreshLuCiChangeTracker() {
 		return uci.changes().then(function(changes) {
 			const pendingChanges = renderLuCiChangeTracker(changes);
 
-			// #region agent log
-			agentDebugLog('H4', 'manager-actions.js:refreshLuCiChangeTracker', 'luci change tracker refreshed', {
-				pendingChangeCount: countLuCiChanges(pendingChanges),
-				configs: Object.keys(pendingChanges || {})
-			});
-			// #endregion
-
 			return pendingChanges;
 		});
 	}
@@ -447,12 +440,6 @@ function applyLuCiPendingChangesWithSession() {
 	}).then(function(res) {
 		const status = Number((res && res.status) || 0);
 
-		// #region agent log
-		agentDebugLog('H5', 'manager-actions.js:applyLuCiPendingChangesWithSession', 'luci apply_unchecked completed', {
-			status: status
-		});
-		// #endregion
-
 		if (status === 200 || status === 204)
 			return refreshLuCiChangeTracker();
 
@@ -474,21 +461,9 @@ function commitLuCiPendingChangesFallback() {
 		return Promise.reject(new Error(_('Could not commit UCI changes: LuCI RPC is unavailable.')));
 
 	return callUciCommit('nordvpn_easy').then(function() {
-		// #region agent log
-		agentDebugLog('H3', 'manager-actions.js:flushLuCiPendingChanges', 'uci commit succeeded', {
-			config: 'nordvpn_easy'
-		});
-		// #endregion
-
 		return refreshLuCiChangeTracker();
 	}).catch(function(err) {
 		const message = (err && err.message) ? err.message : String(err);
-
-		// #region agent log
-		agentDebugLog('H3', 'manager-actions.js:flushLuCiPendingChanges', 'uci commit failed', {
-			message: message
-		});
-		// #endregion
 
 		return Promise.reject(new Error(_('Could not commit UCI changes: ') + message));
 	});
@@ -496,14 +471,6 @@ function commitLuCiPendingChangesFallback() {
 
 function flushLuCiPendingChanges() {
 	return applyLuCiPendingChangesWithSession().catch(function(err) {
-		const message = (err && err.message) ? err.message : String(err);
-
-		// #region agent log
-		agentDebugLog('H5', 'manager-actions.js:flushLuCiPendingChanges', 'luci apply endpoint failed, falling back to rpc commit', {
-			message: message
-		});
-		// #endregion
-
 		return commitLuCiPendingChangesFallback();
 	});
 }
@@ -1032,30 +999,6 @@ function mergeSavedConfigWithSubmittedValues(savedConfig, submitted) {
 	return merged;
 }
 
-// #region agent log
-function agentDebugLog(hypothesisId, location, message, data) {
-	if (typeof fetch !== 'function')
-		return;
-
-	fetch('http://localhost:7842/ingest/c0328b70-db95-4d07-846a-9cbc9e708094', {
-		method: 'POST',
-		headers: {
-			'Content-Type': 'application/json',
-			'X-Debug-Session-Id': 'cf39b0'
-		},
-		body: JSON.stringify({
-			sessionId: 'cf39b0',
-			runId: 'save-apply',
-			hypothesisId: hypothesisId,
-			location: location,
-			message: message,
-			data: data || {},
-			timestamp: Date.now()
-		})
-	}).catch(function() {});
-}
-// #endregion
-
 function rememberSavedRuntimeConfig(viewState, state, savedConfig) {
 	viewState.initialEnabled = savedConfig.enabled;
 	viewState.initialCountry = savedConfig.country;
@@ -1243,13 +1186,6 @@ function handleSaveApply(viewState, state, ev, mode) {
 						const diskCountry = savedConfig.country;
 
 						savedConfig = mergeSavedConfigWithSubmittedValues(savedConfig, submittedRuntimeConfig);
-						// #region agent log
-						agentDebugLog('H1', 'manager-actions.js:continueAfterUciApply', 'saved config after commit', {
-							formCountry: managerData.normalizeCountryCode(currentCountry || ''),
-							diskCountry: diskCountry,
-							mergedCountry: savedConfig.country
-						});
-						// #endregion
 						rememberSavedRuntimeConfig(viewState, state, savedConfig);
 						return updateLocalStatus(state, {
 							force: true,
@@ -1270,15 +1206,6 @@ function handleSaveApply(viewState, state, ev, mode) {
 							);
 							const actions = runtimePlan.actions;
 							const successMessage = runtimePlan.successMessage;
-
-							// #region agent log
-							agentDebugLog('H2', 'manager-actions.js:continueAfterUciApply', 'runtime action plan', {
-								actions: actions,
-								previousCountry: previousCountry,
-								savedCountry: savedConfig.country,
-								serverSelectionChanged: runtimePlan.serverSelectionChanged
-							});
-							// #endregion
 
 							if (!actions.length) {
 								notifyDebugBlock(_('Configuration applied'), [

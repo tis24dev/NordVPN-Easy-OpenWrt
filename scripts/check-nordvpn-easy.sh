@@ -86,8 +86,8 @@ sh "$ROOT_DIR/tests/nordvpn-easy/test-migrate-config.sh"
 sh "$ROOT_DIR/tests/nordvpn-easy/test-runtime.sh"
 sh "$ROOT_DIR/tests/nordvpn-easy/test-wireguard.sh"
 sh "$ROOT_DIR/tests/nordvpn-easy/test-service-config.sh"
-	sh "$ROOT_DIR/tests/nordvpn-easy/test-actions.sh"
-	sh "$ROOT_DIR/tests/nordvpn-easy/test-provision.sh"
+sh "$ROOT_DIR/tests/nordvpn-easy/test-actions.sh"
+sh "$ROOT_DIR/tests/nordvpn-easy/test-provision.sh"
 
 if command -v shellcheck >/dev/null 2>&1; then
 	printf '%s\n' 'Running shellcheck'

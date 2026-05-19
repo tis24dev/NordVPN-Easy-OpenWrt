@@ -480,6 +480,7 @@ function loadConfigView(options) {
 				});
 			},
 			parseExecJsonResponse: parseExecJsonResponse,
+			ensureLuCiRpcTimeout() {},
 			notifyInfo() {},
 			notifyError() {}
 		},
