@@ -112,6 +112,8 @@ define Package/nordvpn-easy/install
 	$(INSTALL_CONF) ./files/usr/share/nordvpn-easy/defaults/nordvpn_easy $(1)/usr/share/nordvpn-easy/defaults/nordvpn_easy
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) ./files/etc/init.d/nordvpn-easy $(1)/etc/init.d/nordvpn-easy
+	$(INSTALL_DIR) $(1)/etc/uci-defaults
+	$(INSTALL_BIN) ./files/etc/uci-defaults/99-nordvpn-easy-rpcd-timeout $(1)/etc/uci-defaults/99-nordvpn-easy-rpcd-timeout
 endef
 
 $(eval $(call BuildPackage,nordvpn-easy))

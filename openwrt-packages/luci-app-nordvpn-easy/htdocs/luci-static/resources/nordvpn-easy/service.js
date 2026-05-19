@@ -4,6 +4,9 @@
 'require rpc';
 'require ui';
 
+// reconnect/reconcile often exceed LuCI default (20s) and stock rpcd (30s).
+const RUNTIME_RPC_TIMEOUT = 120;
+
 const callStatus = rpc.declare({
 	object: 'nordvpn.easy',
 	method: 'status',
@@ -12,52 +15,62 @@ const callStatus = rpc.declare({
 
 const callConnect = rpc.declare({
 	object: 'nordvpn.easy',
-	method: 'connect'
+	method: 'connect',
+	timeout: RUNTIME_RPC_TIMEOUT
 });
 
 const callDisconnect = rpc.declare({
 	object: 'nordvpn.easy',
-	method: 'disconnect'
+	method: 'disconnect',
+	timeout: RUNTIME_RPC_TIMEOUT
 });
 
 const callReconnect = rpc.declare({
 	object: 'nordvpn.easy',
-	method: 'reconnect'
+	method: 'reconnect',
+	timeout: RUNTIME_RPC_TIMEOUT
 });
 
 const callReconcile = rpc.declare({
 	object: 'nordvpn.easy',
-	method: 'reconcile'
+	method: 'reconcile',
+	timeout: RUNTIME_RPC_TIMEOUT
 });
 
 const callRotate = rpc.declare({
 	object: 'nordvpn.easy',
-	method: 'rotate'
+	method: 'rotate',
+	timeout: RUNTIME_RPC_TIMEOUT
 });
 
 const callSetup = rpc.declare({
 	object: 'nordvpn.easy',
-	method: 'setup'
+	method: 'setup',
+	timeout: RUNTIME_RPC_TIMEOUT
 });
 
 const callCheck = rpc.declare({
 	object: 'nordvpn.easy',
-	method: 'check'
+	method: 'check',
+	timeout: RUNTIME_RPC_TIMEOUT
 });
 
 const callInstallHooks = rpc.declare({
 	object: 'nordvpn.easy',
-	method: 'install_hooks'
+	method: 'install_hooks',
+	timeout: RUNTIME_RPC_TIMEOUT
 });
 
 const callRemoveHooks = rpc.declare({
 	object: 'nordvpn.easy',
-	method: 'remove_hooks'
+	method: 'remove_hooks',
+	timeout: RUNTIME_RPC_TIMEOUT
 });
 
 const callDisableRuntime = rpc.declare({
 	object: 'nordvpn.easy',
-	method: 'disable_runtime'
+	method: 'disable_runtime',
+	timeout: RUNTIME_RPC_TIMEOUT
 });
 
 const callPublicIp = rpc.declare({
