@@ -199,55 +199,6 @@ nordvpn_easy_diagnostics_resolve_wan_nameserver() {
 	' /tmp/resolv.conf.d/resolv.conf.auto 2>/dev/null
 }
 
-nordvpn_easy_diagnostics_enterprise_state() {
-	local desired_enabled="$1"
-	local vpn_if="$2"
-	local interface_disabled="$3"
-	local runtime_configured="$4"
-	local connected="$5"
-	local operation="$6"
-
-	case "$desired_enabled" in
-		1|true|yes|on) ;;
-		*)
-			printf '%s\n' 'disabled'
-			return 0
-			;;
-	esac
-
-	if [ "$interface_disabled" = '1' ]; then
-		printf '%s\n' 'disabled'
-		return 0
-	fi
-
-	if [ "$operation" = 'idle' ] && [ "$connected" = 'yes' ]; then
-		printf '%s\n' 'connected'
-		return 0
-	fi
-
-	if [ "$operation" = 'idle' ] && [ "$runtime_configured" = 'yes' ]; then
-		printf '%s\n' 'degraded'
-		return 0
-	fi
-
-	if [ "$operation" = 'idle' ]; then
-		printf '%s\n' 'idle'
-		return 0
-	fi
-
-	case "$operation" in
-		busy:check)
-			printf '%s\n' 'recovering'
-			;;
-		busy:setup|busy:rotate)
-			printf '%s\n' 'connecting'
-			;;
-		*)
-			printf '%s\n' 'recovering'
-			;;
-	esac
-}
-
 nordvpn_easy_diagnostics_add_finding() {
 	local code="$1"
 	local message="$2"
@@ -516,50 +467,23 @@ nordvpn_easy_diagnostics_collect_config() {
 
 nordvpn_easy_diagnostics_collect_runtime() {
 	local vpn_if="$1"
-	local wg_dump=''
 	local runtime_configured='no'
 	local operation='idle'
 
 	[ -n "$vpn_if" ] || return 0
 
-	if command -v ip >/dev/null 2>&1; then
-		if ip link show dev "$vpn_if" >/dev/null 2>&1; then
-			DIAG_LINK_PRESENT='yes'
-		else
-			DIAG_LINK_PRESENT='no'
-		fi
-		DIAG_ROUTES_VIA_VPN="$(ip route show dev "$vpn_if" 2>/dev/null | awk 'END { print NR + 0 }')"
-	fi
-
-	if command -v wg >/dev/null 2>&1; then
-		DIAG_WG_PEER_COUNT="$(wg show "$vpn_if" peers 2>/dev/null | awk 'NF { count++ } END { print count + 0 }')"
-		wg_dump="$(wg show "$vpn_if" dump 2>/dev/null)"
-		if [ -n "$wg_dump" ]; then
-			IFS="$(printf '\t')" read -r DIAG_WG_ENDPOINT DIAG_WG_HANDSHAKE_EPOCH DIAG_TRANSFER_RX_BYTES DIAG_TRANSFER_TX_BYTES <<EOF
-$(nordvpn_easy_parse_wg_dump_peer "$wg_dump")
-EOF
-			DIAG_WG_HANDSHAKE="$(nordvpn_easy_humanize_handshake_age "$DIAG_WG_HANDSHAKE_EPOCH")"
-			if nordvpn_easy_handshake_epoch_indicates_connection "$DIAG_WG_HANDSHAKE_EPOCH"; then
-				DIAG_WG_CONNECTED='yes'
-			fi
-		fi
-	fi
-
-	case "$DIAG_TRANSFER_RX_BYTES" in
-		''|*[!0-9]*)
-			DIAG_TRANSFER_RX_BYTES='0'
-			;;
-	esac
-	case "$DIAG_TRANSFER_TX_BYTES" in
-		''|*[!0-9]*)
-			DIAG_TRANSFER_TX_BYTES='0'
-			;;
-	esac
-
-	if [ "$DIAG_WG_CONNECTED" != 'yes' ] &&
-		[ "$DIAG_TRANSFER_RX_BYTES" -eq 0 ] &&
-		[ "$DIAG_TRANSFER_TX_BYTES" -gt 0 ]; then
-		DIAG_TRANSFER_ASYMMETRY='stuck_tunnel_suspected'
+	if command -v nordvpn_easy_collect_wireguard_runtime_snapshot >/dev/null 2>&1; then
+		nordvpn_easy_collect_wireguard_runtime_snapshot "$vpn_if"
+		DIAG_LINK_PRESENT="$NORDVPN_EASY_WG_RT_LINK_PRESENT"
+		DIAG_ROUTES_VIA_VPN="$NORDVPN_EASY_WG_RT_ROUTES_COUNT"
+		DIAG_WG_PEER_COUNT="$NORDVPN_EASY_WG_RT_PEER_COUNT"
+		DIAG_WG_ENDPOINT="$NORDVPN_EASY_WG_RT_ENDPOINT"
+		DIAG_WG_HANDSHAKE_EPOCH="$NORDVPN_EASY_WG_RT_HANDSHAKE_EPOCH"
+		DIAG_WG_HANDSHAKE="$NORDVPN_EASY_WG_RT_HANDSHAKE"
+		DIAG_TRANSFER_RX_BYTES="$NORDVPN_EASY_WG_RT_TRANSFER_RX_BYTES"
+		DIAG_TRANSFER_TX_BYTES="$NORDVPN_EASY_WG_RT_TRANSFER_TX_BYTES"
+		DIAG_WG_CONNECTED="$NORDVPN_EASY_WG_RT_CONNECTED"
+		DIAG_TRANSFER_ASYMMETRY="$NORDVPN_EASY_WG_RT_TRANSFER_ASYMMETRY"
 	fi
 
 	DIAG_DESIRED_ENABLED="$DIAG_SERVICE_ENABLED"
@@ -579,9 +503,8 @@ EOF
 		DIAG_VPN_STATUS="$(nordvpn_easy_vpn_status_value "$DIAG_DESIRED_ENABLED" "$vpn_if" "$operation")"
 	fi
 
-	DIAG_ENTERPRISE_STATE="$(nordvpn_easy_diagnostics_enterprise_state \
+	DIAG_ENTERPRISE_STATE="$(nordvpn_easy_enterprise_state_value \
 		"$DIAG_DESIRED_ENABLED" \
-		"$vpn_if" \
 		"$DIAG_INTERFACE_DISABLED" \
 		"$runtime_configured" \
 		"$DIAG_WG_CONNECTED" \

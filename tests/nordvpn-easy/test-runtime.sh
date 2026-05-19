@@ -195,4 +195,48 @@ assert_eq 'private_key,addresses,peerdns,delegate,force_link' "$(printf '%s\n' "
 assert_eq 'wireguard interface is incomplete (private_key,addresses,peerdns,delegate,force_link)' "$(printf '%s\n' "$DIAG_SUMMARY" | sed -n 's/^probable_issue=//p')" 'diagnostics prioritize incomplete interface before runtime peer symptoms'
 assert_eq 'config.interface_incomplete' "$(printf '%s\n' "$DIAG_SUMMARY" | sed -n 's/^probable_issue_code=//p')" 'diagnostics expose machine-readable issue code'
 
+HANDSHAKE_EPOCH="$(date +%s)"
+WG_SNAPSHOT_DUMP="$(printf '%b\n' \
+	'private\tpublic\t51820\t' \
+	"peerpub\tpsk\tes12.nordvpn.com:51820\t10.5.0.2/32\t${HANDSHAKE_EPOCH}\t2048\t4096\t15")"
+
+wg() {
+	case "$1 $2 $3" in
+		'show wg0 dump')
+			printf '%b\n' "$WG_SNAPSHOT_DUMP"
+			;;
+		'show wg0 peers')
+			printf '%s\n' 'peerpub'
+			;;
+		*)
+			return 1
+			;;
+	esac
+}
+
+ip() {
+	case "$*" in
+		'link show dev wg0') return 0 ;;
+		'route show dev wg0') printf '%s\n' '10.5.0.2/32 proto kernel scope link src 10.5.0.2' ;;
+		*) return 1 ;;
+	esac
+}
+
+nordvpn_easy_collect_wireguard_runtime_snapshot wg0
+
+assert_eq 'yes' "$NORDVPN_EASY_WG_RT_CONNECTED" 'wireguard snapshot marks connected when handshake is recent'
+assert_eq 'es12.nordvpn.com:51820' "$NORDVPN_EASY_WG_RT_ENDPOINT" 'wireguard snapshot exposes endpoint from wg dump'
+assert_eq '2048' "$NORDVPN_EASY_WG_RT_TRANSFER_RX_BYTES" 'wireguard snapshot exposes rx bytes'
+assert_eq '4096' "$NORDVPN_EASY_WG_RT_TRANSFER_TX_BYTES" 'wireguard snapshot exposes tx bytes'
+assert_eq 'none' "$NORDVPN_EASY_WG_RT_TRANSFER_ASYMMETRY" 'connected snapshot has no transfer asymmetry'
+assert_eq 'connected' "$(nordvpn_easy_enterprise_state_value 1 0 yes yes idle)" 'enterprise state helper treats connected idle runtime as connected'
+
+rm -rf "$LOCK_DIR"
+
+SNAPSHOT_STATUS_JSON="$(nordvpn_easy_emit_status_json)"
+
+assert_eq 'true' "$(printf '%s' "$SNAPSHOT_STATUS_JSON" | jq -r '.connected')" 'status json uses wireguard snapshot for connected flag'
+assert_eq "$HANDSHAKE_EPOCH" "$(printf '%s' "$SNAPSHOT_STATUS_JSON" | jq -r '.latest_handshake_epoch')" 'status json uses wireguard snapshot handshake epoch'
+assert_eq 'connected' "$(printf '%s' "$SNAPSHOT_STATUS_JSON" | jq -r '.state')" 'status json uses shared enterprise state helper when tunnel is up'
+
 printf '%s\n' 'test-runtime.sh: ok'
