@@ -6,7 +6,8 @@
 
 const callStatus = rpc.declare({
 	object: 'nordvpn.easy',
-	method: 'status'
+	method: 'status',
+	timeout: 45
 });
 
 const callConnect = rpc.declare({
@@ -61,12 +62,14 @@ const callDisableRuntime = rpc.declare({
 
 const callPublicIp = rpc.declare({
 	object: 'nordvpn.easy',
-	method: 'public_ip'
+	method: 'public_ip',
+	timeout: 45
 });
 
 const callPublicCountry = rpc.declare({
 	object: 'nordvpn.easy',
-	method: 'public_country'
+	method: 'public_country',
+	timeout: 45
 });
 
 const callDiagnostics = rpc.declare({
@@ -84,19 +87,22 @@ const callDiagnosticsSummary = rpc.declare({
 const callRefreshCountries = rpc.declare({
 	object: 'nordvpn.easy',
 	method: 'refresh_countries',
-	params: [ 'force' ]
+	params: [ 'force' ],
+	timeout: 90
 });
 
 const callServerCatalog = rpc.declare({
 	object: 'nordvpn.easy',
 	method: 'server_catalog',
-	params: [ 'country', 'force' ]
+	params: [ 'country', 'force' ],
+	timeout: 90
 });
 
 const callRefreshServers = rpc.declare({
 	object: 'nordvpn.easy',
 	method: 'refresh_servers',
-	params: [ 'country', 'force' ]
+	params: [ 'country', 'force' ],
+	timeout: 90
 });
 
 function rpcErrorMessage(err) {
