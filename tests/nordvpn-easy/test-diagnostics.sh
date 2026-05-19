@@ -153,6 +153,17 @@ assert_eq 'stuck_tunnel_suspected' \
 	"$(printf '%s\n' "$SUMMARY" | sed -n 's/^transfer_asymmetry=//p')" \
 	'blackhole scenario flags asymmetric transfer'
 
+BLACKHOLE_JSON="$(nordvpn_easy_emit_diagnostics_summary_json wg0)"
+assert_eq 'routing.blackhole_default_via_vpn' \
+	"$(printf '%s' "$BLACKHOLE_JSON" | jq -r '.primary_finding.code')" \
+	'summary json exposes primary finding code'
+assert_contains 'runtime.no_handshake' \
+	"$(printf '%s' "$BLACKHOLE_JSON" | jq -r '.findings[].code' | tr '\n' ' ')" \
+	'summary json includes secondary findings'
+assert_eq 'yes' \
+	"$(printf '%s' "$BLACKHOLE_JSON" | jq -r '.connectivity.routing_blackhole_risk')" \
+	'summary json includes connectivity assessment'
+
 wg_connected() {
 	case "$1 $2 $3" in
 		'show wg0 dump')
@@ -206,5 +217,16 @@ assert_eq 'yes' \
 assert_eq 'no' \
 	"$(printf '%s\n' "$HEALTHY_SUMMARY" | sed -n 's/^routing_blackhole_risk=//p')" \
 	'connected scenario has no routing blackhole risk'
+
+nordvpn_easy_diagnostics_reset_state
+wg() { wg_connected "$@"; }
+ip() { ip_healthy "$@"; }
+HEALTHY_JSON="$(nordvpn_easy_emit_diagnostics_summary_json wg0)"
+assert_eq 'none' \
+	"$(printf '%s' "$HEALTHY_JSON" | jq -r '.primary_finding.code')" \
+	'healthy summary json reports no primary finding'
+assert_eq 'true' \
+	"$(printf '%s' "$HEALTHY_JSON" | jq -r '.health.wireguard_connected')" \
+	'healthy summary json reports wireguard connected'
 
 printf '%s\n' 'test-diagnostics.sh: ok'

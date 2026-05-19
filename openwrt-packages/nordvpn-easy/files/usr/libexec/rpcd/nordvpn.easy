@@ -157,6 +157,42 @@ rpc_reconnect() {
 	rpc_command_result 'reconnect' "$INIT_SCRIPT" reconnect
 }
 
+rpc_diagnostics_summary() {
+	local tmp_dir out_file err_file rc err_msg
+
+	tmp_dir="$(mktemp -d /tmp/nordvpn-easy.diag-summary.XXXXXX 2>/dev/null)" || {
+		printf '{"generated_at":0,"success":false,"vpn_if":"wg0","primary_finding":{"code":"operational.summary_failed","message":"could not create diagnostics summary temp directory","action":""},"findings":[]}\n'
+		return 0
+	}
+	out_file="${tmp_dir}/stdout"
+	err_file="${tmp_dir}/stderr"
+	"$INIT_SCRIPT" diagnostics_summary > "$out_file" 2> "$err_file"
+	rc=$?
+	if [ "$rc" -eq 0 ] && [ -s "$out_file" ]; then
+		cat "$out_file"
+		rm -rf -- "$tmp_dir"
+		return 0
+	fi
+
+	err_msg="$(sed -n '1p' "$err_file" 2>/dev/null || true)"
+	[ -n "$err_msg" ] || err_msg='diagnostics summary failed'
+	jq -n \
+		--argjson generated_at "$(date +%s 2>/dev/null || printf '%s' '0')" \
+		--arg message "$err_msg" \
+		'{
+			generated_at: $generated_at,
+			success: false,
+			vpn_if: "wg0",
+			primary_finding: {
+				code: "operational.summary_failed",
+				message: $message,
+				action: "Review NordVPN Easy logs and retry diagnostics export"
+			},
+			findings: []
+		}'
+	rm -rf -- "$tmp_dir"
+}
+
 rpc_diagnostics() {
 	local tmp_dir log_file stderr_file rc log_json stderr_json message_json
 
@@ -241,6 +277,9 @@ rpc_call() {
 		diagnostics|diagnostics_log)
 			rpc_diagnostics
 			;;
+		diagnostics_summary)
+			rpc_diagnostics_summary
+			;;
 		*)
 			printf '{"code":1,"success":false,"message":%s}\n' "$(rpc_json_string "unknown method: $method")"
 			;;
@@ -268,7 +307,8 @@ case "$1" in
   "public_ip": {},
   "public_country": {},
   "diagnostics": {},
-  "diagnostics_log": {}
+  "diagnostics_log": {},
+  "diagnostics_summary": {}
 }
 EOF
 		;;

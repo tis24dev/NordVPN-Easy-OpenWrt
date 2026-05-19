@@ -20,7 +20,7 @@ SERVICE_BACKEND_PAYLOAD_SIGNATURE='render-contract-v3'
 NORDVPN_EASY_RC_BUSY="${NORDVPN_EASY_RC_BUSY:-75}"
 # OpenWrt rc.common consumes the command/help metadata.
 # shellcheck disable=SC2034
-EXTRA_COMMANDS='connect disconnect reconnect reconcile setup check rotate refresh_countries refresh_countries_force server_catalog public_ip public_country operation_status vpn_status status_json diagnostics_log install_hooks remove_hooks disable_runtime render_runtime_config'
+EXTRA_COMMANDS='connect disconnect reconnect reconcile setup check rotate refresh_countries refresh_countries_force server_catalog public_ip public_country operation_status vpn_status status_json diagnostics_log diagnostics_summary install_hooks remove_hooks disable_runtime render_runtime_config'
 # shellcheck disable=SC2034
 EXTRA_HELP='  connect               Enable, run setup, then install hooks transactionally
   disconnect            Disable runtime and remove hooks
@@ -38,6 +38,7 @@ EXTRA_HELP='  connect               Enable, run setup, then install hooks transa
   vpn_status            Print VPN runtime status (active/activating/inactive)
   status_json           Print local VPN runtime status as JSON
   diagnostics_log       Print filtered NordVPN Easy log output
+  diagnostics_summary   Print structured diagnostics summary as JSON
   install_hooks         Install cron and hotplug hooks
   remove_hooks          Remove cron and hotplug hooks
   disable_runtime       Disable the VPN interface and remove hooks
@@ -129,7 +130,7 @@ run_core_action() {
 	}
 
 	case "$action:${1:-}" in
-		status_json:*|operation_status:*|vpn_status:*|diagnostics_log:*)
+		status_json:*|operation_status:*|vpn_status:*|diagnostics_log:*|diagnostics_summary:*)
 			action_log_mode='quiet'
 			;;
 		public_ip:quiet|public_country:quiet)
@@ -643,6 +644,10 @@ status_json() {
 diagnostics_log() {
 	log_service_info 'diagnostics log export requested'
 	run_core_action diagnostics_log
+}
+
+diagnostics_summary() {
+	run_core_action diagnostics_summary
 }
 
 disable_runtime() {

@@ -64,6 +64,7 @@ DIAG_PRIMARY_FINDING_CODE='none'
 DIAG_PRIMARY_FINDING_MESSAGE='none detected'
 DIAG_PRIMARY_FINDING_ACTION=''
 DIAG_FINDINGS_CODES='none'
+DIAG_FINDINGS_RECORDS=''
 
 nordvpn_easy_diagnostics_reset_state() {
 	DIAG_COLLECTED='0'
@@ -83,6 +84,7 @@ nordvpn_easy_diagnostics_reset_state() {
 	DIAG_PRIMARY_FINDING_MESSAGE='none detected'
 	DIAG_PRIMARY_FINDING_ACTION=''
 	DIAG_FINDINGS_CODES='none'
+	DIAG_FINDINGS_RECORDS=''
 }
 
 nordvpn_easy_diagnostics_pick_ping_ip() {
@@ -264,6 +266,140 @@ nordvpn_easy_diagnostics_add_finding() {
 		DIAG_PRIMARY_FINDING_MESSAGE="$message"
 		DIAG_PRIMARY_FINDING_ACTION="$action"
 	fi
+
+	DIAG_FINDINGS_RECORDS="${DIAG_FINDINGS_RECORDS}${code}	${message}	${action}
+"
+}
+
+nordvpn_easy_diagnostics_build_findings_json() {
+	if [ -z "$DIAG_FINDINGS_RECORDS" ]; then
+		printf '%s\n' '[]'
+		return 0
+	fi
+
+	printf '%s' "$DIAG_FINDINGS_RECORDS" | jq -R -s '
+		split("\n")
+		| map(select(length > 0))
+		| map(split("\t"))
+		| map(select(length >= 3))
+		| map({
+			code: .[0],
+			message: .[1],
+			action: .[2],
+			severity: (
+				if (.[0] | test("^(routing\\.|runtime\\.no_handshake|runtime\\.stuck_tunnel|runtime\\.no_peers|runtime\\.link_down|connectivity\\.)")) then "critical"
+				else "warning"
+				end
+			)
+		})
+	'
+}
+
+nordvpn_easy_emit_diagnostics_summary_json() {
+	local vpn_if="${1:-${VPN_IF:-wg0}}"
+	local generated_at='0'
+	local findings_json='[]'
+	local status_json='null'
+	local yes_no='false'
+
+	[ "$DIAG_COLLECTED" = '1' ] || nordvpn_easy_diagnostics_collect "$vpn_if"
+
+	generated_at="$(date +%s 2>/dev/null || printf '%s' '0')"
+	findings_json="$(nordvpn_easy_diagnostics_build_findings_json)" || findings_json='[]'
+
+	if command -v nordvpn_easy_emit_status_json >/dev/null 2>&1; then
+		status_json="$(nordvpn_easy_emit_status_json 2>/dev/null)" || status_json='null'
+		if ! printf '%s' "$status_json" | jq -e . >/dev/null 2>&1; then
+			status_json='null'
+		fi
+	fi
+
+	case "$DIAG_WG_CONNECTED" in yes) yes_no='true' ;; esac
+
+	jq -n \
+		--argjson generated_at "${generated_at:-0}" \
+		--arg vpn_if "$DIAG_VPN_IF" \
+		--argjson status "$status_json" \
+		--argjson findings "$findings_json" \
+		--arg primary_code "$DIAG_PRIMARY_FINDING_CODE" \
+		--arg primary_message "$DIAG_PRIMARY_FINDING_MESSAGE" \
+		--arg primary_action "$DIAG_PRIMARY_FINDING_ACTION" \
+		--arg enterprise_state "$DIAG_ENTERPRISE_STATE" \
+		--arg vpn_status "$DIAG_VPN_STATUS" \
+		--argjson desired_enabled "$([ "$DIAG_DESIRED_ENABLED" = '1' ] && printf '%s' 'true' || printf '%s' 'false')" \
+		--argjson wireguard_connected "$yes_no" \
+		--arg wireguard_handshake "$DIAG_WG_HANDSHAKE" \
+		--argjson wireguard_handshake_epoch "${DIAG_WG_HANDSHAKE_EPOCH:-0}" \
+		--arg routing_blackhole_risk "$DIAG_ROUTING_BLACKHOLE_RISK" \
+		--arg default_route_device "$DIAG_DEFAULT_ROUTE_DEVICE" \
+		--arg default_route_via_vpn "$DIAG_DEFAULT_ROUTE_VIA_VPN" \
+		--arg full_tunnel_routing "$DIAG_FULL_TUNNEL_ROUTING" \
+		--arg transfer_asymmetry "$DIAG_TRANSFER_ASYMMETRY" \
+		--argjson transfer_rx_bytes "${DIAG_TRANSFER_RX_BYTES:-0}" \
+		--argjson transfer_tx_bytes "${DIAG_TRANSFER_TX_BYTES:-0}" \
+		--arg wan_ping "$DIAG_WAN_PING" \
+		--arg wan_device "${DIAG_WAN_DEVICE:-}" \
+		--arg dns_api_nordvpn_com "$DIAG_DNS_API_NORDVPN_COM" \
+		--argjson diagnostics_probe_duration_ms "${DIAG_PROBE_DURATION_MS:-0}" \
+		--arg api_server_list_cache "$DIAG_API_SERVER_LIST_CACHE" \
+		--arg api_countries_cache "$DIAG_API_COUNTRIES_CACHE" \
+		--argjson api_countries_cache_age_seconds "$(
+			case "${DIAG_API_COUNTRIES_CACHE_AGE_SECONDS:-unknown}" in
+				''|*[!0-9]*) printf '%s' '0' ;;
+				*) printf '%s' "${DIAG_API_COUNTRIES_CACHE_AGE_SECONDS}" ;;
+			esac
+		)" \
+		--arg last_error "$DIAG_LAST_ERROR" \
+		--arg operation_lock_state "$DIAG_OPERATION_LOCK_STATE" \
+		--arg operation_lock_action "${DIAG_OPERATION_LOCK_ACTION:-}" \
+		--arg service_enabled_mismatch "$DIAG_SERVICE_ENABLED_MISMATCH" \
+		'{
+			generated_at: $generated_at,
+			vpn_if: $vpn_if,
+			status: $status,
+			health: {
+				enterprise_state: $enterprise_state,
+				vpn_status: $vpn_status,
+				desired_enabled: $desired_enabled,
+				wireguard_connected: $wireguard_connected,
+				wireguard_handshake: $wireguard_handshake,
+				wireguard_handshake_epoch: $wireguard_handshake_epoch,
+				routing_blackhole_risk: $routing_blackhole_risk,
+				default_route_device: $default_route_device,
+				default_route_via_vpn: $default_route_via_vpn,
+				full_tunnel_routing: $full_tunnel_routing,
+				transfer_asymmetry: $transfer_asymmetry,
+				transfer_rx_bytes: $transfer_rx_bytes,
+				transfer_tx_bytes: $transfer_tx_bytes,
+				service_enabled_mismatch: $service_enabled_mismatch
+			},
+			connectivity: {
+				routing_blackhole_risk: $routing_blackhole_risk,
+				default_route_device: $default_route_device,
+				wireguard_connected: $wireguard_connected,
+				wan_device: (if ($wan_device | length) > 0 then $wan_device else null end),
+				wan_ping: $wan_ping,
+				dns_api_nordvpn_com: $dns_api_nordvpn_com,
+				api_server_list_cache: $api_server_list_cache,
+				diagnostics_probe_duration_ms: $diagnostics_probe_duration_ms
+			},
+			caches: {
+				last_error: $last_error,
+				operation_lock_state: $operation_lock_state,
+				operation_lock_action: $operation_lock_action,
+				server_list_cache_path: "/tmp/nordvpn.json",
+				server_list_cache_state: $api_server_list_cache,
+				countries_cache_path: "/tmp/nordvpn-easy-countries.json",
+				countries_cache_state: $api_countries_cache,
+				countries_cache_age_seconds: $api_countries_cache_age_seconds
+			},
+			primary_finding: {
+				code: $primary_code,
+				message: $primary_message,
+				action: $primary_action
+			},
+			findings: $findings
+		}'
 }
 
 nordvpn_easy_diagnostics_collect_config() {
@@ -743,4 +879,8 @@ nordvpn_easy_diagnostics_print_runtime_caches() {
 
 nordvpn_easy_print_diagnostics_health_summary() {
 	nordvpn_easy_diagnostics_print_health_summary "$@"
+}
+
+nordvpn_easy_diagnostics_summary_json() {
+	nordvpn_easy_emit_diagnostics_summary_json "$@"
 }

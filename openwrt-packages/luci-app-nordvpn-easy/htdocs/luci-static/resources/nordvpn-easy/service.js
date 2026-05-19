@@ -74,6 +74,11 @@ const callDiagnostics = rpc.declare({
 	method: 'diagnostics'
 });
 
+const callDiagnosticsSummary = rpc.declare({
+	object: 'nordvpn.easy',
+	method: 'diagnostics_summary'
+});
+
 const callRefreshCountries = rpc.declare({
 	object: 'nordvpn.easy',
 	method: 'refresh_countries',
@@ -249,6 +254,9 @@ function execService(action, extraArgs) {
 		break;
 	case 'diagnostics_log':
 		request = callDiagnostics();
+		break;
+	case 'diagnostics_summary':
+		request = callDiagnosticsSummary();
 		break;
 	default:
 		request = callSimpleAction(action);

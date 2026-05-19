@@ -89,7 +89,7 @@ curl_rc_meaning () {
 
 usage () {
   cat <<EOF
-Usage: $0 [check|reconnect|reconcile|setup|rotate|refresh_countries|refresh_countries_force|server_catalog|public_ip|public_country|operation_status|vpn_status|status_json|diagnostics_log|run|help] [--config config_file] [extra_args]
+Usage: $0 [check|reconnect|reconcile|setup|rotate|refresh_countries|refresh_countries_force|server_catalog|public_ip|public_country|operation_status|vpn_status|status_json|diagnostics_log|diagnostics_summary|run|help] [--config config_file] [extra_args]
 
 Commands:
   check   Run one VPN health-check cycle (default)
@@ -107,6 +107,7 @@ Commands:
   vpn_status  Print VPN runtime status (active|inactive|starting|stopping|error)
   status_json  Print runtime status as JSON
   diagnostics_log  Print filtered NordVPN Easy log output
+  diagnostics_summary  Print structured diagnostics summary as JSON
   run     Backward-compatible alias for check
   help    Show this message
 
@@ -986,7 +987,7 @@ ACTION_STARTED_AT=''
 
 if [ $# -gt 0 ]; then
   case "$1" in
-    check|reconnect|reconcile|setup|rotate|refresh_countries|refresh_countries_force|server_catalog|public_ip|public_country|operation_status|vpn_status|status_json|diagnostics_log|run|help)
+    check|reconnect|reconcile|setup|rotate|refresh_countries|refresh_countries_force|server_catalog|public_ip|public_country|operation_status|vpn_status|status_json|diagnostics_log|diagnostics_summary|run|help)
       ACTION="$1"
       shift
       ;;
@@ -1020,7 +1021,7 @@ if [ -z "$CONFIG_PATH" ] && [ -n "${NORDVPN_CONFIG_FILE:-}" ]; then
 fi
 
 case "$ACTION:${1:-}" in
-  status_json:*|operation_status:*|vpn_status:*|diagnostics_log:*|public_ip:quiet|public_country:quiet)
+  status_json:*|operation_status:*|vpn_status:*|diagnostics_log:*|diagnostics_summary:*|public_ip:quiet|public_country:quiet)
     CORE_QUIET_ACTION=1
     ;;
 esac
@@ -1114,6 +1115,13 @@ if [ "$ACTION" = 'diagnostics_log' ]; then
   LOG_PHASE='service'
   [ "$CORE_QUIET_ACTION" -eq 1 ] || log 'diagnostics log export requested'
   nordvpn_easy_export_diagnostics_log 'nordvpn-easy'
+  exit $?
+fi
+
+if [ "$ACTION" = 'diagnostics_summary' ]; then
+  LOG_PHASE='service'
+  [ "$CORE_QUIET_ACTION" -eq 1 ] || log 'diagnostics summary requested'
+  nordvpn_easy_emit_diagnostics_summary_json "$VPN_IF"
   exit $?
 fi
 
