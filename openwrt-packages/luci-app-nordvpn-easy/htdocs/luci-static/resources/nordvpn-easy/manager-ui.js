@@ -243,8 +243,11 @@ function preferredServerSummaryFromStatus(status) {
 
 function updateCountryMatchStatus(state) {
 	let busyAction;
+	const runtimeStatus = state.currentLocalStatus || {};
 	const expectedCountry = managerData.normalizeCountryCode(state.appliedCountryCode);
-	const actualCountry = managerData.normalizeCountryCode(state.currentPublicCountry);
+	const actualCountry = managerData.normalizeCountryCode(
+		state.currentPublicCountry || runtimeStatus.current_server_country || ''
+	);
 
 	if (!state.appliedEnabled || state.currentLocalStatus.runtime_disabled || state.currentLocalStatus.interface_disabled || isDisableRequested(state))
 		return setCountryMatchIndicator('inactive', _('Inactive'));

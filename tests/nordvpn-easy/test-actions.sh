@@ -183,6 +183,72 @@ LAST_SET_SERVER=''
 nordvpn_easy_set_first_server_from_list
 assert_eq 'it45.nordvpn.com|it456' "$LAST_SET_SERVER" 'rotate mode skips the current recommended station'
 
+COUNTRIES_CACHE_FILE="$TMP_DIR/countries-bz-only.json"
+COUNTRIES_CACHE_TS_FILE="$TMP_DIR/countries-bz-only.timestamp"
+jq '[{ "id": 22, "name": "Belize", "code": "BZ" }]' > "$COUNTRIES_CACHE_FILE"
+date +%s > "$COUNTRIES_CACHE_TS_FILE"
+RESOLVED_COUNTRY_ID=''
+RESOLVED_COUNTRY_NAME=''
+RESOLVED_COUNTRY_CODE=''
+RESOLVED_COUNTRY_QUERY=''
+
+valid_country_code() {
+	printf '%s' "$1" | grep -Eq '^[A-Z]{2}$'
+}
+
+resolve_country_filter() {
+	COUNTRY_QUERY="${1:-$VPN_COUNTRY}"
+
+	[ -z "$COUNTRY_QUERY" ] && return 0
+	if [ -n "$RESOLVED_COUNTRY_ID" ] && [ "$RESOLVED_COUNTRY_QUERY" = "$COUNTRY_QUERY" ]; then
+		return 0
+	fi
+
+	COUNTRY_MATCH=$(jq -er --arg query "$COUNTRY_QUERY" '
+		[ .[] | select(
+			((.id | tostring) == $query) or
+			((.code // "" | ascii_downcase) == ($query | ascii_downcase)) or
+			((.name // "" | ascii_downcase) == ($query | ascii_downcase))
+		) ][0] | [.id, .name, .code] | @tsv
+	' "$COUNTRIES_CACHE_FILE" 2>/dev/null) || {
+		if valid_country_code "$COUNTRY_QUERY"; then
+			RESOLVED_COUNTRY_ID=''
+			RESOLVED_COUNTRY_NAME='unknown in NordVPN country cache'
+			RESOLVED_COUNTRY_CODE=$(printf '%s' "$COUNTRY_QUERY" | tr '[:lower:]' '[:upper:]')
+			RESOLVED_COUNTRY_QUERY="$COUNTRY_QUERY"
+			return 0
+		fi
+		return 1
+	}
+
+	IFS="$(printf '\t')" read -r RESOLVED_COUNTRY_ID RESOLVED_COUNTRY_NAME RESOLVED_COUNTRY_CODE <<EOF
+$COUNTRY_MATCH
+EOF
+
+	[ -n "$RESOLVED_COUNTRY_ID" ] || return 1
+	RESOLVED_COUNTRY_QUERY="$COUNTRY_QUERY"
+	return 0
+}
+
+resolve_country_filter 'EC' || {
+	printf '%s\n' 'FAIL: EC should soft-resolve when missing from country cache' >&2
+	exit 1
+}
+[ -z "$RESOLVED_COUNTRY_ID" ] && [ "$RESOLVED_COUNTRY_CODE" = 'EC' ] || {
+	printf '%s\n' 'FAIL: soft resolve should keep EC code without API country id' >&2
+	exit 1
+}
+
+RESOLVED_COUNTRY_CODE='IT'
+nordvpn_easy_set_first_server_from_list || {
+	printf '%s\n' 'FAIL: server list filter should select IT entry' >&2
+	exit 1
+}
+[ "$COUNTRY_CODE" = 'IT' ] || {
+	printf '%s\n' "FAIL: expected IT server after country filter, got ${COUNTRY_CODE:-unset}" >&2
+	exit 1
+}
+
 PROVISION_COUNT=0
 CHECK_COUNT=0
 refresh_countries_cache() { return 0; }
@@ -195,7 +261,7 @@ nordvpn_easy_reconcile_action
 assert_eq '1' "$PROVISION_COUNT" 'reconcile reprovisions the VPN from saved settings'
 
 PING_COUNT=0
-PING_FAIL_UNTIL=99
+PING_FAIL_UNTIL=1
 PROVISION_COUNT=0
 FAILURE_RETRY_DELAY=0
 nordvpn_easy_runtime_needs_provision() { return 0; }

@@ -700,6 +700,14 @@ resolve_country_filter () {
       ((.name // "" | ascii_downcase) == ($query | ascii_downcase))
     ) ][0] | [.id, .name, .code] | @tsv
   ' "$COUNTRIES_CACHE_FILE" 2>/dev/null) || {
+    if valid_country_code "$COUNTRY_QUERY"; then
+      RESOLVED_COUNTRY_ID=''
+      RESOLVED_COUNTRY_NAME='unknown in NordVPN country cache'
+      RESOLVED_COUNTRY_CODE=$(printf '%s' "$COUNTRY_QUERY" | tr '[:lower:]' '[:upper:]')
+      RESOLVED_COUNTRY_QUERY="$COUNTRY_QUERY"
+      log "WARNING: COUNTRY '$RESOLVED_COUNTRY_CODE' is not in the NordVPN country cache; recommendations will be filtered by country code instead of API country id"
+      return 0
+    fi
     log "ERROR: COUNTRY '$COUNTRY_QUERY' NOT FOUND"
     return 1
   }
@@ -789,6 +797,11 @@ fetch_server_catalog () {
   }
 
   resolve_country_filter "$COUNTRY_QUERY" || return 1
+
+  if [ -z "$RESOLVED_COUNTRY_ID" ]; then
+    log "WARNING: cannot refresh server catalog without API country id for ${RESOLVED_COUNTRY_CODE:-$COUNTRY_QUERY}"
+    return 1
+  fi
 
   if [ "$FORCE_REFRESH" -ne 1 ] && server_catalog_cache_is_fresh "$RESOLVED_COUNTRY_ID"; then
     log "Using cached NordVPN server catalog from $SERVER_CATALOG_FILE for $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"

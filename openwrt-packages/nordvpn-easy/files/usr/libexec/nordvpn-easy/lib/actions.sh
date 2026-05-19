@@ -111,8 +111,12 @@ nordvpn_easy_build_server_recommendations_url() {
 	if [ -n "$VPN_COUNTRY" ]; then
 		nordvpn_easy_require_core_action_helpers resolve_country_filter || return 1
 		resolve_country_filter || return 1
-		SERVER_RECOMMENDATIONS_URL="${SERVER_RECOMMENDATIONS_URL}&filters[country_id]=$RESOLVED_COUNTRY_ID"
-		log "Building recommendations URL for country filter $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
+		if [ -n "$RESOLVED_COUNTRY_ID" ]; then
+			SERVER_RECOMMENDATIONS_URL="${SERVER_RECOMMENDATIONS_URL}&filters[country_id]=$RESOLVED_COUNTRY_ID"
+			log "Building recommendations URL for country filter $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
+		else
+			log "Building recommendations URL without country_id filter; will select servers matching $RESOLVED_COUNTRY_CODE from the response"
+		fi
 	else
 		log 'Building recommendations URL with automatic country selection'
 	fi
@@ -198,8 +202,11 @@ nordvpn_easy_get_servers_list() {
 nordvpn_easy_set_first_server_from_list() {
 	local exclude="${NORDVPN_EASY_ROTATE_EXCLUDE_STATION:-}"
 
-	FIRST_SERVER=$(jq -r --arg exclude "$exclude" '
-		[.[] | select(($exclude == "") or ((.station // "") != $exclude))] | .[0] | [
+	FIRST_SERVER=$(jq -r --arg exclude "$exclude" --arg want "${RESOLVED_COUNTRY_CODE:-}" '
+		[.[] |
+			select(($exclude == "") or ((.station // "") != $exclude)) |
+			select(($want == "") or ((.locations[0].country.code // "") == $want))
+		] | .[0] | [
 			.hostname,
 			.station,
 			([.technologies[]?

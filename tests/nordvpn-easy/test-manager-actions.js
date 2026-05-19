@@ -1312,6 +1312,35 @@ async function testHandleSaveApplyReconcilesDisabledRuntimeAfterSave() {
 	assert.ok(harness.serviceCalls.indexOf('status_json') !== -1, 'reconnect flow refreshes status before choosing runtime action');
 }
 
+async function testHandleSaveApplyQueuesReconnectWhenSavedCountryDriftsFromPeer() {
+	const harness = buildHandleSaveApplyHarness({
+		previousEnabled: true,
+		previousCountry: 'AU',
+		currentEnabled: true,
+		currentMode: 'auto',
+		currentCountry: 'AU',
+		savedCountry: 'AU',
+		statusPayload: {
+			desired_enabled: true,
+			runtime_disabled: false,
+			interface_disabled: false,
+			runtime_configured: true,
+			operation_status: 'idle',
+			selected_country: 'AU',
+			server_selection_mode: 'auto',
+			current_server_country: 'BZ',
+			current_server_station: '45.95.162.3'
+		}
+	});
+
+	await harness.actions.handleSaveApply(harness.viewState, harness.state, {}, '1');
+	await Promise.resolve();
+	await Promise.resolve();
+
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'reconnect' ] ],
+		'saved country that drifts from the active peer queues reconnect on Save & Apply');
+}
+
 async function testAutoReconcileRunsForCountryDrift() {
 	const harness = buildHandleSaveApplyHarness({
 		previousEnabled: true,
@@ -1572,6 +1601,7 @@ Promise.resolve().then(async function() {
 	await testHandleSaveApplyClearsBusyStateWhenPostApplySyncFails();
 	await testHandleSaveApplyAutoModeClearsManualSelectionAndReconnects();
 	await testHandleSaveApplyReconcilesDisabledRuntimeAfterSave();
+	await testHandleSaveApplyQueuesReconnectWhenSavedCountryDriftsFromPeer();
 	await testAutoReconcileRunsForCountryDrift();
 	await testAutoReconcileThrottlesSuccessfulNoChange();
 	await testAutoReconcileSkipsNonDriftCases();

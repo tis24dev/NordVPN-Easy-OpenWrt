@@ -271,10 +271,23 @@ function buildDiagnosticsSnapshot(res) {
 	};
 }
 
+function buildRuntimeStatusForActionPlan(state, savedConfig, runtimeStatus) {
+	const base = runtimeStatus || (state && state.currentLocalStatus) || {};
+
+	return Object.assign({}, base, {
+		selected_country: savedConfig.country,
+		server_selection_mode: savedConfig.mode,
+		preferred_server_station: savedConfig.preferredStation
+	});
+}
+
 function deriveRuntimeActionPlan(previousEnabled, enabled, previousCountry, country, previousMode, mode, previousPreferredStation, preferredStation, runtimeStatus) {
 	const currentEnabled = !!enabled;
 	const wasEnabled = !!previousEnabled;
 	const currentMode = normalizeSelectionMode(mode);
+	const savedCountry = managerData.normalizeCountryCode(country || '');
+	const peerCountry = managerData.normalizeCountryCode((runtimeStatus && runtimeStatus.current_server_country) || '');
+	const peerCountryMismatch = !!(savedCountry && peerCountry && savedCountry !== peerCountry);
 	const serverSelectionChanged = hasServerSelectionChanged(
 		previousCountry,
 		country,
@@ -312,7 +325,7 @@ function deriveRuntimeActionPlan(previousEnabled, enabled, previousCountry, coun
 		if (currentMode === 'manual') {
 			plan.successMessage = _('NordVPN Easy cleanly reconnected and synchronized the selected manual server.');
 		}
-		else if (serverSelectionChanged || serverSelectionDrift || runtimeNeedsReconciliation(runtimeStatus)) {
+		else if (serverSelectionChanged || serverSelectionDrift || peerCountryMismatch || runtimeNeedsReconciliation(runtimeStatus)) {
 			plan.successMessage = _('NordVPN Easy cleanly reconnected and synchronized the automatic server selection.');
 		}
 		else {
@@ -1001,8 +1014,12 @@ function handleSaveApply(viewState, state, ev, mode) {
 				const continueAfterUciApply = function() {
 					return loadSavedRuntimeConfig().then(function(savedConfig) {
 						rememberSavedRuntimeConfig(viewState, state, savedConfig);
-						return updateLocalStatus(state, { force: true }).then(function(status) {
-							const localStatus = state.currentLocalStatusFresh ? status : null;
+						return updateLocalStatus(state, {
+							force: true,
+							suppressAutoReconcile: true
+						}).then(function(status) {
+							const localStatus = state.currentLocalStatusFresh ? status : (state.currentLocalStatus || null);
+							const statusForPlan = buildRuntimeStatusForActionPlan(state, savedConfig, localStatus);
 							const runtimePlan = deriveRuntimeActionPlan(
 								previousEnabled,
 								savedConfig.enabled,
@@ -1012,7 +1029,7 @@ function handleSaveApply(viewState, state, ev, mode) {
 								savedConfig.mode,
 								previousPreferredStation,
 								savedConfig.preferredStation,
-								localStatus
+								statusForPlan
 							);
 							const actions = runtimePlan.actions;
 							const successMessage = runtimePlan.successMessage;
@@ -1036,17 +1053,20 @@ function handleSaveApply(viewState, state, ev, mode) {
 								_('Enabled state after save: %s').format(savedConfig.enabled ? _('checked') : _('unchecked'))
 							]);
 
-							return updateLocalStatus(state, { force: true }).then(function() {
+							return updateLocalStatus(state, {
+								force: true,
+								suppressAutoReconcile: true
+							}).then(function() {
 								return service.runActions(actions);
 							}).then(function() {
 								service.notifyInfo(successMessage);
-								return refreshAfterSaveApply(state, true);
+								return refreshAfterSaveApply(state, true, { suppressAutoReconcile: true });
 							}).then(function() {
 								finishResolve();
 							}).catch(function(err) {
 								managerStore.setError(state, err);
 								service.notifyError(err);
-								return refreshAfterSaveApply(state, true).then(function() {
+								return refreshAfterSaveApply(state, true, { suppressAutoReconcile: true }).then(function() {
 									finishReject(err);
 								});
 							});
@@ -1055,7 +1075,7 @@ function handleSaveApply(viewState, state, ev, mode) {
 						const message = (err && err.message) ? err.message : String(err);
 
 						managerStore.setError(state, err);
-						return refreshAfterSaveApply(state, true).then(function() {
+						return refreshAfterSaveApply(state, true, { suppressAutoReconcile: true }).then(function() {
 							service.notifyError(new Error(_('Automatic runtime sync failed: ') + message));
 							finishReject(err);
 						});
