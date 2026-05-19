@@ -153,7 +153,9 @@ function parseDiagnosticsSummary(raw) {
 		primary_finding: {
 			code: String(primary.code || 'none'),
 			message: String(primary.message || ''),
-			action: String(primary.action || '')
+			action: String(primary.action || ''),
+			severity: String(primary.severity || 'none'),
+			priority: Number(primary.priority || 0)
 		},
 		findings: Array.isArray(summary.findings) ? summary.findings.map(function(finding) {
 			return {

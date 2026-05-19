@@ -155,17 +155,27 @@ Common `probable_issue_code` values:
 | `runtime.no_handshake` | Peer configured but no recent handshake |
 | `operational.kill_switch_active` | Kill switch on while the tunnel is down |
 | `connectivity.wan_down` | WAN probe failed while VPN is enabled |
+| `runtime.endpoint_unreachable` | NordVPN endpoint host not reachable from WAN |
 
 Background `diagnostics_summary` polls from the main page and LuCI view refresh
 skip active WAN/DNS probes to avoid extra load. A full log download or manual
 assessment refresh runs the complete probe set (typically under a few seconds).
 
+Findings are ranked by severity: routing blackhole and WAN/DNS failures surface
+before handshake or configuration warnings. The summary JSON includes
+`primary_finding.severity`, `health.degraded_since`, and
+`connectivity.vpn_endpoint_reachable` (UDP endpoint probe via WAN when active
+probes are enabled).
+
 When the VPN transitions to **degraded** during a cron or health-check run, the
 service logs `probable_issue_code` to syslog (`logread -e nordvpn-easy`). Example:
 
 ```text
-healthcheck: VPN state degraded: probable_issue_code=runtime.no_handshake
+healthcheck: VPN state degraded: probable_issue_code=runtime.no_handshake severity=critical
+healthcheck: VPN state recovered: was probable_issue_code=runtime.no_handshake for 120s; now state=connected
 ```
+
+A short rolling history is kept at `/tmp/run/nordvpn-easy/diagnostics_history.log`.
 
 The VPN health-check clears a **routing blackhole** automatically: if the default
 route points at the VPN interface without a WireGuard handshake, it runs `ifdown`

@@ -288,7 +288,7 @@ assert_eq 'yes' \
 	'summary json includes connectivity assessment'
 
 wg() { wg_blackhole "$@"; }
-ip() { ip_healthy "$@"; }
+ip() { ip_blackhole "$@"; }
 uci_kill_switch() {
 	case "$*" in
 		'get nordvpn_easy.main.kill_switch_enabled') printf '%s\n' '1' ;;
@@ -301,6 +301,16 @@ uci() {
 	fi
 	uci_kill_switch "$@"
 }
+PRIORITY_JSON="$(emit_scenario_json)"
+assert_eq 'routing.blackhole_default_via_vpn' \
+	"$(primary_code "$PRIORITY_JSON")" \
+	'routing blackhole stays primary over kill switch and handshake findings'
+assert_eq 'critical' \
+	"$(printf '%s' "$PRIORITY_JSON" | jq -r '.primary_finding.severity')" \
+	'primary finding exposes severity in summary json'
+assert_contains 'operational.kill_switch_active' "$(findings_codes "$PRIORITY_JSON")" \
+	'kill switch finding is still listed with blackhole present'
+
 KILL_SWITCH_JSON="$(emit_scenario_json)"
 assert_eq 'true' \
 	"$(printf '%s' "$KILL_SWITCH_JSON" | jq -r '.health.kill_switch_enabled')" \
@@ -339,9 +349,10 @@ assert_eq 'true' \
 # --- Per-issue-code scenarios ---
 # Covers: config.interface_incomplete, config.peer_missing, config.peer_incomplete,
 # config.not_wireguard, service.enabled_mismatch, routing.blackhole_default_via_vpn,
-# runtime.no_handshake, runtime.stuck_tunnel, operational.kill_switch_active,
-# connectivity.wan_down, connectivity.dns_failure, operational.api_cache_missing,
-# operational.last_error, selection.drift, runtime.no_peers, runtime.link_down
+# runtime.no_handshake, runtime.stuck_tunnel, runtime.endpoint_unreachable,
+# operational.kill_switch_active, connectivity.wan_down, connectivity.dns_failure,
+# operational.api_cache_missing, operational.last_error, selection.drift,
+# runtime.no_peers, runtime.link_down
 
 wg() { wg_connected "$@"; }
 ip() { ip_healthy "$@"; }
@@ -450,6 +461,36 @@ JSON="$(assert_scenario_primary 'runtime.no_handshake' 'runtime.no_handshake is 
 assert_scenario_includes "$JSON" 'runtime.no_handshake' 'runtime.no_handshake appears in findings'
 assert_scenario_includes "$JSON" 'runtime.stuck_tunnel' \
 	'runtime.stuck_tunnel is listed with asymmetric transfer'
+
+NORDVPN_EASY_DIAGNOSTICS_ACTIVE_PROBES='1'
+wg() { wg_no_handshake "$@"; }
+ip() { ip_healthy "$@"; }
+uci() {
+	if [ "$1" = '-q' ]; then
+		shift
+	fi
+	uci_complete "$@"
+}
+install_ping_mock_endpoint_fail() {
+	printf '%s\n' '#!/bin/sh' \
+		'case "$*" in' \
+		'	*185.225.234.11*) exit 1 ;;' \
+		'	*) exit 0 ;;' \
+		'esac' > "$DIAG_TMP/ping"
+	chmod +x "$DIAG_TMP/ping"
+	PATH="$DIAG_TMP:$ORIGINAL_PATH"
+	export PATH
+}
+install_ping_mock_endpoint_fail
+printf '%s\n' '#!/bin/sh' 'printf "%s\n" "Address 1: 1.2.3.4"' 'exit 0' > "$DIAG_TMP/nslookup"
+chmod +x "$DIAG_TMP/nslookup"
+PATH="$DIAG_TMP:$ORIGINAL_PATH"
+export PATH
+JSON="$(assert_scenario_primary 'runtime.endpoint_unreachable' 'runtime.endpoint_unreachable is primary when endpoint ping fails')"
+assert_scenario_includes "$JSON" 'runtime.endpoint_unreachable' \
+	'runtime.endpoint_unreachable appears in findings'
+restore_path_mock
+NORDVPN_EASY_DIAGNOSTICS_ACTIVE_PROBES='0'
 
 NORDVPN_EASY_DIAGNOSTICS_ACTIVE_PROBES='1'
 wg() { wg_connected "$@"; }

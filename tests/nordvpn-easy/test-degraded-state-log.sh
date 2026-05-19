@@ -10,6 +10,7 @@ DIAGNOSTICS_LIB="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordv
 TMP_DIR="$(mktemp -d)"
 LOGGER_FILE="$TMP_DIR/syslog.log"
 ENTERPRISE_STATE_CACHE="$TMP_DIR/enterprise_state_last"
+DIAGNOSTICS_HISTORY="$TMP_DIR/diagnostics_history.log"
 SERVER_LIST_FILE="$TMP_DIR/nordvpn-server-list.json"
 COUNTRIES_CACHE_FILE="$TMP_DIR/nordvpn-countries.json"
 COUNTRIES_CACHE_TS_FILE="$TMP_DIR/nordvpn-countries.timestamp"
@@ -124,6 +125,7 @@ VPN_IF='wg0'
 WAN_IF='wan'
 NORDVPN_EASY_DIAGNOSTICS_ACTIVE_PROBES='0'
 NORDVPN_EASY_ENTERPRISE_STATE_CACHE="$ENTERPRISE_STATE_CACHE"
+NORDVPN_EASY_DIAGNOSTICS_HISTORY="$DIAGNOSTICS_HISTORY"
 printf '%s\n' '[{"station":"hk270"}]' > "$SERVER_LIST_FILE"
 printf '%s\n' '[{"code":"HK","name":"Hong Kong"}]' > "$COUNTRIES_CACHE_FILE"
 date +%s > "$COUNTRIES_CACHE_TS_FILE"
@@ -150,6 +152,10 @@ assert_eq 'degraded' \
 assert_eq 'runtime.no_handshake' \
 	"$(sed -n 's/^probable_issue_code=//p' "$ENTERPRISE_STATE_CACHE" | sed -n '1p')" \
 	'enterprise state snapshot cache records probable issue code'
+assert_contains 'degraded_since=' "$(cat "$ENTERPRISE_STATE_CACHE")" \
+	'enterprise state snapshot cache records degraded_since'
+assert_contains 'entered_degraded' "$(cat "$DIAGNOSTICS_HISTORY")" \
+	'diagnostics history records degraded transition'
 
 nordvpn_easy_log_enterprise_state_if_degraded wg0 healthcheck
 
@@ -172,7 +178,17 @@ wg_connected() {
 	esac
 }
 
-printf 'enterprise_state=connected\nprobable_issue_code=none\n' > "$ENTERPRISE_STATE_CACHE"
+: >"$LOGGER_FILE"
+wg() { wg_connected "$@"; }
+
+nordvpn_easy_log_enterprise_state_if_degraded wg0 healthcheck
+
+assert_contains 'VPN state recovered:' "$(cat "$LOGGER_FILE")" \
+	'recovery from degraded is logged to syslog'
+assert_contains 'recovered' "$(cat "$DIAGNOSTICS_HISTORY")" \
+	'diagnostics history records recovery transition'
+
+printf 'enterprise_state=connected\nprobable_issue_code=none\ndegraded_since=0\n' > "$ENTERPRISE_STATE_CACHE"
 : >"$LOGGER_FILE"
 wg() { wg_connected "$@"; }
 
