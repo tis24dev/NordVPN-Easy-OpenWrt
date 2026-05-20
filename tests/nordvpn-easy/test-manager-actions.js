@@ -189,79 +189,8 @@ const healthyRuntime = {
 	runtime_configured: true
 };
 
-assert.equal(typeof managerActions.normalizeSubmittedConfig, 'function', 'normalizeSubmittedConfig is exported');
 assert.equal(typeof managerActions.runApplyCycle, 'function', 'runApplyCycle is exported');
-assert.equal(typeof managerActions.deriveServerSelectionDrift, 'function', 'deriveServerSelectionDrift is exported');
-assert.equal(typeof managerActions.maybeAutoReconcileSelectionDrift, 'function', 'maybeAutoReconcileSelectionDrift is exported');
-assert.equal(typeof managerActions.mergeSavedConfigWithSubmittedValues, 'function', 'mergeSavedConfigWithSubmittedValues is exported');
-assert.equal(typeof managerActions.syncSubmittedRuntimeConfigToUci, 'function', 'syncSubmittedRuntimeConfigToUci is exported');
 assert.equal(typeof managerActions.renderLocalStatusSnapshot, 'function', 'renderLocalStatusSnapshot is exported');
-
-{
-	const merged = managerActions.mergeSavedConfigWithSubmittedValues({
-		enabled: true,
-		country: 'IE',
-		mode: 'auto',
-		preferredStation: ''
-	}, {
-		country: 'NG',
-		mode: 'auto',
-		enabled: true,
-		preferredStation: ''
-	});
-
-	assert.equal(merged.country, 'NG', 'form country overrides stale disk country in saved runtime config');
-	assert.equal(merged.mode, 'auto', 'form mode is preserved in merged saved runtime config');
-	assert.equal(merged.enabled, true, 'form enabled flag is preserved in merged saved runtime config');
-}
-
-assert.deepEqual(
-	normalizeValue(managerActions.normalizeSubmittedConfig({
-		country: 'UY',
-		mode: 'manual',
-		enabled: true,
-		preferredStation: 'uy123'
-	})),
-	{
-		country: 'UY',
-		mode: 'manual',
-		enabled: true,
-		preferredStation: 'uy123'
-	},
-	'manual config with country and server is preserved'
-);
-
-assert.deepEqual(
-	normalizeValue(managerActions.normalizeSubmittedConfig({
-		country: '',
-		mode: 'manual',
-		enabled: true,
-		preferredStation: 'uy123'
-	})),
-	{
-		country: '',
-		mode: 'auto',
-		enabled: true,
-		preferredStation: ''
-	},
-	'incomplete manual selection falls back to automatic mode'
-);
-
-assert.deepEqual(
-	normalizeValue(managerActions.normalizeSubmittedConfig({
-		country: 'UY',
-		mode: 'manual',
-		enabled: true,
-		preferredStation: ''
-	})),
-	{
-		country: 'UY',
-		mode: 'auto',
-		enabled: true,
-		preferredStation: ''
-	},
-	'manual mode without preferred server falls back to automatic mode'
-);
 
 assert.equal(managerData.parseEnabledFlag(undefined), false, 'missing enabled option is treated as disabled');
 assert.equal(managerData.parseEnabledFlag('0'), false, 'explicit disabled value is treated as disabled');
@@ -874,21 +803,11 @@ function testSaveApplyTransitionSuppressesConnectedAndDrift() {
 		true,
 		'drift banner stays hidden until Save & Apply finishes'
 	);
-	assert.equal(
-		actions.driftEvaluationAllowed(state),
-		false,
-		'drift evaluation is disabled during Save & Apply'
-	);
 
 	state.saveApplyInProgress = false;
 	state.pendingOperationLabel = '';
 	state.phase = 'idle';
 
-	assert.equal(
-		actions.driftEvaluationAllowed(state),
-		true,
-		'drift evaluation resumes after Save & Apply completes'
-	);
 	actions.renderDiagnosticsSnapshot(state, driftSummary, true);
 	assert.equal(
 		managerData.diagnosticsHasAlert(diagnosticsBanners.summary),
@@ -935,7 +854,7 @@ function buildHandleSaveApplyHarness(options) {
 	let uciAppliedHandler = null;
 
 	const actions = loadManagerActionsModule({
-		managerData: {
+		managerData: Object.assign({
 			normalizeCountryCode(value) {
 				return String(value || '').trim().toUpperCase();
 			},
@@ -945,7 +864,29 @@ function buildHandleSaveApplyHarness(options) {
 			parseLocalStatus(raw) {
 				return JSON.parse(raw || '{}');
 			}
-		},
+		}, {
+			emptyServerCatalog() {
+				return { servers: [] };
+			},
+			buildServerCatalogIndex() {
+				return {};
+			},
+			parseServerCatalog() {
+				return { servers: [] };
+			},
+			emptyDiagnosticsSummary() {
+				return managerData.emptyDiagnosticsSummary();
+			},
+			parseDiagnosticsSummary(raw) {
+				return managerData.parseDiagnosticsSummary(raw);
+			},
+			diagnosticsHasAlert(summary) {
+				return managerData.diagnosticsHasAlert(summary);
+			},
+			hideSelectionDriftDiagnostics(summary) {
+				return managerData.hideSelectionDriftDiagnostics(summary);
+			}
+		}),
 		managerFormat: {
 			formatServerLabel(server) {
 				return [ server.country_code, server.city, server.hostname, server.load + '%' ].filter(Boolean).join(' - ');
@@ -1225,6 +1166,72 @@ function buildHandleSaveApplyHarness(options) {
 	};
 }
 
+async function testHandleSaveApplyManualWithoutPreferredFallsBackToAuto() {
+	const harness = buildHandleSaveApplyHarness({
+		previousEnabled: true,
+		currentMode: 'manual',
+		currentCountry: 'UY',
+		preferredStation: '',
+		currentEnabled: true,
+		uciValues: {
+			nordvpn_token: 'token',
+			enabled: '1',
+			vpn_country: 'UY',
+			server_selection_mode: 'manual',
+			preferred_server_hostname: 'old.example',
+			preferred_server_station: 'uy999'
+		}
+	});
+
+	await harness.actions.handleSaveApply(harness.viewState, harness.state, {});
+	await Promise.resolve();
+	await Promise.resolve();
+
+	assert.equal(
+		harness.uciSets.find(function(entry) {
+			return entry.option === 'server_selection_mode';
+		}).value,
+		'auto',
+		'manual mode without preferred server stores automatic selection'
+	);
+	assert.equal(
+		harness.uciSets.find(function(entry) {
+			return entry.option === 'preferred_server_station';
+		}).value,
+		'',
+		'manual mode without preferred server clears preferred station'
+	);
+}
+
+async function testHandleSaveApplyFormCountryOverridesStaleDiskCountry() {
+	const harness = buildHandleSaveApplyHarness({
+		previousEnabled: true,
+		previousCountry: 'IE',
+		currentMode: 'auto',
+		currentCountry: 'NG',
+		currentEnabled: true,
+		savedCountry: 'IE',
+		uciValues: {
+			nordvpn_token: 'token',
+			enabled: '1',
+			vpn_country: 'IE',
+			server_selection_mode: 'auto'
+		}
+	});
+
+	await harness.actions.handleSaveApply(harness.viewState, harness.state, {});
+	await Promise.resolve();
+	await Promise.resolve();
+
+	assert.deepEqual(
+		harness.uciSets.filter(function(entry) {
+			return entry.option === 'vpn_country';
+		}),
+		[{ option: 'vpn_country', value: 'NG' }],
+		'form country overrides stale disk country during Save & Apply'
+	);
+}
+
 async function testHandleSaveApplyFallsBackToAutomaticWhenManualSelectionIncomplete() {
 	const harness = buildHandleSaveApplyHarness({
 		previousEnabled: true,
@@ -1242,7 +1249,7 @@ async function testHandleSaveApplyFallsBackToAutomaticWhenManualSelectionIncompl
 		}
 	});
 
-	await harness.actions.handleSaveApply(harness.viewState, harness.state, {}, '1');
+	await harness.actions.handleSaveApply(harness.viewState, harness.state, {});
 	await Promise.resolve();
 	await Promise.resolve();
 
@@ -1272,7 +1279,7 @@ async function testHandleSaveApplyStopsAfterStopWhenDisabled() {
 		}
 	});
 
-	await harness.actions.handleSaveApply(harness.viewState, harness.state, {}, '1');
+	await harness.actions.handleSaveApply(harness.viewState, harness.state, {});
 	await Promise.resolve();
 	await Promise.resolve();
 
@@ -1295,7 +1302,7 @@ async function testHandleSaveApplyTimesOutWhenPostSaveSyncNeverFinishes() {
 	});
 	let rejected = null;
 
-	await harness.actions.handleSaveApply(harness.viewState, harness.state, {}, '1').catch(function(err) {
+	await harness.actions.handleSaveApply(harness.viewState, harness.state, {}).catch(function(err) {
 		rejected = err;
 	});
 	await Promise.resolve();
@@ -1321,7 +1328,7 @@ async function testHandleSaveApplyClearsBusyStateWhenPostApplySyncFails() {
 	});
 	let rejected = null;
 
-	await harness.actions.handleSaveApply(harness.viewState, harness.state, {}, '1').catch(function(err) {
+	await harness.actions.handleSaveApply(harness.viewState, harness.state, {}).catch(function(err) {
 		rejected = err;
 	});
 	await Promise.resolve();
@@ -1348,7 +1355,7 @@ async function testHandleSaveApplyAutoModeClearsManualSelectionAndReconnects() {
 		savedPreferredStation: ''
 	});
 
-	await harness.actions.handleSaveApply(harness.viewState, harness.state, {}, '1');
+	await harness.actions.handleSaveApply(harness.viewState, harness.state, {});
 	await Promise.resolve();
 	await Promise.resolve();
 
@@ -1396,7 +1403,7 @@ async function testHandleSaveApplyReconcilesDisabledRuntimeAfterSave() {
 		}
 	});
 
-	await harness.actions.handleSaveApply(harness.viewState, harness.state, {}, '1');
+	await harness.actions.handleSaveApply(harness.viewState, harness.state, {});
 	await Promise.resolve();
 	await Promise.resolve();
 
@@ -1426,7 +1433,7 @@ async function testHandleSaveApplyQueuesReconnectWhenSavedCountryDriftsFromPeer(
 		}
 	});
 
-	await harness.actions.handleSaveApply(harness.viewState, harness.state, {}, '1');
+	await harness.actions.handleSaveApply(harness.viewState, harness.state, {});
 	await Promise.resolve();
 	await Promise.resolve();
 
@@ -1463,7 +1470,7 @@ async function testHandleSaveApplyRecoversAbortedRuntimeActionWhenStatusConverge
 		}
 	});
 
-	await harness.actions.handleSaveApply(harness.viewState, harness.state, {}, '1');
+	await harness.actions.handleSaveApply(harness.viewState, harness.state, {});
 	await Promise.resolve();
 	await Promise.resolve();
 
@@ -1508,7 +1515,7 @@ async function testHandleSaveApplyDoesNotRecoverNonAbortRuntimeActionFailure() {
 	});
 	let rejected = null;
 
-	await harness.actions.handleSaveApply(harness.viewState, harness.state, {}, '1').catch(function(err) {
+	await harness.actions.handleSaveApply(harness.viewState, harness.state, {}).catch(function(err) {
 		rejected = err;
 	});
 	await Promise.resolve();
@@ -1535,11 +1542,13 @@ async function testAutoReconcileRunsForCountryDrift() {
 			operation_lock_state: 'none',
 			selected_country: 'AU',
 			server_selection_mode: 'auto',
-			current_server_country: 'AU',
-			current_server_station: 'au123'
+			current_server_country: 'BM',
+			current_server_station: 'bm3'
 		}
 	});
-	const driftStatus = {
+
+	harness.state.appliedCountryCode = 'AU';
+	harness.state.currentLocalStatus = {
 		desired_enabled: true,
 		runtime_disabled: false,
 		interface_disabled: false,
@@ -1552,10 +1561,7 @@ async function testAutoReconcileRunsForCountryDrift() {
 		current_server_station: 'bm3'
 	};
 
-	harness.state.appliedCountryCode = 'AU';
-	harness.state.currentLocalStatus = driftStatus;
-
-	await harness.actions.maybeAutoReconcileSelectionDrift(harness.state, driftStatus);
+	await harness.actions.maybeAutoReconcileSelectionDrift(harness.state, harness.state.currentLocalStatus);
 
 	assert.ok(harness.runtimeActions.length >= 2, 'country drift runs at least stop then connect');
 	assert.equal(harness.runtimeActions[0][0], 'stop_vpn', 'country drift starts with stop_vpn');
@@ -1582,7 +1588,9 @@ async function testAutoReconcileSkipsWhileSaveApplyInProgress() {
 			current_server_station: '45.134.189.1'
 		}
 	});
-	const driftStatus = {
+
+	harness.state.appliedCountryCode = 'AU';
+	harness.state.currentLocalStatus = {
 		desired_enabled: true,
 		runtime_disabled: false,
 		interface_disabled: false,
@@ -1593,13 +1601,10 @@ async function testAutoReconcileSkipsWhileSaveApplyInProgress() {
 		current_server_country: 'BO',
 		current_server_station: '45.134.189.1'
 	};
-
-	harness.state.appliedCountryCode = 'AU';
-	harness.state.currentLocalStatus = driftStatus;
 	harness.state.saveApplyInProgress = true;
 	harness.state.phase = 'saving';
 
-	await harness.actions.maybeAutoReconcileSelectionDrift(harness.state, driftStatus);
+	await harness.actions.maybeAutoReconcileSelectionDrift(harness.state, harness.state.currentLocalStatus);
 
 	assert.deepEqual(normalizeValue(harness.runtimeActions), [], 'auto reconcile does not run during Save & Apply');
 
@@ -1607,7 +1612,7 @@ async function testAutoReconcileSkipsWhileSaveApplyInProgress() {
 	harness.state.phase = 'idle';
 	harness.state.runtimeActionCooldownUntil = Date.now() + 60000;
 
-	await harness.actions.maybeAutoReconcileSelectionDrift(harness.state, driftStatus);
+	await harness.actions.maybeAutoReconcileSelectionDrift(harness.state, harness.state.currentLocalStatus);
 
 	assert.deepEqual(normalizeValue(harness.runtimeActions), [], 'auto reconcile does not run during runtime action cooldown');
 }
@@ -1648,7 +1653,7 @@ async function testAutoReconcileThrottlesSuccessfulNoChange() {
 	await harness.actions.maybeAutoReconcileSelectionDrift(harness.state, driftStatus);
 	await harness.actions.maybeAutoReconcileSelectionDrift(harness.state, harness.state.currentLocalStatus);
 
-	assert.ok(harness.runtimeActions.length >= 2, 'successful reconnect that leaves the same drift still runs the apply cycle');
+	assert.ok(harness.runtimeActions.length >= 2, 'successful apply cycle that leaves the same drift still runs once');
 	assert.equal(harness.state.lastAutoReconcileFailureKey, 'auto:AU:BM', 'unchanged success records the drift key');
 	assert.match(harness.notifications[harness.notifications.length - 1].message, /still out of sync/, 'unchanged success reports a readable sync error');
 }
@@ -1733,6 +1738,7 @@ async function testAutoReconcileSkipsNonDriftCases() {
 		const harness = buildHandleSaveApplyHarness({
 			previousEnabled: true,
 			savedCountry: 'AU',
+			statusPayload: testCase.status,
 			state: Object.assign({ appliedEnabled: true, appliedCountryCode: 'AU' }, testCase.state || {})
 		});
 
@@ -1780,8 +1786,8 @@ async function testAutoReconcileThrottlesRepeatedFailures() {
 	await harness.actions.maybeAutoReconcileSelectionDrift(harness.state, driftStatus);
 	await harness.actions.maybeAutoReconcileSelectionDrift(harness.state, driftStatus);
 
-	assert.ok(harness.runtimeActions.length >= 2, 'failed auto reconnect still runs the apply cycle once');
-	assert.match(harness.notifications[harness.notifications.length - 1].message, /Automatic runtime sync failed: reconnect exploded/, 'auto reconnect failure is reported once');
+	assert.ok(harness.runtimeActions.length >= 2, 'failed auto apply cycle still runs once');
+	assert.match(harness.notifications[harness.notifications.length - 1].message, /Automatic runtime sync failed: reconnect exploded/, 'auto apply cycle failure is reported once');
 	assert.equal(harness.notifications.length, 1, 'throttled auto reconcile does not repeat notifications');
 	assert.equal(harness.state.lastAutoReconcileFailureKey, 'auto:AU:BM', 'throttle records the drift key');
 }
@@ -1874,6 +1880,8 @@ Promise.resolve().then(async function() {
 	await testPublicIpChangeReplacesCountryFromSnapshot();
 	testRenderLocalStatusSnapshotHandlesBusyOperation();
 	testSaveApplyTransitionSuppressesConnectedAndDrift();
+	await testHandleSaveApplyManualWithoutPreferredFallsBackToAuto();
+	await testHandleSaveApplyFormCountryOverridesStaleDiskCountry();
 	await testHandleSaveApplyFallsBackToAutomaticWhenManualSelectionIncomplete();
 	await testHandleSaveApplyStopsAfterStopWhenDisabled();
 	await testHandleSaveApplyTimesOutWhenPostSaveSyncNeverFinishes();
@@ -1884,6 +1892,7 @@ Promise.resolve().then(async function() {
 	await testHandleSaveApplyRecoversAbortedRuntimeActionWhenStatusConverges();
 	await testHandleSaveApplyDoesNotRecoverNonAbortRuntimeActionFailure();
 	await testAutoReconcileRunsForCountryDrift();
+	await testAutoReconcileSkipsWhileSaveApplyInProgress();
 	await testAutoReconcileThrottlesSuccessfulNoChange();
 	await testAutoReconcileSkipsNonDriftCases();
 	await testAutoReconcileThrottlesRepeatedFailures();

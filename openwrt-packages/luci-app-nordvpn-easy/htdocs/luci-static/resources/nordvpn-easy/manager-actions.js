@@ -636,6 +636,8 @@ function runtimeActionErrorLooksAborted(err) {
 	const message = String((err && err.message) || err || '').toLowerCase();
 
 	return message.indexOf('xhr request aborted') !== -1 ||
+		message.indexOf('xhr request timed out') !== -1 ||
+		message.indexOf('request timed out') !== -1 ||
 		message.indexOf('request aborted') !== -1 ||
 		message.indexOf('aborted by browser') !== -1;
 }
@@ -1299,19 +1301,13 @@ function handleSaveApply(viewState, state, ev) {
 	});
 }
 
-	return baseclass.extend({
-		normalizeSubmittedConfig: normalizeSubmittedConfig,
-		runApplyCycle: runApplyCycle,
-		deriveServerSelectionDrift: deriveServerSelectionDrift,
-		maybeAutoReconcileSelectionDrift: maybeAutoReconcileSelectionDrift,
-		syncSubmittedRuntimeConfigToUci: syncSubmittedRuntimeConfigToUci,
-		mergeSavedConfigWithSubmittedValues: mergeSavedConfigWithSubmittedValues,
-		runtimeOperationIsBusy: runtimeOperationIsBusy,
-		loadServerCatalog: loadServerCatalog,
+return baseclass.extend({
+	runApplyCycle: runApplyCycle,
+	maybeAutoReconcileSelectionDrift: maybeAutoReconcileSelectionDrift,
+	runtimeOperationIsBusy: runtimeOperationIsBusy,
+	loadServerCatalog: loadServerCatalog,
 	renderLocalStatusSnapshot: renderLocalStatusSnapshot,
 	renderDiagnosticsSnapshot: renderDiagnosticsSnapshot,
-	driftEvaluationAllowed: driftEvaluationAllowed,
-	suppressDriftUi: suppressDriftUi,
 	updatePublicIp: updatePublicIp,
 	updateLocalStatus: updateLocalStatus,
 	updateDiagnosticsSummary: updateDiagnosticsSummary,
