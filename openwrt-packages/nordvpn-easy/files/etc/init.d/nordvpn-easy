@@ -480,8 +480,10 @@ start() {
 
 	install_hooks || return 1
 
+	# Use the reconcile command path (not only the core reconcile action) so a
+	# missing/disabled wg0 at boot runs connect/setup like Save & Apply does.
 	RUN_CORE_ACTION_FAILURE_LOG_MODE='info'
-	if ! run_core_action reconcile; then
+	if ! reconcile; then
 		log_service_info 'service: initial reconcile failed; hooks are installed and future cron/hotplug runs will retry'
 	fi
 	RUN_CORE_ACTION_FAILURE_LOG_MODE="$previous_failure_log_mode"
