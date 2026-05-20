@@ -941,7 +941,9 @@ nordvpn_easy_diagnostics_compute_findings() {
 			'Run Save & Apply on the config page to stop the VPN, clear caches, and connect with the selected country or preferred server'
 	fi
 
-	if [ "$DIAG_WG_PEER_COUNT" = '0' ] && [ "$DIAG_LINK_PRESENT" = 'yes' ]; then
+	if [ "$DIAG_WG_PEER_COUNT" = '0' ] && [ "$DIAG_LINK_PRESENT" = 'yes' ] &&
+		[ -z "$DIAG_MISSING_INTERFACE" ] && [ "$DIAG_PEER_SECTION_FOUND" = 'yes' ] &&
+		[ -z "$DIAG_MISSING_REQUIRED" ]; then
 		nordvpn_easy_diagnostics_add_finding \
 			'runtime.no_peers' \
 			'WireGuard runtime has no peers' \
