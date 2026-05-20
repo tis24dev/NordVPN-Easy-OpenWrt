@@ -167,7 +167,8 @@ function parseDiagnosticsSummary(raw) {
 				code: String((finding && finding.code) || ''),
 				message: String((finding && finding.message) || ''),
 				action: String((finding && finding.action) || ''),
-				severity: String((finding && finding.severity) || 'warning')
+				severity: String((finding && finding.severity) || 'warning'),
+				priority: Number((finding && finding.priority) != null ? finding.priority : 900)
 			};
 		}) : [],
 		status: (summary.status && typeof summary.status === 'object' && !Array.isArray(summary.status)) ?
@@ -200,10 +201,10 @@ function hideSelectionDriftDiagnostics(summary) {
 		return emptyDiagnosticsSummary();
 
 	const nextPrimary = remaining.reduce(function(best, finding) {
-		const bestPriority = Number((best && best.priority) || 0);
-		const findingPriority = Number(finding.priority || 0);
+		const bestPriority = Number((best && best.priority) != null ? best.priority : 900);
+		const findingPriority = Number(finding.priority != null ? finding.priority : 900);
 
-		return findingPriority > bestPriority ? finding : best;
+		return findingPriority < bestPriority ? finding : best;
 	}, remaining[0]);
 
 	return Object.assign({}, summary, {
@@ -212,7 +213,7 @@ function hideSelectionDriftDiagnostics(summary) {
 			message: nextPrimary.message,
 			action: nextPrimary.action,
 			severity: nextPrimary.severity,
-			priority: nextPrimary.priority
+			priority: Number(nextPrimary.priority != null ? nextPrimary.priority : 900)
 		},
 		findings: remaining
 	});

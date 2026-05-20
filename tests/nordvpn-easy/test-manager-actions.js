@@ -1932,7 +1932,7 @@ function testParseDiagnosticsSummaryNormalizesPayload() {
 		generated_at: 42,
 		primary_finding: { code: 'routing.blackhole_default_via_vpn', message: 'm', action: 'a' },
 		findings: [
-			{ code: 'runtime.no_handshake', message: 'hs', action: 'fix', severity: 'critical' }
+			{ code: 'runtime.no_handshake', message: 'hs', action: 'fix', severity: 'critical', priority: 80 }
 		],
 		status: { state: 'connected', connected: true },
 		health: { wireguard_connected: false },
@@ -1944,9 +1944,54 @@ function testParseDiagnosticsSummaryNormalizesPayload() {
 	assert.equal(parsed.primary_finding.code, 'routing.blackhole_default_via_vpn', 'parseDiagnosticsSummary keeps primary code');
 	assert.equal(parsed.findings.length, 1, 'parseDiagnosticsSummary normalizes findings array');
 	assert.equal(parsed.findings[0].severity, 'critical', 'parseDiagnosticsSummary keeps finding severity');
+	assert.equal(parsed.findings[0].priority, 80, 'parseDiagnosticsSummary keeps finding priority');
 	assert.equal(parsed.connectivity.routing_blackhole_risk, 'yes', 'parseDiagnosticsSummary keeps connectivity block');
 	assert.equal(parsed.status && parsed.status.state, 'connected', 'parseDiagnosticsSummary keeps status block');
 	assert.equal(parsed.caches && parsed.caches.last_error, '', 'parseDiagnosticsSummary keeps caches block');
+}
+
+function testHideSelectionDriftDiagnosticsPicksMostUrgentRemaining() {
+	const parsed = managerData.parseDiagnosticsSummary({
+		generated_at: 99,
+		primary_finding: {
+			code: 'selection.drift',
+			message: 'country drift',
+			action: 'Run Save & Apply',
+			severity: 'warning',
+			priority: 150
+		},
+		findings: [
+			{
+				code: 'selection.drift',
+				message: 'country drift',
+				action: 'Run Save & Apply',
+				severity: 'warning',
+				priority: 150
+			},
+			{
+				code: 'runtime.no_peers',
+				message: 'WireGuard runtime has no peers',
+				action: 'Run Setup',
+				severity: 'critical',
+				priority: 70
+			},
+			{
+				code: 'config.interface_incomplete',
+				message: 'wireguard interface is incomplete',
+				action: 'Complete interface keys',
+				severity: 'warning',
+				priority: 100
+			}
+		]
+	});
+	const adjusted = managerData.hideSelectionDriftDiagnostics(parsed);
+
+	assert.equal(adjusted.primary_finding.code, 'runtime.no_peers', 'hideSelectionDriftDiagnostics promotes lowest-priority remaining finding');
+	assert.equal(adjusted.primary_finding.priority, 70, 'hideSelectionDriftDiagnostics keeps promoted finding priority');
+	assert.equal(adjusted.findings.length, 2, 'hideSelectionDriftDiagnostics removes only selection.drift findings');
+	assert.equal(adjusted.findings.some(function(finding) {
+		return finding.code === 'selection.drift';
+	}), false, 'hideSelectionDriftDiagnostics filters drift from findings list');
 }
 
 Promise.resolve().then(async function() {
@@ -1974,6 +2019,7 @@ Promise.resolve().then(async function() {
 	await testAutoReconcileThrottlesRepeatedFailures();
 	testDiagnosticsHasAlertHonorsPrimaryFinding();
 	testParseDiagnosticsSummaryNormalizesPayload();
+	testHideSelectionDriftDiagnosticsPicksMostUrgentRemaining();
 	console.log('test-manager-actions.js: ok');
 }).catch(function(err) {
 	console.error(err);
