@@ -510,6 +510,9 @@ nordvpn_easy_emit_status_json() {
 	local preferred_hostname="${PREFERRED_SERVER_HOSTNAME:-}"
 	local preferred_station="${PREFERRED_SERVER_STATION:-}"
 	local public_ip_cached=''
+	local public_ip_detected_at='0'
+	local public_ip_detected_at_iso=''
+	local public_ip_source=''
 	local public_country_cached=''
 	local last_error=''
 
@@ -562,7 +565,17 @@ nordvpn_easy_emit_status_json() {
 		"$NORDVPN_EASY_WG_RT_CONNECTED" \
 		"$operation")"
 
-	[ -r "$NORDVPN_EASY_PUBLIC_IP_CACHE" ] && public_ip_cached="$(sed -n '1p' "$NORDVPN_EASY_PUBLIC_IP_CACHE" 2>/dev/null)"
+	if [ -r "$NORDVPN_EASY_PUBLIC_IP_CACHE" ]; then
+		public_ip_cached="$(sed -n 's/^ip=//p' "$NORDVPN_EASY_PUBLIC_IP_CACHE" 2>/dev/null | sed -n '1p')"
+		public_ip_detected_at="$(sed -n 's/^detected_at=//p' "$NORDVPN_EASY_PUBLIC_IP_CACHE" 2>/dev/null | sed -n '1p')"
+		public_ip_detected_at_iso="$(sed -n 's/^detected_at_iso=//p' "$NORDVPN_EASY_PUBLIC_IP_CACHE" 2>/dev/null | sed -n '1p')"
+		public_ip_source="$(sed -n 's/^source=//p' "$NORDVPN_EASY_PUBLIC_IP_CACHE" 2>/dev/null | sed -n '1p')"
+	fi
+	case "$public_ip_detected_at" in
+		''|*[!0-9]*)
+			public_ip_detected_at='0'
+			;;
+	esac
 	[ -r "$NORDVPN_EASY_PUBLIC_COUNTRY_CACHE" ] && public_country_cached="$(sed -n '1p' "$NORDVPN_EASY_PUBLIC_COUNTRY_CACHE" 2>/dev/null)"
 	[ -r "$NORDVPN_EASY_LAST_ERROR_CACHE" ] && last_error="$(sed -n '1p' "$NORDVPN_EASY_LAST_ERROR_CACHE" 2>/dev/null)"
 
@@ -610,6 +623,9 @@ nordvpn_easy_emit_status_json() {
   "transfer_tx": "$(nordvpn_easy_json_escape "$transfer_tx")",
   "transfer_tx_bytes": $transfer_tx_bytes,
   "public_ip_cached": "$(nordvpn_easy_json_escape "$public_ip_cached")",
+  "public_ip_detected_at": $public_ip_detected_at,
+  "public_ip_detected_at_iso": "$(nordvpn_easy_json_escape "$public_ip_detected_at_iso")",
+  "public_ip_source": "$(nordvpn_easy_json_escape "$public_ip_source")",
   "public_country_cached": "$(nordvpn_easy_json_escape "$public_country_cached")",
   "last_error": "$(nordvpn_easy_json_escape "$last_error")",
   "current_server_hostname": "$(nordvpn_easy_json_escape "$current_hostname")",

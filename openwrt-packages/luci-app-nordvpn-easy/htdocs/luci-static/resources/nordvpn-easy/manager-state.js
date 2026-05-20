@@ -8,7 +8,6 @@ return baseclass.extend({
 	createState: managerStore.createState,
 	loadServerCatalog: managerActions.loadServerCatalog,
 	updatePublicIp: managerActions.updatePublicIp,
-	updatePublicCountry: managerActions.updatePublicCountry,
 	updateLocalStatus: managerActions.updateLocalStatus,
 	maybeAutoReconcileSelectionDrift: managerActions.maybeAutoReconcileSelectionDrift,
 	onCountryChanged: managerActions.onCountryChanged,

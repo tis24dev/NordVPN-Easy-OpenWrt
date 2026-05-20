@@ -62,7 +62,6 @@ CONFIG_PATH=''
 CONFIG_PATH_REQUIRED=0
 # shellcheck disable=SC2034
 LOCK_ACQUIRED=0
-PUBLIC_COUNTRY_VERIFIED=0
 SERVER_CATALOG_QUERY=''
 SERVER_CATALOG_FORCE='0'
 PUBLIC_LOOKUP_LOG_MODE='verbose'
@@ -89,7 +88,7 @@ curl_rc_meaning () {
 
 usage () {
   cat <<EOF
-Usage: $0 [check|stop_vpn|reconnect|reconcile|setup|rotate|refresh_countries|refresh_countries_force|server_catalog|public_ip|public_country|operation_status|vpn_status|status_json|diagnostics_log|diagnostics_summary|run|help] [--config config_file] [extra_args]
+Usage: $0 [check|stop_vpn|reconnect|reconcile|setup|rotate|refresh_countries|refresh_countries_force|server_catalog|public_ip|operation_status|vpn_status|status_json|diagnostics_log|diagnostics_summary|run|help] [--config config_file] [extra_args]
 
 Commands:
   check   Run one VPN health-check cycle (default)
@@ -102,8 +101,7 @@ Commands:
   refresh_countries_force  Force-refresh the cached NordVPN country list
   server_catalog [country_query] [force]
           Print the cached or refreshed NordVPN WireGuard server catalog JSON
-  public_ip  Print the current public IP as seen from the router
-  public_country  Print the detected country code for the current public IP
+  public_ip  Check the current public IP, update runtime caches on change, and print a JSON snapshot
   operation_status  Print whether a NordVPN Easy operation is running
   vpn_status  Print VPN runtime status (active|inactive|starting|stopping|error)
   status_json  Print runtime status as JSON
@@ -485,26 +483,6 @@ nordvpn_easy_lock_holder_summary () {
     "${OPERATION_LOCK_AGE_SECONDS:-0}"
 }
 
-nordvpn_easy_public_lookup_cache_or_busy () {
-  local lookup_action="$1"
-  local cache_file="$2"
-  local cached_value=''
-
-  if ! nordvpn_easy_runtime_lock_is_busy; then
-    return 1
-  fi
-
-  cached_value="$(sed -n '1p' "$cache_file" 2>/dev/null || true)"
-  if [ -n "$cached_value" ]; then
-    printf '%s\n' "$cached_value"
-    public_lookup_log "$lookup_action request skipped because another runtime operation is running ($(nordvpn_easy_lock_holder_summary)); returned cached value"
-    return 0
-  fi
-
-  public_lookup_log "$lookup_action request skipped because another runtime operation is running ($(nordvpn_easy_lock_holder_summary)); no cached value is available"
-  return "$NORDVPN_EASY_RC_BUSY"
-}
-
 nordvpn_easy_write_runtime_cache_value () {
   local cache_file="$1"
   local cache_value="$2"
@@ -525,44 +503,117 @@ nordvpn_easy_record_last_error () {
   NORDVPN_EASY_LAST_ERROR_RECORDED=1
 }
 
-get_public_ip () {
+write_public_ip_cache () {
+  local cache_dir cache_tmp
+
+  cache_dir="$(dirname "$NORDVPN_EASY_PUBLIC_IP_CACHE")"
+  mkdir -p "$cache_dir" || return 1
+  cache_tmp="${NORDVPN_EASY_PUBLIC_IP_CACHE}.$$"
+  {
+    printf 'ip=%s\n' "$PUBLIC_IP"
+    printf 'detected_at=%s\n' "${PUBLIC_IP_DETECTED_AT:-0}"
+    printf 'detected_at_iso=%s\n' "$PUBLIC_IP_DETECTED_AT_ISO"
+    printf 'source=%s\n' "$PUBLIC_IP_SOURCE"
+  } > "$cache_tmp" || {
+    rm -f "$cache_tmp"
+    return 1
+  }
+  mv "$cache_tmp" "$NORDVPN_EASY_PUBLIC_IP_CACHE"
+}
+
+detect_public_ip () {
   local curl_out curl_rc
 
-  public_lookup_log "get_public_ip: starting IPv4-only public IP lookup (system DNS: $(grep '^nameserver' /etc/resolv.conf 2>/dev/null | awk '{print $2}' | tr '\n' ' ' | sed 's/ $//'))"
+  public_lookup_log "public_ip_check: starting IPv4-only public IP lookup (system DNS: $(grep '^nameserver' /etc/resolv.conf 2>/dev/null | awk '{print $2}' | tr '\n' ' ' | sed 's/ $//'))"
 
   for PUBLIC_IP_URL in \
+    'https://ifconfig.me/ip' \
     'https://api.ipify.org' \
-    'https://api64.ipify.org' \
-    'https://ipv4.icanhazip.com' \
-    'https://ifconfig.me/ip'
+    'https://icanhazip.com'
   do
-    public_lookup_log "get_public_ip: trying $PUBLIC_IP_URL"
+    public_lookup_log "public_ip_check: trying $PUBLIC_IP_URL"
     curl_out=$(curl -4 -fsS --connect-timeout 3 --max-time 5 "$PUBLIC_IP_URL" 2>/dev/null | tr -d '\r\n')
     curl_rc=$?
 
     if [ "$curl_rc" -ne 0 ]; then
-      public_lookup_log "get_public_ip: curl failed for $PUBLIC_IP_URL (curl_rc=$curl_rc: $(curl_rc_meaning "$curl_rc"))"
+      public_lookup_log "public_ip_check: curl failed for $PUBLIC_IP_URL (curl_rc=$curl_rc: $(curl_rc_meaning "$curl_rc"))"
       continue
     fi
 
     if [ -z "$curl_out" ]; then
-      public_lookup_log "get_public_ip: curl succeeded (rc=0) but response body is empty for $PUBLIC_IP_URL — possible VPN transparent proxy interference"
+      public_lookup_log "public_ip_check: curl succeeded (rc=0) but response body is empty for $PUBLIC_IP_URL"
       continue
     fi
 
     if ! valid_public_ip "$curl_out"; then
-      public_lookup_log "get_public_ip: response from $PUBLIC_IP_URL is not a valid IP address (got '${curl_out}')"
+      public_lookup_log "public_ip_check: response from $PUBLIC_IP_URL is not a valid IP address (got '${curl_out}')"
       continue
     fi
 
-      public_lookup_log "get_public_ip: got '$curl_out' from $PUBLIC_IP_URL"
-      PUBLIC_IP="$curl_out"
-      printf '%s\n' "$PUBLIC_IP"
-      return 0
+    public_lookup_log "public_ip_check: got '$curl_out' from $PUBLIC_IP_URL"
+    PUBLIC_IP="$curl_out"
+    PUBLIC_IP_SOURCE="$PUBLIC_IP_URL"
+    return 0
   done
 
   public_lookup_log 'ERROR: COULD NOT RETRIEVE PUBLIC IP — all endpoints failed'
   return 1
+}
+
+update_public_ip_cache () {
+  local previous_ip previous_detected_at previous_detected_at_iso previous_source
+  local detected_at detected_at_iso should_write='0'
+
+  PUBLIC_IP=''
+  PUBLIC_IP_SOURCE=''
+  PUBLIC_IP_CHANGED='0'
+  PUBLIC_IP_DETECTED_AT='0'
+  PUBLIC_IP_DETECTED_AT_ISO=''
+
+  previous_ip="$(sed -n 's/^ip=//p' "$NORDVPN_EASY_PUBLIC_IP_CACHE" 2>/dev/null | sed -n '1p')"
+  previous_detected_at="$(sed -n 's/^detected_at=//p' "$NORDVPN_EASY_PUBLIC_IP_CACHE" 2>/dev/null | sed -n '1p')"
+  previous_detected_at_iso="$(sed -n 's/^detected_at_iso=//p' "$NORDVPN_EASY_PUBLIC_IP_CACHE" 2>/dev/null | sed -n '1p')"
+  previous_source="$(sed -n 's/^source=//p' "$NORDVPN_EASY_PUBLIC_IP_CACHE" 2>/dev/null | sed -n '1p')"
+
+  detect_public_ip || return $?
+
+  if [ "$PUBLIC_IP" != "$previous_ip" ]; then
+    PUBLIC_IP_CHANGED='1'
+    should_write='1'
+  elif [ -z "$previous_detected_at_iso" ] || [ "$previous_detected_at" = '0' ] || [ -z "$previous_source" ]; then
+    should_write='1'
+  fi
+
+  if [ "$should_write" = '1' ]; then
+    detected_at="$(date +%s 2>/dev/null || printf '%s' '0')"
+    detected_at_iso="$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || printf '%s' '')"
+    PUBLIC_IP_DETECTED_AT="$detected_at"
+    PUBLIC_IP_DETECTED_AT_ISO="$detected_at_iso"
+    write_public_ip_cache || return 1
+    if [ "$PUBLIC_IP_CHANGED" = '1' ]; then
+      nordvpn_easy_write_runtime_cache_value "$NORDVPN_EASY_PUBLIC_COUNTRY_CACHE" '' >/dev/null 2>&1 || true
+    fi
+  else
+    PUBLIC_IP_DETECTED_AT="$previous_detected_at"
+    PUBLIC_IP_DETECTED_AT_ISO="$previous_detected_at_iso"
+    PUBLIC_IP_SOURCE="$previous_source"
+  fi
+
+  PUBLIC_IP_DETECTED_AT="$(nordvpn_easy_wg_runtime_non_negative_int "$PUBLIC_IP_DETECTED_AT")"
+  return 0
+}
+
+emit_public_ip_cache_snapshot () {
+  cat <<EOF
+{
+  "ip": "$(nordvpn_easy_json_escape "$PUBLIC_IP")",
+  "changed": $([ "${PUBLIC_IP_CHANGED:-0}" = '1' ] && printf '%s' 'true' || printf '%s' 'false'),
+  "detected_at": $(nordvpn_easy_wg_runtime_non_negative_int "${PUBLIC_IP_DETECTED_AT:-0}"),
+  "detected_at_iso": "$(nordvpn_easy_json_escape "$PUBLIC_IP_DETECTED_AT_ISO")",
+  "source": "$(nordvpn_easy_json_escape "$PUBLIC_IP_SOURCE")",
+  "country": "$(nordvpn_easy_json_escape "$PUBLIC_COUNTRY")"
+}
+EOF
 }
 
 lookup_public_country_by_ip () {
@@ -637,32 +688,35 @@ lookup_public_country_by_ip () {
   printf '%s\n' "$PUBLIC_COUNTRY"
 }
 
-get_public_country () {
-  public_lookup_log 'get_public_country: starting public IP and country lookup'
-  PUBLIC_IP=$(get_public_ip) || {
-    public_lookup_log 'get_public_country: public IP lookup failed — cannot determine country'
-    return 1
-  }
-  public_lookup_log "get_public_country: public IP is $PUBLIC_IP — proceeding to country lookup"
-  lookup_public_country_by_ip "$PUBLIC_IP"
+refresh_public_country_cache_for_current_ip () {
+  local cached_country=''
+
+  cached_country="$(sed -n '1p' "$NORDVPN_EASY_PUBLIC_COUNTRY_CACHE" 2>/dev/null || true)"
+  if [ "$PUBLIC_IP_CHANGED" = '1' ] || ! valid_country_code "$cached_country"; then
+    PUBLIC_COUNTRY=$(lookup_public_country_by_ip "$PUBLIC_IP") || {
+      PUBLIC_COUNTRY=''
+      return 1
+    }
+
+    nordvpn_easy_write_runtime_cache_value "$NORDVPN_EASY_PUBLIC_COUNTRY_CACHE" "${PUBLIC_COUNTRY:-}" >/dev/null 2>&1 || true
+    nordvpn_easy_write_runtime_cache_value "$NORDVPN_EASY_LAST_ERROR_CACHE" '' >/dev/null 2>&1 || true
+  else
+    PUBLIC_COUNTRY="$cached_country"
+  fi
+
+  return 0
 }
 
 verify_public_country_selection () {
-  PUBLIC_COUNTRY_VERIFIED=1
-
-  PUBLIC_IP=$(get_public_ip) || {
+  update_public_ip_cache || {
     log 'WARNING: COULD NOT RETRIEVE PUBLIC IP FOR COUNTRY VERIFICATION'
     return 0
   }
 
-  PUBLIC_COUNTRY=$(lookup_public_country_by_ip "$PUBLIC_IP") || {
+  refresh_public_country_cache_for_current_ip || {
     log "WARNING: COULD NOT GEOLOCATE PUBLIC IP $PUBLIC_IP"
     return 0
   }
-
-  nordvpn_easy_write_runtime_cache_value "$NORDVPN_EASY_PUBLIC_IP_CACHE" "${PUBLIC_IP:-}" >/dev/null 2>&1 || true
-  nordvpn_easy_write_runtime_cache_value "$NORDVPN_EASY_PUBLIC_COUNTRY_CACHE" "${PUBLIC_COUNTRY:-}" >/dev/null 2>&1 || true
-  nordvpn_easy_write_runtime_cache_value "$NORDVPN_EASY_LAST_ERROR_CACHE" '' >/dev/null 2>&1 || true
 
   if [ -z "$VPN_COUNTRY" ]; then
     log "Public IP verification: $PUBLIC_IP geolocates to $PUBLIC_COUNTRY with automatic country selection"
@@ -957,7 +1011,7 @@ ACTION_STARTED_AT=''
 
 if [ $# -gt 0 ]; then
   case "$1" in
-    check|stop_vpn|reconnect|reconcile|setup|rotate|refresh_countries|refresh_countries_force|server_catalog|public_ip|public_country|operation_status|vpn_status|status_json|diagnostics_log|diagnostics_summary|run|help)
+    check|stop_vpn|reconnect|reconcile|setup|rotate|refresh_countries|refresh_countries_force|server_catalog|public_ip|operation_status|vpn_status|status_json|diagnostics_log|diagnostics_summary|run|help)
       ACTION="$1"
       shift
       ;;
@@ -991,7 +1045,7 @@ if [ -z "$CONFIG_PATH" ] && [ -n "${NORDVPN_CONFIG_FILE:-}" ]; then
 fi
 
 case "$ACTION:${1:-}" in
-  status_json:*|operation_status:*|vpn_status:*|diagnostics_log:*|diagnostics_summary:*|public_ip:quiet|public_country:quiet)
+  status_json:*|operation_status:*|vpn_status:*|diagnostics_log:*|diagnostics_summary:*|public_ip:quiet)
     CORE_QUIET_ACTION=1
     ;;
 esac
@@ -1007,54 +1061,28 @@ load_config || exit 1
 NORDVPN_EASY_LAST_ERROR_RECORDED=0
 
 if [ "$ACTION" = 'public_ip' ]; then
-  PUBLIC_LOOKUP_LOG_MODE="${1:-verbose}"
+  if [ "${1:-}" = 'quiet' ] || [ "${1:-}" = 'verbose' ]; then
+    PUBLIC_LOOKUP_LOG_MODE="$1"
+  else
+    PUBLIC_LOOKUP_LOG_MODE='verbose'
+  fi
   LOG_PHASE='poll'
   public_lookup_log "public_ip request starting (mode=${PUBLIC_LOOKUP_LOG_MODE})"
-  if nordvpn_easy_public_lookup_cache_or_busy 'public_ip' "$NORDVPN_EASY_PUBLIC_IP_CACHE"; then
-    exit 0
-  else
-    ACTION_RC=$?
-    [ "$ACTION_RC" -eq "$NORDVPN_EASY_RC_BUSY" ] && exit "$NORDVPN_EASY_RC_BUSY"
-  fi
   command -v curl >/dev/null 2>&1 || {
     log 'curl IS MISSING, PLEASE INSTALL'
     exit 1
   }
 
-  get_public_ip
+  update_public_ip_cache
   ACTION_RC=$?
   if [ "$ACTION_RC" -eq 0 ]; then
-    nordvpn_easy_write_runtime_cache_value "$NORDVPN_EASY_PUBLIC_IP_CACHE" "${PUBLIC_IP:-}" >/dev/null 2>&1 || true
+    refresh_public_country_cache_for_current_ip >/dev/null 2>&1 || true
     nordvpn_easy_write_runtime_cache_value "$NORDVPN_EASY_LAST_ERROR_CACHE" '' >/dev/null 2>&1 || true
+    emit_public_ip_cache_snapshot
     public_lookup_log 'public_ip request completed successfully'
   else
     nordvpn_easy_record_last_error "public_ip failed (rc=$ACTION_RC)"
     public_lookup_log "ERROR: public_ip request failed (rc=$ACTION_RC)"
-  fi
-  exit "$ACTION_RC"
-fi
-
-if [ "$ACTION" = 'public_country' ]; then
-  PUBLIC_LOOKUP_LOG_MODE="${1:-verbose}"
-  LOG_PHASE='poll'
-  public_lookup_log "public_country request starting (mode=${PUBLIC_LOOKUP_LOG_MODE})"
-  if nordvpn_easy_public_lookup_cache_or_busy 'public_country' "$NORDVPN_EASY_PUBLIC_COUNTRY_CACHE"; then
-    exit 0
-  else
-    ACTION_RC=$?
-    [ "$ACTION_RC" -eq "$NORDVPN_EASY_RC_BUSY" ] && exit "$NORDVPN_EASY_RC_BUSY"
-  fi
-  require_commands || exit 1
-  get_public_country
-  ACTION_RC=$?
-  if [ "$ACTION_RC" -eq 0 ]; then
-    nordvpn_easy_write_runtime_cache_value "$NORDVPN_EASY_PUBLIC_IP_CACHE" "${PUBLIC_IP:-}" >/dev/null 2>&1 || true
-    nordvpn_easy_write_runtime_cache_value "$NORDVPN_EASY_PUBLIC_COUNTRY_CACHE" "${PUBLIC_COUNTRY:-}" >/dev/null 2>&1 || true
-    nordvpn_easy_write_runtime_cache_value "$NORDVPN_EASY_LAST_ERROR_CACHE" '' >/dev/null 2>&1 || true
-    public_lookup_log 'public_country request completed successfully'
-  else
-    nordvpn_easy_record_last_error "public_country failed (rc=$ACTION_RC)"
-    public_lookup_log "ERROR: public_country request failed (rc=$ACTION_RC)"
   fi
   exit "$ACTION_RC"
 fi
@@ -1206,7 +1234,7 @@ nordvpn_easy_write_status_cache >/dev/null 2>&1 || true
 
 if [ "$ACTION_RC" -eq 0 ]; then
   nordvpn_easy_write_runtime_cache_value "${NORDVPN_EASY_LAST_ERROR_CACHE:-/tmp/run/nordvpn-easy/last_error}" '' >/dev/null 2>&1 || true
-  log "action '$ACTION' completed successfully (duration=${ACTION_DURATION}s, public_country_verified=${PUBLIC_COUNTRY_VERIFIED:-0})"
+  log "action '$ACTION' completed successfully (duration=${ACTION_DURATION}s)"
 else
   if [ "${NORDVPN_EASY_LAST_ERROR_RECORDED:-0}" -ne 1 ]; then
     nordvpn_easy_record_last_error "action '$ACTION' failed (rc=$ACTION_RC)"

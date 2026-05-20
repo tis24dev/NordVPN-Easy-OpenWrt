@@ -333,7 +333,11 @@ const TokenValue = form.Value.extend({
 
 			managerUI.renderServerChoices(managerUI.getSelectElement(managerUI.ids.SERVER_FIELD_ID), state.currentServerCatalog, currentPreferredStation);
 			managerActions.renderLocalStatusSnapshot(state, state.currentLocalStatus);
-			managerUI.updateDiagnosticsBanner(state.currentDiagnosticsSummary);
+			managerActions.renderDiagnosticsSnapshot(
+				state,
+				state.currentDiagnosticsSummary,
+				state.currentDiagnosticsSummaryFresh
+			);
 			// Drift recovery runs from Save & Apply or background polling after cooldown.
 			if (!countries.length && !statusPayloadIsBusy(initialStatusPayload))
 				refreshCountriesInBackground(countrySelect, currentCountry);

@@ -14,6 +14,7 @@
 
 const AUTO_RECONCILE_RETRY_DELAY_MS = 5 * 60 * 1000;
 const SAVE_APPLY_TIMEOUT_MS = 150000;
+const RUNTIME_ACTION_RECOVERY_POLL_MS = 3000;
 const RUNTIME_ACTION_COOLDOWN_MS = SAVE_APPLY_TIMEOUT_MS + 30000;
 let callUciCommit = null;
 
@@ -183,10 +184,8 @@ function autoReconcileIsAllowed(state, status, drift) {
 
 	return !!drift &&
 		!!state &&
-		!state.saveApplyInProgress &&
+		driftEvaluationAllowed(state) &&
 		!runtimeActionCooldownActive(state) &&
-		state.phase !== managerStore.PHASES.SAVING &&
-		state.phase !== managerStore.PHASES.RUNTIME_BUSY &&
 		!!state.appliedEnabled &&
 		!!runtimeStatus.desired_enabled &&
 		!!runtimeStatus.runtime_configured &&
@@ -552,14 +551,137 @@ function normalizePublicIpValue(value) {
 	return publicIp;
 }
 
+function driftEvaluationAllowed(state) {
+	if (!state)
+		return false;
+
+	if (state.saveApplyInProgress || state.pendingOperationLabel)
+		return false;
+
+	if (state.phase === 'saving' || state.phase === 'runtime_busy')
+		return false;
+
+	return true;
+}
+
+function configurationTransitionActive(state) {
+	return !driftEvaluationAllowed(state);
+}
+
 function runtimeOperationIsBusy(state, status) {
 	const runtimeStatus = status || (state && state.currentLocalStatus) || {};
-	const operationStatus = String(runtimeStatus.operation_status || (state && state.currentOperationStatus) || 'idle');
 
-	return !!(state && state.pendingOperationLabel) ||
-		operationStatus === 'busy' ||
+	return configurationTransitionActive(state) ||
+		runtimeStatusIndicatesBusy(runtimeStatus, state && state.currentOperationStatus);
+}
+
+function runtimeStatusIndicatesBusy(status, fallbackOperationStatus) {
+	const runtimeStatus = status || {};
+	const operationStatus = String(runtimeStatus.operation_status || fallbackOperationStatus || 'idle');
+
+	return operationStatus === 'busy' ||
 		operationStatus.indexOf('busy:') === 0 ||
 		String(runtimeStatus.operation_lock_state || 'none') === 'held';
+}
+
+function runtimeActionErrorLooksAborted(err) {
+	const message = String((err && err.message) || err || '').toLowerCase();
+
+	return message.indexOf('xhr request aborted') !== -1 ||
+		message.indexOf('request aborted') !== -1 ||
+		message.indexOf('aborted by browser') !== -1;
+}
+
+function savedRuntimeCountryMatches(status, savedConfig) {
+	const savedCountry = managerData.normalizeCountryCode((savedConfig && savedConfig.country) || '');
+	const runtimeCountry = managerData.normalizeCountryCode(
+		(status && (status.current_server_country || status.selected_country)) || ''
+	);
+
+	return !savedCountry || runtimeCountry === savedCountry;
+}
+
+function savedRuntimeManualServerMatches(status, savedConfig) {
+	const savedMode = normalizeSelectionMode((savedConfig && savedConfig.mode) || 'auto');
+	const savedStation = String((savedConfig && savedConfig.preferredStation) || '');
+	const runtimeStation = String((status && status.current_server_station) || '');
+
+	return savedMode !== 'manual' || !savedStation || runtimeStation === savedStation;
+}
+
+function runtimeActionRecoverySucceeded(savedConfig, status) {
+	const runtimeStatus = status || {};
+	const savedEnabled = !!(savedConfig && savedConfig.enabled);
+
+	if (runtimeStatusIndicatesBusy(runtimeStatus))
+		return false;
+
+	if (!savedEnabled) {
+		return runtimeStatus.desired_enabled === false ||
+			!!runtimeStatus.runtime_disabled ||
+			!!runtimeStatus.interface_disabled ||
+			String(runtimeStatus.vpn_status || '') === 'inactive' ||
+			runtimeStatus.connected === false;
+	}
+
+	if (runtimeStatus.runtime_configured === false ||
+		!!runtimeStatus.runtime_disabled ||
+		!!runtimeStatus.interface_disabled) {
+		return false;
+	}
+
+	if (!(runtimeStatus.connected || String(runtimeStatus.vpn_status || '') === 'active'))
+		return false;
+
+	return savedRuntimeCountryMatches(runtimeStatus, savedConfig) &&
+		savedRuntimeManualServerMatches(runtimeStatus, savedConfig);
+}
+
+function abortedRuntimeActionRecoveryError(err) {
+	const message = (err && err.message) ? err.message : String(err);
+
+	return new Error(
+		_('Runtime action request was interrupted before LuCI received the response. Original error: ') + message
+	);
+}
+
+function recoverAbortedRuntimeAction(state, savedConfig, originalError, successMessage) {
+	const deadline = Date.now() + SAVE_APPLY_TIMEOUT_MS;
+	const recoveryError = abortedRuntimeActionRecoveryError(originalError);
+
+	notifyDebugBlock(_('Runtime action response interrupted'), [
+		_('LuCI lost the backend response while the runtime action may still be running.'),
+		_('Polling local status until the runtime finishes.')
+	]);
+
+	const poll = function() {
+		return updateLocalStatus(state, {
+			force: true,
+			suppressAutoReconcile: true
+		}).then(function(status) {
+			const freshStatus = state.currentLocalStatusFresh ? status : null;
+
+			if (runtimeActionRecoverySucceeded(savedConfig, freshStatus)) {
+				service.notifyInfo(successMessage);
+				return refreshAfterSaveApply(state, true, { suppressAutoReconcile: true });
+			}
+
+			if (Date.now() >= deadline)
+				return Promise.reject(recoveryError);
+
+			return new Promise(function(resolve, reject) {
+				setTimeout(function() {
+					poll().then(resolve, reject);
+				}, RUNTIME_ACTION_RECOVERY_POLL_MS);
+			});
+		});
+	};
+
+	return poll();
+}
+
+function suppressDriftUi(state) {
+	managerUI.updateDiagnosticsBanner(managerData.emptyDiagnosticsSummary());
 }
 
 function publicLookupsAllowed(state, status) {
@@ -569,29 +691,19 @@ function publicLookupsAllowed(state, status) {
 			!!runtimeStatus.desired_enabled &&
 			!runtimeStatus.runtime_disabled &&
 			!runtimeStatus.interface_disabled &&
-			!runtimeOperationIsBusy(state, runtimeStatus) &&
 			!managerUI.isDisableRequested(state);
 }
 
 function clearPublicLookupDisplay(state) {
 	state.currentPublicIp = '';
 	state.currentPublicCountry = '';
-	state.currentPublicCountryIp = '';
 	managerUI.replaceStatusText(managerUI.ids.PUBLIC_IP_STATUS_ID, _('Unavailable'));
 	managerUI.replaceStatusText(managerUI.ids.PUBLIC_COUNTRY_STATUS_ID, _('Unavailable'));
 }
 
-function updateCachedPublicLookupState(state, status) {
-	const cachedPublicIp = normalizePublicIpValue(status.public_ip_cached);
-	const cachedPublicCountry = managerData.normalizeCountryCode(status.public_country_cached || '');
-
-	if (cachedPublicIp)
-		state.cachedPublicIp = cachedPublicIp;
-
-	if (cachedPublicCountry) {
-		state.cachedPublicCountry = cachedPublicCountry;
-		state.cachedPublicCountryIp = cachedPublicIp || state.cachedPublicCountryIp || '';
-	}
+function syncPublicLookupStateFromStatus(state, status) {
+	state.currentPublicIp = normalizePublicIpValue(status.public_ip_cached) || state.currentPublicIp || '';
+	state.currentPublicCountry = managerData.normalizeCountryCode(status.public_country_cached || '') || state.currentPublicCountry || '';
 }
 
 function renderPublicLookupStatus(state, status) {
@@ -602,18 +714,18 @@ function renderPublicLookupStatus(state, status) {
 
 	managerUI.replaceStatusText(
 		managerUI.ids.PUBLIC_IP_STATUS_ID,
-		state.currentPublicIp || state.cachedPublicIp || _('Unavailable')
+		state.currentPublicIp || _('Unavailable')
 	);
 	managerUI.replaceStatusText(
 		managerUI.ids.PUBLIC_COUNTRY_STATUS_ID,
-		state.currentPublicCountry || state.cachedPublicCountry || _('Unavailable')
+		state.currentPublicCountry || _('Unavailable')
 	);
 }
 
 function renderLocalStatusDetails(state, status) {
 	const runtimeStatus = status || managerData.parseLocalStatus('{}');
 
-	updateCachedPublicLookupState(state, runtimeStatus);
+	syncPublicLookupStateFromStatus(state, runtimeStatus);
 	managerUI.replaceStatusText(managerUI.ids.CURRENT_SERVER_STATUS_ID, managerUI.currentServerSummaryFromStatus(runtimeStatus, state));
 	managerUI.replaceStatusText(managerUI.ids.PREFERRED_SERVER_STATUS_ID, managerUI.preferredServerSummaryFromStatus(runtimeStatus));
 	managerUI.replaceStatusText(managerUI.ids.ENDPOINT_STATUS_ID, runtimeStatus.endpoint || _('Unavailable'));
@@ -626,6 +738,26 @@ function renderLocalStatusDetails(state, status) {
 	renderPublicLookupStatus(state, runtimeStatus);
 }
 
+function renderApplyingTransitionUi(state) {
+	const label = state.pendingOperationLabel || _('configuration');
+
+	managerUI.replaceStatusText(
+		managerUI.ids.OPERATION_STATUS_ID,
+		_('Applying (%s)...').format(managerFormat.humanizeAction(label))
+	);
+	managerUI.replaceStatusText(managerUI.ids.CURRENT_SERVER_STATUS_ID, _('Applying server change...'));
+	managerUI.replaceStatusText(managerUI.ids.ENDPOINT_STATUS_ID, _('Unavailable'));
+	managerUI.replaceStatusText(managerUI.ids.HANDSHAKE_STATUS_ID, _('Unavailable'));
+	managerUI.setManagerControlsDisabled(true);
+	managerStore.setPhase(
+		state,
+		state.saveApplyInProgress ? managerStore.PHASES.SAVING : managerStore.PHASES.RUNTIME_BUSY
+	);
+	managerUI.setVpnStatusIndicator('stopping', _('Applying changes'));
+	managerUI.updateCountryMatchStatus(state);
+	managerUI.updateServerSelectionState(state);
+}
+
 function renderLocalStatusSnapshot(state, status) {
 	let busyAction;
 	const runtimeStatus = status || managerData.parseLocalStatus('{}');
@@ -634,6 +766,11 @@ function renderLocalStatusSnapshot(state, status) {
 
 	state.currentLocalStatus = runtimeStatus;
 	renderLocalStatusDetails(state, runtimeStatus);
+
+	if (configurationTransitionActive(state)) {
+		renderApplyingTransitionUi(state);
+		return runtimeStatus;
+	}
 
 	if (operationStatus.indexOf('busy:') === 0) {
 		busyAction = operationStatus.substring(5);
@@ -703,9 +840,26 @@ function renderLocalStatusSnapshot(state, status) {
 	return runtimeStatus;
 }
 
+function parsePublicIpSnapshot(res) {
+	const raw = service.parseExecJsonResponse(res, null);
+	const fallbackIp = (res && res.code === 0) ? normalizePublicIpValue(res.stdout) : '';
+	const snapshot = {
+		ip: fallbackIp,
+		changed: false,
+		country: ''
+	};
+
+	if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+		snapshot.ip = normalizePublicIpValue(raw.ip || '');
+		snapshot.changed = !!raw.changed;
+		snapshot.country = managerData.normalizeCountryCode(raw.country || '');
+	}
+
+	return snapshot;
+}
+
 function updatePublicIp(state, options) {
 	const opts = options || {};
-	const extraArgs = opts.quiet ? [ 'quiet' ] : [];
 
 	if (state.pollingSuspended && !opts.force)
 		return Promise.resolve();
@@ -723,17 +877,13 @@ function updatePublicIp(state, options) {
 			return Promise.resolve();
 		}
 
-		return service.execService('public_ip', extraArgs).then(function(res) {
-			const publicIp = (res.code === 0) ? normalizePublicIpValue(res.stdout) : '';
-			const previousPublicIp = state.currentPublicIp;
-			const shouldRefreshCountry = !!publicIp && (
-				opts.force ||
-				publicIp !== previousPublicIp ||
-				!state.currentPublicCountry ||
-				state.currentPublicCountryIp !== publicIp
-			);
-
+		return service.execService('public_ip').then(function(res) {
+			const snapshot = parsePublicIpSnapshot(res);
+			const publicIp = (res.code === 0) ? snapshot.ip : '';
 			state.currentPublicIp = publicIp;
+			state.currentPublicCountry = snapshot.changed
+				? snapshot.country
+				: (snapshot.country || state.currentPublicCountry || '');
 			managerUI.replaceStatusText(
 				managerUI.ids.PUBLIC_IP_STATUS_ID,
 				publicIp || _('Unavailable')
@@ -741,71 +891,20 @@ function updatePublicIp(state, options) {
 
 			if (!publicIp) {
 				state.currentPublicCountry = '';
-				state.currentPublicCountryIp = '';
 				managerUI.replaceStatusText(managerUI.ids.PUBLIC_COUNTRY_STATUS_ID, _('Unavailable'));
 				managerUI.updateCountryMatchStatus(state);
 				return Promise.resolve();
 			}
 
-			if (!shouldRefreshCountry)
-				return Promise.resolve();
-
-			managerUI.replaceStatusText(managerUI.ids.PUBLIC_COUNTRY_STATUS_ID, _('Checking...'));
-			return updatePublicCountry(state, {
-				quiet: opts.quiet,
-				force: !!opts.force,
-				expectedPublicIp: publicIp
-			});
+			managerUI.replaceStatusText(
+				managerUI.ids.PUBLIC_COUNTRY_STATUS_ID,
+				state.currentPublicCountry || _('Unavailable')
+			);
+			managerUI.updateCountryMatchStatus(state);
 		}).catch(function() {
 			state.currentPublicIp = '';
 			state.currentPublicCountry = '';
-			state.currentPublicCountryIp = '';
 			managerUI.replaceStatusText(managerUI.ids.PUBLIC_IP_STATUS_ID, _('Unavailable'));
-			managerUI.replaceStatusText(managerUI.ids.PUBLIC_COUNTRY_STATUS_ID, _('Unavailable'));
-			managerUI.updateCountryMatchStatus(state);
-		});
-	});
-}
-
-function updatePublicCountry(state, options) {
-	const opts = options || {};
-	const extraArgs = opts.quiet ? [ 'quiet' ] : [];
-	const expectedPublicIp = normalizePublicIpValue(opts.expectedPublicIp || state.currentPublicIp);
-
-	if (state.pollingSuspended && !opts.force)
-		return Promise.resolve();
-
-	if (!publicLookupsAllowed(state, state.currentLocalStatus)) {
-		clearPublicLookupDisplay(state);
-		managerUI.updateCountryMatchStatus(state);
-		return Promise.resolve();
-	}
-
-	return managerStore.runExclusive(state, 'publicCountry', function() {
-		if (!publicLookupsAllowed(state, state.currentLocalStatus)) {
-			clearPublicLookupDisplay(state);
-			managerUI.updateCountryMatchStatus(state);
-			return Promise.resolve();
-		}
-
-		if (!expectedPublicIp) {
-			state.currentPublicCountry = '';
-			state.currentPublicCountryIp = '';
-			managerUI.replaceStatusText(managerUI.ids.PUBLIC_COUNTRY_STATUS_ID, _('Unavailable'));
-			managerUI.updateCountryMatchStatus(state);
-			return Promise.resolve();
-		}
-
-		return service.execService('public_country', extraArgs).then(function(res) {
-			const publicCountry = managerData.normalizeCountryCode(res.stdout ? res.stdout.trim() : '');
-
-			state.currentPublicCountry = (res.code === 0 && publicCountry) ? publicCountry : '';
-			state.currentPublicCountryIp = state.currentPublicCountry ? expectedPublicIp : '';
-			managerUI.replaceStatusText(managerUI.ids.PUBLIC_COUNTRY_STATUS_ID, state.currentPublicCountry || _('Unavailable'));
-			managerUI.updateCountryMatchStatus(state);
-		}).catch(function() {
-			state.currentPublicCountry = '';
-			state.currentPublicCountryIp = '';
 			managerUI.replaceStatusText(managerUI.ids.PUBLIC_COUNTRY_STATUS_ID, _('Unavailable'));
 			managerUI.updateCountryMatchStatus(state);
 		});
@@ -815,6 +914,12 @@ function updatePublicCountry(state, options) {
 function renderDiagnosticsSnapshot(state, summary, fresh) {
 	state.currentDiagnosticsSummary = summary;
 	state.currentDiagnosticsSummaryFresh = !!fresh;
+
+	if (!driftEvaluationAllowed(state)) {
+		suppressDriftUi(state);
+		return;
+	}
+
 	managerUI.updateDiagnosticsBanner(summary);
 }
 
@@ -823,6 +928,11 @@ function updateDiagnosticsSummary(state, options) {
 
 	if (state.pollingSuspended && !opts.force)
 		return Promise.resolve(state.currentDiagnosticsSummary);
+
+	if (!driftEvaluationAllowed(state)) {
+		suppressDriftUi(state);
+		return Promise.resolve(state.currentDiagnosticsSummary);
+	}
 
 	if (!state.appliedEnabled) {
 		renderDiagnosticsSnapshot(state, managerData.emptyDiagnosticsSummary(), false);
@@ -858,13 +968,20 @@ function updateLocalStatus(state, options) {
 			state.currentLocalStatus = status;
 			state.currentLocalStatusFresh = localStatusSnapshot.fresh;
 			state.currentLocalStatusLastUpdated = localStatusSnapshot.fresh ? Date.now() : 0;
-			state.currentOperationStatus = String(status.operation_status || 'idle');
+			if (configurationTransitionActive(state) && state.pendingOperationLabel)
+				state.currentOperationStatus = 'busy:' + state.pendingOperationLabel;
+			else if (configurationTransitionActive(state))
+				state.currentOperationStatus = state.currentOperationStatus || 'busy:configuration';
+			else
+				state.currentOperationStatus = String(status.operation_status || 'idle');
 			state.appliedEnabled = desiredEnabled;
 			state.appliedCountryCode = managerData.normalizeCountryCode(status.selected_country || state.appliedCountryCode);
 			renderLocalStatusSnapshot(state, status);
-			// Drift recovery runs from Save & Apply or the diagnostics Apply button only.
-			if (desiredEnabled)
+			// Drift is evaluated only after Save & Apply / runtime actions finish.
+			if (desiredEnabled && driftEvaluationAllowed(state))
 				void updateDiagnosticsSummary(state, { force: opts.force });
+			else if (!driftEvaluationAllowed(state))
+				suppressDriftUi(state);
 			else
 				renderDiagnosticsSnapshot(state, managerData.emptyDiagnosticsSummary(), false);
 			return status;
@@ -1013,7 +1130,7 @@ function refreshAfterSaveApply(state, refreshPublicIp, options) {
 
 	state.pendingOperationLabel = '';
 	state.saveApplyInProgress = false;
-	managerStore.resumePolling(state);
+	managerStore.setPhase(state, managerStore.PHASES.IDLE);
 
 	return updateLocalStatus(state, {
 		force: true,
@@ -1025,6 +1142,12 @@ function refreshAfterSaveApply(state, refreshPublicIp, options) {
 		return null;
 	}).then(function() {
 		return refreshLuCiChangeTracker();
+	}).then(function(result) {
+		managerStore.resumePolling(state);
+		return result;
+	}).catch(function(err) {
+		managerStore.resumePolling(state);
+		return Promise.reject(err);
 	});
 }
 
@@ -1128,6 +1251,7 @@ function handleSaveApply(viewState, state, ev, mode) {
 		markRuntimeActionCooldown(state);
 		managerStore.suspendPolling(state);
 		managerStore.setPhase(state, managerStore.PHASES.SAVING);
+		suppressDriftUi(state);
 
 		return new Promise(function(resolve, reject) {
 			let settled = false;
@@ -1232,6 +1356,18 @@ function handleSaveApply(viewState, state, ev, mode) {
 							}).then(function() {
 								finishResolve();
 							}).catch(function(err) {
+								if (runtimeActionErrorLooksAborted(err)) {
+									return recoverAbortedRuntimeAction(state, savedConfig, err, successMessage).then(function() {
+										finishResolve();
+									}).catch(function(recoveryErr) {
+										managerStore.setError(state, recoveryErr);
+										service.notifyError(recoveryErr);
+										return refreshAfterSaveApply(state, true, { suppressAutoReconcile: true }).then(function() {
+											finishReject(recoveryErr);
+										});
+									});
+								}
+
 								managerStore.setError(state, err);
 								service.notifyError(err);
 								return refreshAfterSaveApply(state, true, { suppressAutoReconcile: true }).then(function() {
@@ -1290,8 +1426,10 @@ function handleSaveApply(viewState, state, ev, mode) {
 		runtimeOperationIsBusy: runtimeOperationIsBusy,
 		loadServerCatalog: loadServerCatalog,
 	renderLocalStatusSnapshot: renderLocalStatusSnapshot,
+	renderDiagnosticsSnapshot: renderDiagnosticsSnapshot,
+	driftEvaluationAllowed: driftEvaluationAllowed,
+	suppressDriftUi: suppressDriftUi,
 	updatePublicIp: updatePublicIp,
-	updatePublicCountry: updatePublicCountry,
 	updateLocalStatus: updateLocalStatus,
 	updateDiagnosticsSummary: updateDiagnosticsSummary,
 	onCountryChanged: onCountryChanged,

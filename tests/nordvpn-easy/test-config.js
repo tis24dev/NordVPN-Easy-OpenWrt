@@ -252,10 +252,6 @@ function loadConfigView(options) {
 		currentOperationStatus: 'idle',
 		currentPublicIp: '',
 		currentPublicCountry: '',
-		currentPublicCountryIp: '',
-		cachedPublicIp: '',
-		cachedPublicCountry: '',
-		cachedPublicCountryIp: '',
 		appliedEnabled: false,
 		appliedCountryCode: '',
 		currentLocalStatus: managerData.parseLocalStatus('{}'),
@@ -342,6 +338,11 @@ function loadConfigView(options) {
 					state: renderState,
 					status: normalizeValue(status)
 				});
+			},
+			renderDiagnosticsSnapshot(renderState, summary, fresh) {
+				renderState.currentDiagnosticsSummary = summary;
+				renderState.currentDiagnosticsSummaryFresh = !!fresh;
+				calls.updateDiagnosticsBanner.push(summary);
 			},
 			updateLocalStatus(renderState, updateOptions) {
 				calls.updateLocalStatus.push({

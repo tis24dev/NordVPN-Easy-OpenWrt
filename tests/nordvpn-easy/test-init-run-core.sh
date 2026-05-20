@@ -184,7 +184,7 @@ rm -f "$CORE_CAPTURE"
 RC=0
 reconnect || RC=$?
 assert_eq '1' "$RC" 'reconnect propagates stop_vpn failure'
-grep -q "stop_vpn --config $TMP_DIR"/action.*"/nordvpn-easy.stop_vpn.conf" "$CORE_CAPTURE" || {
+grep -qE "stop_vpn --config ${TMP_DIR}/action\\.[^/]+/nordvpn-easy\\.stop_vpn\\.conf" "$CORE_CAPTURE" || {
 	printf '%s\n' "FAIL: reconnect should run stop_vpn before connect: $(cat "$CORE_CAPTURE")" >&2
 	exit 1
 }
@@ -199,7 +199,7 @@ rm -f "$CORE_CAPTURE"
 RC=0
 reconnect || RC=$?
 assert_eq '0' "$RC" 'reconnect succeeds when stop_vpn, connect, and hook installation succeed'
-grep -q "stop_vpn --config $TMP_DIR"/action.*"/nordvpn-easy.stop_vpn.conf" "$CORE_CAPTURE" || {
+grep -qE "stop_vpn --config ${TMP_DIR}/action\\.[^/]+/nordvpn-easy\\.stop_vpn\\.conf" "$CORE_CAPTURE" || {
 	printf '%s\n' "FAIL: reconnect should run stop_vpn: $(cat "$CORE_CAPTURE")" >&2
 	exit 1
 }

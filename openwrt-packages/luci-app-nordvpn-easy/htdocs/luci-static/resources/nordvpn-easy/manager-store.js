@@ -19,10 +19,6 @@ function createState() {
 		currentOperationStatus: 'idle',
 		currentPublicIp: '',
 		currentPublicCountry: '',
-		currentPublicCountryIp: '',
-		cachedPublicIp: '',
-		cachedPublicCountry: '',
-		cachedPublicCountryIp: '',
 		appliedEnabled: false,
 		appliedCountryCode: '',
 		currentLocalStatus: managerData.parseLocalStatus('{}'),
@@ -44,7 +40,6 @@ function createState() {
 			status: null,
 			diagnostics: null,
 			publicIp: null,
-			publicCountry: null,
 			catalog: null,
 			autoReconcile: null
 		}

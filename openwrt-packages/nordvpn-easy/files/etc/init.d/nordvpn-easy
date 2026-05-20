@@ -20,7 +20,7 @@ SERVICE_BACKEND_PAYLOAD_SIGNATURE='render-contract-v3'
 NORDVPN_EASY_RC_BUSY="${NORDVPN_EASY_RC_BUSY:-75}"
 # OpenWrt rc.common consumes the command/help metadata.
 # shellcheck disable=SC2034
-EXTRA_COMMANDS='connect disconnect stop_vpn reconnect reconcile setup check rotate refresh_countries refresh_countries_force server_catalog public_ip public_country operation_status vpn_status status_json diagnostics_log diagnostics_summary install_hooks remove_hooks disable_runtime render_runtime_config'
+EXTRA_COMMANDS='connect disconnect stop_vpn reconnect reconcile setup check rotate refresh_countries refresh_countries_force server_catalog public_ip operation_status vpn_status status_json diagnostics_log diagnostics_summary install_hooks remove_hooks disable_runtime render_runtime_config'
 # shellcheck disable=SC2034
 EXTRA_HELP='  connect               Enable, run setup, then install hooks transactionally
   disconnect            Disable runtime and remove hooks
@@ -33,8 +33,7 @@ EXTRA_HELP='  connect               Enable, run setup, then install hooks transa
   refresh_countries     Refresh the cached NordVPN country list
   refresh_countries_force Force-refresh the cached NordVPN country list
   server_catalog [country] [force] Print the cached or refreshed NordVPN server catalog JSON
-  public_ip             Print the current public IP
-  public_country        Print the detected country code for the current public IP
+  public_ip             Check the current public IP and print a JSON cache snapshot
   operation_status      Print whether a NordVPN Easy operation is running
   vpn_status            Print VPN runtime status (active/activating/inactive)
   status_json           Print local VPN runtime status as JSON
@@ -134,7 +133,7 @@ run_core_action() {
 		status_json:*|operation_status:*|vpn_status:*|diagnostics_log:*|diagnostics_summary:*)
 			action_log_mode='quiet'
 			;;
-		public_ip:quiet|public_country:quiet)
+		public_ip:quiet)
 			action_log_mode='quiet'
 			;;
 	esac
@@ -632,10 +631,6 @@ server_catalog() {
 
 public_ip() {
 	run_core_action public_ip "$@"
-}
-
-public_country() {
-	run_core_action public_country "$@"
 }
 
 operation_status() {

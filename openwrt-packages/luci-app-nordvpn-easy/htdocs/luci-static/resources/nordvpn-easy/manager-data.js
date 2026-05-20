@@ -82,6 +82,9 @@ function parseLocalStatus(raw) {
 		transfer_tx: String(status.transfer_tx || '0 B'),
 		transfer_tx_bytes: Number(status.transfer_tx_bytes || 0),
 		public_ip_cached: String(status.public_ip_cached || ''),
+		public_ip_detected_at: Number(status.public_ip_detected_at || 0),
+		public_ip_detected_at_iso: String(status.public_ip_detected_at_iso || ''),
+		public_ip_source: String(status.public_ip_source || ''),
 		public_country_cached: normalizeCountryCode(status.public_country_cached || ''),
 		last_error: String(status.last_error || ''),
 		current_server_hostname: String(status.current_server_hostname || ''),
@@ -164,7 +167,8 @@ function parseDiagnosticsSummary(raw) {
 				code: String((finding && finding.code) || ''),
 				message: String((finding && finding.message) || ''),
 				action: String((finding && finding.action) || ''),
-				severity: String((finding && finding.severity) || 'warning')
+				severity: String((finding && finding.severity) || 'warning'),
+				priority: Number((finding && finding.priority) != null ? finding.priority : 900)
 			};
 		}) : [],
 		status: (summary.status && typeof summary.status === 'object' && !Array.isArray(summary.status)) ?
@@ -180,6 +184,39 @@ function diagnosticsHasAlert(summary) {
 	const code = String((summary && summary.primary_finding && summary.primary_finding.code) || 'none');
 
 	return code !== '' && code !== 'none';
+}
+
+function hideSelectionDriftDiagnostics(summary) {
+	const primary = (summary && summary.primary_finding) || {};
+	const findings = (summary && summary.findings) || [];
+
+	if (primary.code !== 'selection.drift')
+		return summary;
+
+	const remaining = findings.filter(function(finding) {
+		return finding.code !== 'selection.drift';
+	});
+
+	if (!remaining.length)
+		return emptyDiagnosticsSummary();
+
+	const nextPrimary = remaining.reduce(function(best, finding) {
+		const bestPriority = Number((best && best.priority) != null ? best.priority : 900);
+		const findingPriority = Number(finding.priority != null ? finding.priority : 900);
+
+		return findingPriority < bestPriority ? finding : best;
+	}, remaining[0]);
+
+	return Object.assign({}, summary, {
+		primary_finding: {
+			code: nextPrimary.code,
+			message: nextPrimary.message,
+			action: nextPrimary.action,
+			severity: nextPrimary.severity,
+			priority: Number(nextPrimary.priority != null ? nextPrimary.priority : 900)
+		},
+		findings: remaining
+	});
 }
 
 function isDiagnosticsSummaryPayload(value) {
@@ -210,5 +247,6 @@ return baseclass.extend({
 	emptyDiagnosticsSummary: emptyDiagnosticsSummary,
 	parseDiagnosticsSummary: parseDiagnosticsSummary,
 	diagnosticsHasAlert: diagnosticsHasAlert,
+	hideSelectionDriftDiagnostics: hideSelectionDriftDiagnostics,
 	isDiagnosticsSummaryPayload: isDiagnosticsSummaryPayload
 });
