@@ -1,6 +1,8 @@
 'use strict';
 /* global service, ui, view, E, _ */
+'require nordvpn-easy/manager-actions as managerActions';
 'require nordvpn-easy/manager-data as managerData';
+'require nordvpn-easy/manager-store as managerStore';
 'require nordvpn-easy/service as service';
 'require ui';
 'require view';
@@ -291,7 +293,14 @@ return view.extend({
 					button._nordvpnApplying = true;
 					button.disabled = true;
 
-					return service.runActions([ 'stop_vpn', 'connect' ]).then(function() {
+					const syncState = managerStore.createState();
+
+					return waitForRuntimeIdle().then(function() {
+						return managerActions.runApplyCycle(null, syncState, null, {
+							skipFormSave: true,
+							skipDriftRestart: true
+						});
+					}).then(function() {
 						service.notifyInfo(_('Server selection synchronized.'));
 						return view.poll().then(function(result) {
 							const container = document.querySelector('[data-nordvpn-easy-diagnostics]');

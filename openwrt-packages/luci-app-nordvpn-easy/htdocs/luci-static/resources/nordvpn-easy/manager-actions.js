@@ -13,6 +13,7 @@
 
 
 const AUTO_RECONCILE_RETRY_DELAY_MS = 5 * 60 * 1000;
+const MAX_DRIFT_RESTART_DEPTH = 1;
 const SAVE_APPLY_TIMEOUT_MS = 150000;
 const RUNTIME_ACTION_RECOVERY_POLL_MS = 3000;
 const RUNTIME_ACTION_COOLDOWN_MS = SAVE_APPLY_TIMEOUT_MS + 30000;
@@ -68,64 +69,64 @@ function normalizeSelectionMode(mode) {
 	return String(mode || 'auto');
 }
 
-function hasServerSelectionChanged(previousCountry, currentCountry, previousMode, currentMode, previousPreferredStation, preferredStation) {
-	if (managerData.normalizeCountryCode(previousCountry || '') !== managerData.normalizeCountryCode(currentCountry || ''))
-		return true;
+const APPLY_CYCLE_SUCCESS_CONNECTED = _('NordVPN Easy applied your configuration and connected.');
+const APPLY_CYCLE_SUCCESS_DISABLED = _('NordVPN Easy applied your configuration. VPN remains disabled.');
 
-	if (normalizeSelectionMode(previousMode) !== normalizeSelectionMode(currentMode))
-		return true;
+function normalizeSubmittedConfig(raw) {
+	const submitted = raw || {};
+	const mode = normalizeSelectionMode(submitted.mode);
+	const country = managerData.normalizeCountryCode(submitted.country || '');
+	let preferredStation = String(submitted.preferredStation || '');
+	let effectiveMode = mode;
 
-	if (normalizeSelectionMode(currentMode) === 'manual' && String(previousPreferredStation || '') !== String(preferredStation || ''))
-		return true;
+	if (effectiveMode === 'manual' && (!country || !preferredStation))
+		effectiveMode = 'auto';
 
-	return false;
-}
-
-function hasRuntimeInterfaceSnapshot(runtimeStatus) {
-	return !!(runtimeStatus && typeof runtimeStatus.interface === 'string' && runtimeStatus.interface);
-}
-
-function runtimeNeedsReconciliation(runtimeStatus) {
-	if (!hasRuntimeInterfaceSnapshot(runtimeStatus))
-		return true;
-
-	return !!(runtimeStatus.runtime_disabled || runtimeStatus.interface_disabled || runtimeStatus.runtime_configured === false);
-}
-
-function deriveSavedServerSelectionDrift(mode, country, preferredStation, runtimeStatus) {
-	const currentMode = normalizeSelectionMode(mode);
-	const selectedCountry = managerData.normalizeCountryCode(country || '');
-	const currentServerCountry = managerData.normalizeCountryCode((runtimeStatus && runtimeStatus.current_server_country) || '');
-	const savedPreferredStation = String(preferredStation || '');
-	const currentStation = String((runtimeStatus && runtimeStatus.current_server_station) || '');
-
-	if (currentMode === 'manual') {
-		if (!savedPreferredStation || !currentStation || savedPreferredStation === currentStation)
-			return null;
-
-		return {
-			key: [ 'manual', savedPreferredStation, currentStation ].join(':'),
-			reason: _('manual server drift'),
-			mode: currentMode,
-			selectedCountry: selectedCountry,
-			currentServerCountry: currentServerCountry,
-			preferredStation: savedPreferredStation,
-			currentStation: currentStation
-		};
-	}
-
-	if (!selectedCountry || !currentServerCountry || selectedCountry === currentServerCountry)
-		return null;
+	if (effectiveMode !== 'manual')
+		preferredStation = '';
 
 	return {
-		key: [ 'auto', selectedCountry, currentServerCountry ].join(':'),
-		reason: _('country drift'),
-		mode: currentMode,
-		selectedCountry: selectedCountry,
-		currentServerCountry: currentServerCountry,
-		preferredStation: savedPreferredStation,
-		currentStation: currentStation
+		country: country,
+		mode: effectiveMode,
+		enabled: !!submitted.enabled,
+		preferredStation: preferredStation
 	};
+}
+
+function nordvpnTokenIsPresent() {
+	const tokenField = managerUI.getInputElement(managerUI.ids.TOKEN_FIELD_ID, 'input');
+	const existingToken = String(uci.get('nordvpn_easy', 'main', 'nordvpn_token') || '');
+	const tokenFieldValue = String(tokenField && tokenField.value != null ? tokenField.value : '').trim();
+	const tokenFieldMasked = !!(tokenField && tokenField.getAttribute('data-token-masked') === '1');
+
+	if (tokenFieldValue && !tokenFieldMasked)
+		return true;
+
+	return !!existingToken;
+}
+
+function syncPreferredServerFieldsToUci(submitted, serverCatalogIndex) {
+	const catalog = serverCatalogIndex || {};
+
+	if (submitted.mode === 'manual' && submitted.preferredStation) {
+		const server = catalog[submitted.preferredStation];
+
+		uci.set('nordvpn_easy', 'main', 'preferred_server_hostname', server ? String(server.hostname || '') : '');
+		uci.set('nordvpn_easy', 'main', 'preferred_server_station', submitted.preferredStation);
+		return;
+	}
+
+	uci.set('nordvpn_easy', 'main', 'preferred_server_hostname', '');
+	uci.set('nordvpn_easy', 'main', 'preferred_server_station', '');
+}
+
+function readSubmittedConfigFromForm(state) {
+	return normalizeSubmittedConfig({
+		country: managerUI.getSelectedCountry(),
+		mode: managerUI.getSelectedMode(),
+		enabled: !!(managerUI.getEnabledCheckboxElement() && managerUI.getEnabledCheckboxElement().checked),
+		preferredStation: managerUI.getSelectedPreferredStation()
+	});
 }
 
 function deriveServerSelectionDrift(state, status) {
@@ -215,6 +216,30 @@ function autoReconcileDebugLines(drift) {
 	];
 }
 
+function maybeRestartApplyCycleOnDrift(viewState, state, ev, restartOptions) {
+	const opts = restartOptions || {};
+	const depth = Number(opts.driftDepth) || 0;
+	const runtimeStatus = state.currentLocalStatus || {};
+	const drift = deriveServerSelectionDrift(state, runtimeStatus);
+
+	if (depth >= MAX_DRIFT_RESTART_DEPTH)
+		return Promise.resolve(false);
+
+	if (!drift || !driftEvaluationAllowed(state) || !state.appliedEnabled)
+		return Promise.resolve(false);
+
+	if (opts.driftContext && autoReconcileFailureIsThrottled(state, drift))
+		return Promise.resolve(false);
+
+	return runApplyCycle(viewState, state, ev, {
+		skipFormSave: true,
+		skipDriftRestart: false,
+		driftDepth: depth + 1,
+		driftContext: drift,
+		notifyDriftQueued: !!opts.notifyDriftQueued
+	});
+}
+
 function maybeAutoReconcileSelectionDrift(state, status) {
 	const runtimeStatus = status || (state && state.currentLocalStatus) || {};
 	const drift = deriveServerSelectionDrift(state, runtimeStatus);
@@ -230,30 +255,30 @@ function maybeAutoReconcileSelectionDrift(state, status) {
 			return Promise.resolve(false);
 
 		markRuntimeActionCooldown(state);
-		state.pendingOperationLabel = 'stop_vpn + connect';
-		state.currentOperationStatus = 'busy:stop_vpn + connect';
-		managerStore.setPhase(state, managerStore.PHASES.RUNTIME_BUSY);
 		renderLocalStatusSnapshot(state, latestStatus);
 		notifyDebugBlock(_('Automatic runtime sync queued'), autoReconcileDebugLines(latestDrift));
 
-		return service.runActions([ 'stop_vpn', 'connect' ]).then(function() {
-			return refreshAfterSaveApply(state, true, { suppressAutoReconcile: true }).then(function() {
-				const remainingDrift = deriveServerSelectionDrift(state, state.currentLocalStatus);
-				let unchangedError;
+		return runApplyCycle(null, state, null, {
+			skipFormSave: true,
+			skipDriftRestart: true,
+			driftDepth: 0,
+			driftContext: latestDrift
+		}).then(function() {
+			const remainingDrift = deriveServerSelectionDrift(state, state.currentLocalStatus);
+			let unchangedError;
 
-				if (remainingDrift && remainingDrift.key === latestDrift.key) {
-					unchangedError = new Error(_('Automatic runtime sync completed but server selection is still out of sync.'));
-					state.lastAutoReconcileFailureKey = latestDrift.key;
-					state.lastAutoReconcileFailureAt = Date.now();
-					managerStore.setError(state, unchangedError);
-					service.notifyError(unchangedError);
-					return false;
-				}
+			if (remainingDrift && remainingDrift.key === latestDrift.key) {
+				unchangedError = new Error(_('Automatic runtime sync completed but server selection is still out of sync.'));
+				state.lastAutoReconcileFailureKey = latestDrift.key;
+				state.lastAutoReconcileFailureAt = Date.now();
+				managerStore.setError(state, unchangedError);
+				service.notifyError(unchangedError);
+				return false;
+			}
 
-				state.lastAutoReconcileFailureKey = '';
-				state.lastAutoReconcileFailureAt = 0;
-				return true;
-			});
+			state.lastAutoReconcileFailureKey = '';
+			state.lastAutoReconcileFailureAt = 0;
+			return true;
 		}).catch(function(err) {
 			const message = (err && err.message) ? err.message : String(err);
 
@@ -292,73 +317,96 @@ function buildDiagnosticsSnapshot(res) {
 	};
 }
 
-function buildRuntimeStatusForActionPlan(state, savedConfig, runtimeStatus) {
-	const base = runtimeStatus || (state && state.currentLocalStatus) || {};
+function runApplyCycleConnectPhase(state, savedConfig) {
+	const successMessage = APPLY_CYCLE_SUCCESS_CONNECTED;
 
-	return Object.assign({}, base, {
-		selected_country: savedConfig.country,
-		server_selection_mode: savedConfig.mode,
-		preferred_server_station: savedConfig.preferredStation
+	state.pendingOperationLabel = 'connect';
+	state.currentOperationStatus = 'busy:connect';
+	managerStore.setPhase(state, managerStore.PHASES.RUNTIME_BUSY);
+
+	return service.runAction('connect').then(function(result) {
+		if (!result.success) {
+			const error = service.resultToError(result);
+
+			error.result = result;
+			throw error;
+		}
+
+		service.notifyInfo(successMessage);
+		return refreshAfterSaveApply(state, true, { suppressAutoReconcile: true });
+	}).catch(function(err) {
+		if (runtimeActionErrorLooksAborted(err)) {
+			return recoverAbortedRuntimeAction(state, savedConfig, err, successMessage);
+		}
+
+		throw err;
 	});
 }
 
-function deriveRuntimeActionPlan(previousEnabled, enabled, previousCountry, country, previousMode, mode, previousPreferredStation, preferredStation, runtimeStatus) {
-	const currentEnabled = !!enabled;
-	const wasEnabled = !!previousEnabled;
-	const currentMode = normalizeSelectionMode(mode);
-	const savedCountry = managerData.normalizeCountryCode(country || '');
-	const peerCountry = managerData.normalizeCountryCode((runtimeStatus && runtimeStatus.current_server_country) || '');
-	const peerCountryMismatch = !!(savedCountry && peerCountry && savedCountry !== peerCountry);
-	const serverSelectionChanged = hasServerSelectionChanged(
-		previousCountry,
-		country,
-		previousMode,
-		currentMode,
-		previousPreferredStation,
-		preferredStation
-	);
-	const serverSelectionDrift = currentEnabled && deriveSavedServerSelectionDrift(
-		currentMode,
-		country,
-		preferredStation,
-		runtimeStatus
-	);
-	const plan = {
-		actions: [],
-		successMessage: '',
-		serverSelectionChanged: serverSelectionChanged
-	};
+function runApplyCycle(viewState, state, ev, options) {
+	const opts = options || {};
+	const submitted = opts.submitted || null;
+	const skipFormSave = !!opts.skipFormSave;
 
-	if (!wasEnabled && currentEnabled) {
-		plan.actions = [ 'connect' ];
-		plan.successMessage = _('NordVPN Easy enabled: setup completed and hooks installed.');
-		return plan;
-	}
+	if (opts.notifyDriftQueued && opts.driftContext)
+		notifyDebugBlock(_('Runtime sync queued'), autoReconcileDebugLines(opts.driftContext));
 
-	if (wasEnabled && !currentEnabled) {
-		plan.actions = [ 'disconnect' ];
-		plan.successMessage = _('NordVPN Easy disabled: VPN interface stopped and hooks removed.');
-		return plan;
-	}
+	state.pendingOperationLabel = 'stop_vpn';
+	state.currentOperationStatus = 'busy:stop_vpn';
+	managerStore.setPhase(state, managerStore.PHASES.RUNTIME_BUSY);
 
-	if (currentEnabled) {
-		if (serverSelectionChanged || serverSelectionDrift || peerCountryMismatch || runtimeNeedsReconciliation(runtimeStatus)) {
-			plan.actions = [ 'stop_vpn', 'connect' ];
-			if (currentMode === 'manual') {
-				plan.successMessage = _('NordVPN Easy stopped the VPN, cleared caches, and connected to the selected manual server.');
-			}
-			else {
-				plan.successMessage = _('NordVPN Easy stopped the VPN, cleared caches, and connected to the selected automatic server.');
-			}
+	return service.runAction('stop_vpn').then(function(stopResult) {
+		if (!stopResult.success)
+			throw service.resultToError(stopResult);
+
+		if (!skipFormSave && submitted) {
+			syncPreferredServerFieldsToUci(submitted, state.serverCatalogIndex || {});
+			syncSubmittedRuntimeConfigToUci(submitted);
+			return Promise.resolve(viewState && viewState.handleSave ? viewState.handleSave(ev) : null);
 		}
-		else {
-			plan.actions = [];
-			plan.successMessage = _('Configuration saved successfully.');
-		}
-		return plan;
-	}
 
-	return plan;
+		return null;
+	}).then(function() {
+		if (skipFormSave)
+			return null;
+
+		return flushLuCiPendingChanges();
+	}).then(function() {
+		return loadSavedRuntimeConfig();
+	}).then(function(savedConfig) {
+		if (submitted && !skipFormSave)
+			savedConfig = mergeSavedConfigWithSubmittedValues(savedConfig, submitted);
+
+		if (viewState)
+			rememberSavedRuntimeConfig(viewState, state, savedConfig);
+
+		if (savedConfig.enabled && !nordvpnTokenIsPresent()) {
+			const tokenError = new Error(_('NordVPN token is required before enabling NordVPN Easy.'));
+
+			service.notifyError(tokenError);
+			return refreshAfterSaveApply(state, false, { suppressAutoReconcile: true }).then(function() {
+				throw tokenError;
+			});
+		}
+
+		if (!savedConfig.enabled) {
+			service.notifyInfo(APPLY_CYCLE_SUCCESS_DISABLED);
+			return refreshAfterSaveApply(state, false, { suppressAutoReconcile: true });
+		}
+
+		return runApplyCycleConnectPhase(state, savedConfig);
+	}).then(function(refreshResult) {
+		if (opts.skipDriftRestart)
+			return refreshResult;
+
+		return maybeRestartApplyCycleOnDrift(viewState, state, ev, {
+			driftDepth: Number(opts.driftDepth) || 0,
+			driftContext: opts.driftContext || null,
+			notifyDriftQueued: true
+		}).then(function() {
+			return refreshResult;
+		});
+	});
 }
 
 function clearLuCiUnsavedChangesIndicator() {
@@ -984,6 +1032,10 @@ function updateLocalStatus(state, options) {
 				suppressDriftUi(state);
 			else
 				renderDiagnosticsSnapshot(state, managerData.emptyDiagnosticsSummary(), false);
+
+			if (!opts.suppressAutoReconcile && desiredEnabled && driftEvaluationAllowed(state))
+				void maybeAutoReconcileSelectionDrift(state, status);
+
 			return status;
 		}).catch(function(err) {
 			state.currentLocalStatusFresh = false;
@@ -1156,271 +1208,102 @@ function handleSaveApply(viewState, state, ev, mode) {
 	const previousCountry = viewState.initialCountry || '';
 	const previousMode = viewState.initialMode || 'auto';
 	const previousPreferredStation = viewState.initialPreferredStation || '';
-	const currentEnabled = !!(managerUI.getEnabledCheckboxElement() && managerUI.getEnabledCheckboxElement().checked);
-	const currentMode = managerUI.getSelectedMode();
-	const currentCountry = managerUI.getSelectedCountry();
-	const preferredStation = managerUI.getSelectedPreferredStation();
-	const preferredStationChanged = (currentMode === 'manual' && preferredStation !== previousPreferredStation);
-	const enteringManualMode = (currentMode === 'manual' && previousMode !== 'manual');
-	const serverSelectionChanged = hasServerSelectionChanged(
-		previousCountry,
-		currentCountry,
-		previousMode,
-		currentMode,
-		previousPreferredStation,
-		preferredStation
-	);
-	const selectedServer = preferredStation ? state.serverCatalogIndex[preferredStation] : null;
+	const submittedRuntimeConfig = readSubmittedConfigFromForm(state);
+	const selectedServer = submittedRuntimeConfig.preferredStation
+		? state.serverCatalogIndex[submittedRuntimeConfig.preferredStation]
+		: null;
 	const debugLines = buildSaveApplyDebugLines(
 		previousEnabled,
-		currentEnabled,
+		submittedRuntimeConfig.enabled,
 		previousCountry,
-		currentCountry,
+		submittedRuntimeConfig.country,
 		previousMode,
-		currentMode,
+		submittedRuntimeConfig.mode,
 		previousPreferredStation,
-		preferredStation,
+		submittedRuntimeConfig.preferredStation,
 		selectedServer
 	);
-	const preservingExistingManualPreference = (
-		currentMode === 'manual' &&
-		previousMode === 'manual' &&
-		preferredStation === previousPreferredStation &&
-		!!preferredStation
-	);
-	let confirmationPromise = Promise.resolve(true);
 
-	if (currentMode === 'manual') {
-		if (!currentCountry) {
-			service.notifyError(new Error(_('Manual mode requires a selected country.')));
-			return Promise.resolve();
-		}
+	notifyDebugBlock(_('Save & Apply requested'), debugLines.concat([
+		_('Runtime flow: stop VPN, save configuration, connect when enabled.')
+	]));
 
-		if ((!preferredStation || !selectedServer) && !preservingExistingManualPreference) {
-			service.notifyError(new Error(_('Manual mode requires a valid preferred server from the current catalog.')));
-			return Promise.resolve();
-		}
+	managerStore.clearError(state);
+	state.saveApplyInProgress = true;
+	markRuntimeActionCooldown(state);
+	managerStore.suspendPolling(state);
+	managerStore.setPhase(state, managerStore.PHASES.SAVING);
+	suppressDriftUi(state);
 
-		if (preferredStationChanged || enteringManualMode) {
-			uci.set('nordvpn_easy', 'main', 'preferred_server_hostname', selectedServer.hostname);
-			uci.set('nordvpn_easy', 'main', 'preferred_server_station', preferredStation);
-		}
-	}
-	else {
-		uci.set('nordvpn_easy', 'main', 'preferred_server_hostname', '');
-		uci.set('nordvpn_easy', 'main', 'preferred_server_station', '');
-	}
+	return new Promise(function(resolve, reject) {
+		let settled = false;
+		let timeoutId = null;
 
-	if (previousEnabled && managerUI.getEnabledCheckboxElement() && !managerUI.getEnabledCheckboxElement().checked) {
-		confirmationPromise = managerUI.showConfirmationModal(
-			_('Disable NordVPN Easy'),
-			[
-				_('Disabling NordVPN Easy will stop the VPN interface and remove cron/hotplug hooks.'),
-				_('Your current VPN connection will be interrupted.')
-			]
-		);
-	}
-	else if (previousEnabled && (
-		serverSelectionChanged
-	)) {
-		confirmationPromise = managerUI.showConfirmationModal(
-			_('Confirm Server Change'),
-			[
-				_('Applying these changes will stop the VPN, clear cached server data, and connect again with the selected server settings.'),
-				currentMode === 'manual'
-					? (selectedServer
-						? _('Preferred server: %s').format(managerFormat.formatServerLabel(selectedServer))
-						: (preferredStation
-							? _('Preferred server unchanged: %s').format(preferredStation)
-							: _('Manual mode will keep the existing preferred server settings.')))
-					: _('Automatic mode will use NordVPN recommended servers.')
-			]
-		);
-	}
+		const cleanup = function() {
+			if (timeoutId !== null) {
+				clearTimeout(timeoutId);
+				timeoutId = null;
+			}
+		};
 
-	return confirmationPromise.then(function(confirmed) {
-		if (!confirmed)
-			return Promise.resolve();
+		const finishResolve = function(value) {
+			if (settled)
+				return;
 
-		notifyDebugBlock(_('Save & Apply requested'), debugLines.concat([
-			_('UCI changes are being committed before runtime actions start.')
-		]));
-
-		managerStore.clearError(state);
-		state.saveApplyInProgress = true;
-		markRuntimeActionCooldown(state);
-		managerStore.suspendPolling(state);
-		managerStore.setPhase(state, managerStore.PHASES.SAVING);
-		suppressDriftUi(state);
-
-		return new Promise(function(resolve, reject) {
-			let settled = false;
-				let timeoutId = null;
-
-				const cleanup = function() {
-					if (timeoutId !== null) {
-						clearTimeout(timeoutId);
-						timeoutId = null;
-					}
-				};
-
-			const finishResolve = function(value) {
-				if (settled)
-					return;
-
-				settled = true;
-				cleanup();
-				resolve(value);
-			};
-
-			const finishReject = function(err) {
-				if (settled)
-					return;
-
-				settled = true;
-				cleanup();
-				reject(err);
-			};
-
-			const handleRejectedSaveFlow = function(err) {
-				managerStore.setError(state, err);
-				state.pendingOperationLabel = '';
-				state.saveApplyInProgress = false;
-				managerStore.resumePolling(state);
-				updateLocalStatus(state, { force: true });
-				finishReject(err);
-			};
-
+			settled = true;
 			cleanup();
+			resolve(value);
+		};
 
-			const submittedRuntimeConfig = {
-				country: currentCountry,
-				mode: currentMode,
-				enabled: currentEnabled,
-				preferredStation: preferredStation
-			};
+		const finishReject = function(err) {
+			if (settled)
+				return;
 
-			syncSubmittedRuntimeConfigToUci(submittedRuntimeConfig);
+			settled = true;
+			cleanup();
+			reject(err);
+		};
 
-			Promise.resolve(viewState.handleSave(ev)).then(function() {
-				const continueAfterUciApply = function() {
-					return flushLuCiPendingChanges().then(function() {
-						return loadSavedRuntimeConfig();
-					}).then(function(savedConfig) {
-						const diskCountry = savedConfig.country;
+		timeoutId = setTimeout(function() {
+			const timeoutError = new Error(_('Configuration apply timed out.'));
 
-						savedConfig = mergeSavedConfigWithSubmittedValues(savedConfig, submittedRuntimeConfig);
-						rememberSavedRuntimeConfig(viewState, state, savedConfig);
-						return updateLocalStatus(state, {
-							force: true,
-							suppressAutoReconcile: true
-						}).then(function(status) {
-							const localStatus = state.currentLocalStatusFresh ? status : (state.currentLocalStatus || null);
-							const statusForPlan = buildRuntimeStatusForActionPlan(state, savedConfig, localStatus);
-							const runtimePlan = deriveRuntimeActionPlan(
-								previousEnabled,
-								savedConfig.enabled,
-								previousCountry,
-								savedConfig.country,
-								previousMode,
-								savedConfig.mode,
-								previousPreferredStation,
-								savedConfig.preferredStation,
-								statusForPlan
-							);
-							const actions = runtimePlan.actions;
-							const successMessage = runtimePlan.successMessage;
+			managerStore.setError(state, timeoutError);
+			state.pendingOperationLabel = '';
+			state.saveApplyInProgress = false;
+			managerStore.resumePolling(state);
+			updateLocalStatus(state, { force: true });
+			finishReject(timeoutError);
+		}, SAVE_APPLY_TIMEOUT_MS);
 
-							if (!actions.length) {
-								notifyDebugBlock(_('Configuration applied'), [
-									_('UCI changes were saved successfully.'),
-									_('No runtime action was required.')
-								]);
-								return refreshAfterSaveApply(state, false).then(function() {
-									finishResolve();
-								});
-							}
+		state.pendingOperationLabel = _('configuration');
+		state.currentOperationStatus = 'busy:configuration';
+		updateLocalStatus(state, { force: true });
 
-							state.pendingOperationLabel = managerFormat.formatActionsLabel(actions);
-							state.currentOperationStatus = 'busy:' + state.pendingOperationLabel;
-							managerStore.setPhase(state, managerStore.PHASES.RUNTIME_BUSY);
-							markRuntimeActionCooldown(state);
-							notifyDebugBlock(_('Runtime actions queued'), [
-								_('Executing: %s').format(state.pendingOperationLabel),
-								_('Enabled state after save: %s').format(savedConfig.enabled ? _('checked') : _('unchecked'))
-							]);
+		runApplyCycle(viewState, state, ev, {
+			submitted: submittedRuntimeConfig,
+			skipDriftRestart: false,
+			driftDepth: 0
+		}).then(function() {
+			state.saveApplyInProgress = false;
+			finishResolve();
+		}).catch(function(err) {
+			const message = (err && err.message) ? err.message : String(err);
 
-							return service.runActions(actions).then(function() {
-								service.notifyInfo(successMessage);
-								return refreshAfterSaveApply(state, true, { suppressAutoReconcile: true });
-							}).then(function() {
-								finishResolve();
-							}).catch(function(err) {
-								if (runtimeActionErrorLooksAborted(err)) {
-									return recoverAbortedRuntimeAction(state, savedConfig, err, successMessage).then(function() {
-										finishResolve();
-									}).catch(function(recoveryErr) {
-										managerStore.setError(state, recoveryErr);
-										service.notifyError(recoveryErr);
-										return refreshAfterSaveApply(state, true, { suppressAutoReconcile: true }).then(function() {
-											finishReject(recoveryErr);
-										});
-									});
-								}
-
-								managerStore.setError(state, err);
-								service.notifyError(err);
-								return refreshAfterSaveApply(state, true, { suppressAutoReconcile: true }).then(function() {
-									finishReject(err);
-								});
-							});
-						});
-					}).catch(function(err) {
-						const message = (err && err.message) ? err.message : String(err);
-
-						managerStore.setError(state, err);
-						return refreshAfterSaveApply(state, true, { suppressAutoReconcile: true }).then(function() {
-							service.notifyError(new Error(_('Save & Apply failed: ') + message));
-							finishReject(err);
-						});
-					});
-				};
-
-				timeoutId = setTimeout(function() {
-					const timeoutError = new Error(_('Configuration apply timed out.'));
-
-					managerStore.setError(state, timeoutError);
-					state.pendingOperationLabel = '';
-					state.saveApplyInProgress = false;
-					managerStore.resumePolling(state);
-					updateLocalStatus(state, { force: true });
-					finishReject(timeoutError);
-				}, SAVE_APPLY_TIMEOUT_MS);
-
-				state.pendingOperationLabel = _('configuration');
-				state.currentOperationStatus = 'busy:configuration';
-				managerStore.setPhase(state, managerStore.PHASES.SAVING);
-				updateLocalStatus(state, { force: true });
-				continueAfterUciApply().catch(function(err) {
-					managerStore.setError(state, err);
-					state.pendingOperationLabel = '';
-					state.saveApplyInProgress = false;
-					managerStore.resumePolling(state);
-					updateLocalStatus(state, { force: true });
-					finishReject(err);
-				});
-			}).catch(function(err) {
-				handleRejectedSaveFlow(err);
+			state.saveApplyInProgress = false;
+			managerStore.setError(state, err);
+			return refreshAfterSaveApply(state, true, { suppressAutoReconcile: true }).then(function() {
+				service.notifyError(new Error(_('Save & Apply failed: ') + message));
+				finishReject(err);
 			});
 		});
 	});
 }
 
 	return baseclass.extend({
-		hasServerSelectionChanged: hasServerSelectionChanged,
+		normalizeSubmittedConfig: normalizeSubmittedConfig,
+		runApplyCycle: runApplyCycle,
 		deriveServerSelectionDrift: deriveServerSelectionDrift,
 		maybeAutoReconcileSelectionDrift: maybeAutoReconcileSelectionDrift,
-		deriveRuntimeActionPlan: deriveRuntimeActionPlan,
 		syncSubmittedRuntimeConfigToUci: syncSubmittedRuntimeConfigToUci,
 		mergeSavedConfigWithSubmittedValues: mergeSavedConfigWithSubmittedValues,
 		runtimeOperationIsBusy: runtimeOperationIsBusy,
