@@ -17,15 +17,6 @@ const COUNTRIES_CACHE_PATH = '/tmp/nordvpn-easy-countries.json';
 const TOKEN_MASK_DISPLAY = '********';
 const state = managerStore.createState();
 
-function statusPayloadIsBusy(payload) {
-	const status = managerData.parseLocalStatus(JSON.stringify(payload || {}));
-	const operationStatus = String(status.operation_status || 'idle');
-
-	return operationStatus === 'busy' ||
-		operationStatus.indexOf('busy:') === 0 ||
-		String(status.operation_lock_state || 'none') === 'held';
-}
-
 function refreshCountriesInBackground(selectEl, currentCountry) {
 	if (!selectEl)
 		return Promise.resolve();
@@ -54,7 +45,7 @@ const CountrySelectValue = form.ListValue.extend({
 		return L.resolveDefault(service.execService('status_json'), null).then(function(statusRes) {
 			const payload = service.parseExecJsonResponse(statusRes, null);
 
-			if (statusPayloadIsBusy(payload)) {
+			if (managerData.runtimeStatusIsBusy(payload)) {
 				service.notifyInfo(_('NordVPN Easy is applying another runtime operation. Country refresh was skipped.'));
 				return null;
 			}
@@ -339,12 +330,12 @@ const TokenValue = form.Value.extend({
 				state.currentDiagnosticsSummaryFresh
 			);
 			// Drift recovery runs from the unified apply cycle and background status polling.
-			if (!countries.length && !statusPayloadIsBusy(initialStatusPayload))
+			if (!countries.length && !managerData.runtimeStatusIsBusy(initialStatusPayload))
 				refreshCountriesInBackground(countrySelect, currentCountry);
 
 			if (!state.currentServerCatalog.servers.length &&
 				managerStore.shouldLoadCatalog(currentMode, currentCountry) &&
-				!statusPayloadIsBusy(initialStatusPayload)) {
+				!managerData.runtimeStatusIsBusy(initialStatusPayload)) {
 				managerActions.loadServerCatalog(state, currentCountry, false).catch(function(err) {
 					service.notifyError(err);
 				});

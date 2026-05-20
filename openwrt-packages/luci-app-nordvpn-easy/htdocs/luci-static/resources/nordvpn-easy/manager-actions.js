@@ -625,11 +625,11 @@ function runtimeOperationIsBusy(state, status) {
 
 function runtimeStatusIndicatesBusy(status, fallbackOperationStatus) {
 	const runtimeStatus = status || {};
-	const operationStatus = String(runtimeStatus.operation_status || fallbackOperationStatus || 'idle');
 
-	return operationStatus === 'busy' ||
-		operationStatus.indexOf('busy:') === 0 ||
-		String(runtimeStatus.operation_lock_state || 'none') === 'held';
+	return managerData.runtimeStatusIsBusy({
+		operation_status: runtimeStatus.operation_status || fallbackOperationStatus || 'idle',
+		operation_lock_state: runtimeStatus.operation_lock_state || 'none'
+	});
 }
 
 function runtimeActionErrorLooksAborted(err) {

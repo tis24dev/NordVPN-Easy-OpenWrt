@@ -10,17 +10,6 @@
 const RUNTIME_IDLE_POLL_MS = 2000;
 const RUNTIME_IDLE_MAX_WAIT_MS = 90000;
 
-function runtimeStatusIsBusy(status) {
-	if (!status || typeof status !== 'object')
-		return false;
-
-	const operationStatus = String(status.operation_status || 'idle');
-
-	return operationStatus === 'busy' ||
-		operationStatus.indexOf('busy:') === 0 ||
-		String(status.operation_lock_state || 'none') === 'held';
-}
-
 function waitForRuntimeIdle() {
 	const deadline = Date.now() + RUNTIME_IDLE_MAX_WAIT_MS;
 
@@ -28,7 +17,7 @@ function waitForRuntimeIdle() {
 		return service.execService('status_json').then(function(res) {
 			const status = service.parseExecJsonResponse(res, null);
 
-			if (!runtimeStatusIsBusy(status))
+			if (!managerData.runtimeStatusIsBusy(status))
 				return true;
 
 			if (Date.now() >= deadline) {

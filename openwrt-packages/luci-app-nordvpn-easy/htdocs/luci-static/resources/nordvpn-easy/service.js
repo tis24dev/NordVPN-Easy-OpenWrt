@@ -4,7 +4,7 @@
 'require rpc';
 'require ui';
 
-// reconnect/reconcile often exceed LuCI default (20s) and stock rpcd (30s).
+// stop_vpn/connect often exceed LuCI default (20s) and stock rpcd (30s).
 const RUNTIME_RPC_TIMEOUT = 120;
 const DIAGNOSTICS_RPC_TIMEOUT = 180;
 // OpenWrt 24 LuCI rpc.js ignores rpc.declare({ timeout }) and uses L.env.rpctimeout only.
@@ -38,27 +38,9 @@ const callConnect = rpc.declare({
 	timeout: RUNTIME_RPC_TIMEOUT
 });
 
-const callDisconnect = rpc.declare({
-	object: 'nordvpn.easy',
-	method: 'disconnect',
-	timeout: RUNTIME_RPC_TIMEOUT
-});
-
-const callReconnect = rpc.declare({
-	object: 'nordvpn.easy',
-	method: 'reconnect',
-	timeout: RUNTIME_RPC_TIMEOUT
-});
-
 const callStopVpn = rpc.declare({
 	object: 'nordvpn.easy',
 	method: 'stop_vpn',
-	timeout: RUNTIME_RPC_TIMEOUT
-});
-
-const callReconcile = rpc.declare({
-	object: 'nordvpn.easy',
-	method: 'reconcile',
 	timeout: RUNTIME_RPC_TIMEOUT
 });
 
@@ -249,14 +231,8 @@ function callSimpleAction(action) {
 	switch (action) {
 	case 'connect':
 		return callConnect();
-	case 'disconnect':
-		return callDisconnect();
-	case 'reconnect':
-		return callReconnect();
 	case 'stop_vpn':
 		return callStopVpn();
-	case 'reconcile':
-		return callReconcile();
 	case 'rotate':
 		return callRotate();
 	case 'setup':
