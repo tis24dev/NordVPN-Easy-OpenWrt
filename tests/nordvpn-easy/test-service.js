@@ -145,10 +145,16 @@ Promise.resolve().then(async function() {
 	assert.deepEqual(call.args, [ 'UY', true ], 'refresh_servers forwards country and force args');
 	assert.deepEqual(payload.args, [ 'UY', true ], 'refresh_servers preserves rpc payload in stdout');
 
-	const reconcileResult = await loaded.service.execService('reconcile');
-	const reconcileCall = loaded.calls[loaded.calls.length - 1];
-	assert.equal(reconcileResult.code, 0, 'reconcile returns normalized success result');
-	assert.equal(reconcileCall.spec.method, 'reconcile', 'reconcile uses the dedicated ubus method');
+	const connectResult = await loaded.service.execService('connect');
+	const connectCall = loaded.calls[loaded.calls.length - 1];
+	assert.equal(connectResult.code, 0, 'connect returns normalized success result');
+	assert.equal(connectCall.spec.method, 'connect', 'connect uses the dedicated ubus method');
+
+	await assert.rejects(
+		loaded.service.execService('reconcile'),
+		/Unsupported NordVPN Easy action: reconcile/,
+		'legacy reconcile is not exposed from the LuCI service client'
+	);
 
 	const diagnosticsResult = await loaded.service.execService('diagnostics_summary');
 	const diagnosticsCall = loaded.calls[loaded.calls.length - 1];

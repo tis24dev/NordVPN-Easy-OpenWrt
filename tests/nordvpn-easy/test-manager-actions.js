@@ -73,6 +73,9 @@ function loadManagerActionsModule(overrides) {
 			normalizeCountryCode(value) {
 				return String(value || '').trim().toUpperCase();
 			},
+			runtimeStatusIsBusy(status) {
+				return managerData.runtimeStatusIsBusy(status);
+			},
 			emptyServerCatalog() {
 				return { servers: [] };
 			},
@@ -195,6 +198,9 @@ assert.equal(typeof managerActions.renderLocalStatusSnapshot, 'function', 'rende
 assert.equal(managerData.parseEnabledFlag(undefined), false, 'missing enabled option is treated as disabled');
 assert.equal(managerData.parseEnabledFlag('0'), false, 'explicit disabled value is treated as disabled');
 assert.equal(managerData.parseEnabledFlag('1'), true, 'explicit enabled value is treated as enabled');
+assert.equal(managerData.runtimeStatusIsBusy({ operation_status: 'idle' }), false, 'idle runtime status is not busy');
+assert.equal(managerData.runtimeStatusIsBusy({ operation_status: 'busy:connect' }), true, 'busy:action runtime status is busy');
+assert.equal(managerData.runtimeStatusIsBusy({ operation_status: 'idle', operation_lock_state: 'held' }), true, 'held operation lock is busy');
 
 function buildUpdateLocalStatusHarness(serviceOverrides) {
 	return loadManagerActionsModule({
@@ -863,6 +869,9 @@ function buildHandleSaveApplyHarness(options) {
 			},
 			parseLocalStatus(raw) {
 				return JSON.parse(raw || '{}');
+			},
+			runtimeStatusIsBusy(status) {
+				return managerData.runtimeStatusIsBusy(status);
 			}
 		}, {
 			emptyServerCatalog() {
@@ -1378,7 +1387,7 @@ async function testHandleSaveApplyAutoModeClearsManualSelectionAndReconnects() {
 	assert.equal(harness.pollingTransitions[0], 'suspend', 'save/apply suspends polling while committing');
 	assert.equal(harness.pollingTransitions[harness.pollingTransitions.length - 1], 'resume', 'save/apply resumes polling after runtime handling');
 	assert.ok(harness.phaseTransitions.indexOf('saving') !== -1, 'save/apply enters saving phase');
-	assert.ok(harness.phaseTransitions.indexOf('runtime_busy') !== -1, 'runtime reconnect enters runtime-busy phase');
+	assert.ok(harness.phaseTransitions.indexOf('runtime_busy') !== -1, 'apply cycle enters runtime-busy phase');
 	assert.ok(harness.serviceCalls.indexOf('status_json') !== -1, 'save/apply refreshes local status during the flow');
 }
 
@@ -1407,9 +1416,9 @@ async function testHandleSaveApplyReconcilesDisabledRuntimeAfterSave() {
 	await Promise.resolve();
 	await Promise.resolve();
 
-	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn' ], [ 'connect' ] ], 'unchanged enabled config cleanly reconnects a disabled runtime after Save & Apply');
-	assert.equal(harness.state.pendingOperationLabel, '', 'reconnect completion clears pending operation label');
-	assert.ok(harness.serviceCalls.indexOf('status_json') !== -1, 'reconnect flow refreshes status before choosing runtime action');
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn' ], [ 'connect' ] ], 'unchanged enabled config runs stop then connect after Save & Apply');
+	assert.equal(harness.state.pendingOperationLabel, '', 'apply cycle completion clears pending operation label');
+	assert.ok(harness.serviceCalls.indexOf('status_json') !== -1, 'apply cycle refreshes status after runtime actions');
 }
 
 async function testHandleSaveApplyQueuesReconnectWhenSavedCountryDriftsFromPeer() {
@@ -1749,7 +1758,7 @@ async function testAutoReconcileSkipsNonDriftCases() {
 }
 
 async function testAutoReconcileThrottlesRepeatedFailures() {
-	const runError = new Error('reconnect exploded');
+	const runError = new Error('connect exploded');
 	const harness = buildHandleSaveApplyHarness({
 		previousEnabled: true,
 		savedCountry: 'AU',
@@ -1787,7 +1796,7 @@ async function testAutoReconcileThrottlesRepeatedFailures() {
 	await harness.actions.maybeAutoReconcileSelectionDrift(harness.state, driftStatus);
 
 	assert.ok(harness.runtimeActions.length >= 2, 'failed auto apply cycle still runs once');
-	assert.match(harness.notifications[harness.notifications.length - 1].message, /Automatic runtime sync failed: reconnect exploded/, 'auto apply cycle failure is reported once');
+	assert.match(harness.notifications[harness.notifications.length - 1].message, /Automatic runtime sync failed: connect exploded/, 'auto apply cycle failure is reported once');
 	assert.equal(harness.notifications.length, 1, 'throttled auto reconcile does not repeat notifications');
 	assert.equal(harness.state.lastAutoReconcileFailureKey, 'auto:AU:BM', 'throttle records the drift key');
 }
