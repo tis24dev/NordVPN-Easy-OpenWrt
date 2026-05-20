@@ -29,7 +29,6 @@
 					"diagnostics_log",
 					"diagnostics_summary",
 					"public_ip",
-					"public_country",
 					"refresh_countries",
 					"refresh_servers",
 					"server_catalog"
@@ -57,7 +56,6 @@
 					"refresh_servers",
 					"server_catalog",
 					"public_ip",
-					"public_country",
 					"diagnostics",
 					"diagnostics_log",
 					"diagnostics_summary"

@@ -104,12 +104,6 @@ const callPublicIp = rpc.declare({
 	timeout: 45
 });
 
-const callPublicCountry = rpc.declare({
-	object: 'nordvpn.easy',
-	method: 'public_country',
-	timeout: 45
-});
-
 const callDiagnostics = rpc.declare({
 	object: 'nordvpn.easy',
 	method: 'diagnostics',
@@ -277,8 +271,6 @@ function callSimpleAction(action) {
 		return callDisableRuntime();
 	case 'public_ip':
 		return callPublicIp();
-	case 'public_country':
-		return callPublicCountry();
 	default:
 		return null;
 	}

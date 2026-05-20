@@ -104,9 +104,11 @@ Promise.resolve().then(async function() {
 
 	assert.equal(harness.managerPolling.LOCAL_STATUS_POLL_SECONDS, 3,
 		'local status poll interval is exported as 3 seconds');
+	assert.equal(harness.managerPolling.PUBLIC_IP_POLL_SECONDS, 5,
+		'public IP poll interval is exported as 5 seconds');
 	assert.deepEqual(harness.pollers.map(function(entry) {
 		return entry.interval;
-	}), [ 3, 60, 120 ], 'manager pollers use status/public-ip/diagnostics intervals');
+	}), [ 3, 5, 120 ], 'manager pollers use status/public-ip/diagnostics intervals');
 
 	await harness.pollers[0].fn();
 	assert.deepEqual(harness.calls, [ 'status' ], 'first poller refreshes local status');

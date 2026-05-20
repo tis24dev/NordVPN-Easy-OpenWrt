@@ -145,11 +145,9 @@ nordvpn_easy_clear_provision_caches() {
 	rm -f "${SERVER_CATALOG_FILE:-/tmp/nordvpn-easy-servers.json}" \
 		"${SERVER_CATALOG_TS_FILE:-/tmp/nordvpn-easy-servers.timestamp}" 2>/dev/null || true
 
-	if command -v nordvpn_easy_write_runtime_cache_value >/dev/null 2>&1; then
-		nordvpn_easy_write_runtime_cache_value "${NORDVPN_EASY_PUBLIC_IP_CACHE:-}" '' >/dev/null 2>&1 || true
-		nordvpn_easy_write_runtime_cache_value "${NORDVPN_EASY_PUBLIC_COUNTRY_CACHE:-}" '' >/dev/null 2>&1 || true
-		nordvpn_easy_write_runtime_cache_value "${NORDVPN_EASY_LAST_ERROR_CACHE:-}" '' >/dev/null 2>&1 || true
-	fi
+	rm -f "${NORDVPN_EASY_PUBLIC_IP_CACHE:-}" \
+		"${NORDVPN_EASY_PUBLIC_COUNTRY_CACHE:-}" \
+		"${NORDVPN_EASY_LAST_ERROR_CACHE:-}" 2>/dev/null || true
 
 	return 0
 }

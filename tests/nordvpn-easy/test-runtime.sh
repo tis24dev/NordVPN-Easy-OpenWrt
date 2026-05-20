@@ -128,6 +128,16 @@ wg() {
 
 assert_eq 'wireguard' "$(uci get network.wg0.proto)" 'uci fixture exposes current vpn proto'
 
+NORDVPN_EASY_PUBLIC_IP_CACHE="$TMP_DIR/public_ip"
+NORDVPN_EASY_PUBLIC_COUNTRY_CACHE="$TMP_DIR/public_country"
+{
+	printf '%s\n' 'ip=198.51.100.10'
+	printf '%s\n' 'detected_at=1770000000'
+	printf '%s\n' 'detected_at_iso=2026-02-01T00:00:00Z'
+	printf '%s\n' 'source=https://ifconfig.me/ip'
+} > "$NORDVPN_EASY_PUBLIC_IP_CACHE"
+printf '%s\n' 'ES' > "$NORDVPN_EASY_PUBLIC_COUNTRY_CACHE"
+
 STATUS_JSON="$(nordvpn_easy_emit_status_json)"
 
 assert_eq 'stale_recovered' "$(printf '%s' "$STATUS_JSON" | jq -r '.operation_lock_state')" 'status json exposes lock state'
@@ -142,6 +152,11 @@ assert_eq 'true' "$(printf '%s' "$STATUS_JSON" | jq -r '.firewall_mtu_fix')" 'st
 assert_eq '0' "$(printf '%s' "$STATUS_JSON" | jq -r '.handshake_age_seconds')" 'status json exposes handshake age seconds'
 assert_eq 'false' "$(printf '%s' "$STATUS_JSON" | jq -r '.runtime_disabled')" 'status json keeps runtime disabled false'
 assert_eq 'active' "$(printf '%s' "$STATUS_JSON" | jq -r '.vpn_status')" 'status json falls back to ip link when ifstatus probe fails'
+assert_eq '198.51.100.10' "$(printf '%s' "$STATUS_JSON" | jq -r '.public_ip_cached')" 'status json exposes structured public IP cache value'
+assert_eq '1770000000' "$(printf '%s' "$STATUS_JSON" | jq -r '.public_ip_detected_at')" 'status json exposes public IP detection timestamp'
+assert_eq '2026-02-01T00:00:00Z' "$(printf '%s' "$STATUS_JSON" | jq -r '.public_ip_detected_at_iso')" 'status json exposes public IP detection time'
+assert_eq 'https://ifconfig.me/ip' "$(printf '%s' "$STATUS_JSON" | jq -r '.public_ip_source')" 'status json exposes public IP lookup source'
+assert_eq 'ES' "$(printf '%s' "$STATUS_JSON" | jq -r '.public_country_cached')" 'status json exposes cached public country'
 assert_eq 'wg0server' "$(nordvpn_easy_peer_section_name 'wg0')" 'peer section lookup falls back to exact section match'
 
 uci_missing_station() {

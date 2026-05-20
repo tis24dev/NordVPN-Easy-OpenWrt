@@ -691,29 +691,19 @@ function publicLookupsAllowed(state, status) {
 			!!runtimeStatus.desired_enabled &&
 			!runtimeStatus.runtime_disabled &&
 			!runtimeStatus.interface_disabled &&
-			!runtimeOperationIsBusy(state, runtimeStatus) &&
 			!managerUI.isDisableRequested(state);
 }
 
 function clearPublicLookupDisplay(state) {
 	state.currentPublicIp = '';
 	state.currentPublicCountry = '';
-	state.currentPublicCountryIp = '';
 	managerUI.replaceStatusText(managerUI.ids.PUBLIC_IP_STATUS_ID, _('Unavailable'));
 	managerUI.replaceStatusText(managerUI.ids.PUBLIC_COUNTRY_STATUS_ID, _('Unavailable'));
 }
 
-function updateCachedPublicLookupState(state, status) {
-	const cachedPublicIp = normalizePublicIpValue(status.public_ip_cached);
-	const cachedPublicCountry = managerData.normalizeCountryCode(status.public_country_cached || '');
-
-	if (cachedPublicIp)
-		state.cachedPublicIp = cachedPublicIp;
-
-	if (cachedPublicCountry) {
-		state.cachedPublicCountry = cachedPublicCountry;
-		state.cachedPublicCountryIp = cachedPublicIp || state.cachedPublicCountryIp || '';
-	}
+function syncPublicLookupStateFromStatus(state, status) {
+	state.currentPublicIp = normalizePublicIpValue(status.public_ip_cached) || state.currentPublicIp || '';
+	state.currentPublicCountry = managerData.normalizeCountryCode(status.public_country_cached || '') || state.currentPublicCountry || '';
 }
 
 function renderPublicLookupStatus(state, status) {
@@ -724,18 +714,18 @@ function renderPublicLookupStatus(state, status) {
 
 	managerUI.replaceStatusText(
 		managerUI.ids.PUBLIC_IP_STATUS_ID,
-		state.currentPublicIp || state.cachedPublicIp || _('Unavailable')
+		state.currentPublicIp || _('Unavailable')
 	);
 	managerUI.replaceStatusText(
 		managerUI.ids.PUBLIC_COUNTRY_STATUS_ID,
-		state.currentPublicCountry || state.cachedPublicCountry || _('Unavailable')
+		state.currentPublicCountry || _('Unavailable')
 	);
 }
 
 function renderLocalStatusDetails(state, status) {
 	const runtimeStatus = status || managerData.parseLocalStatus('{}');
 
-	updateCachedPublicLookupState(state, runtimeStatus);
+	syncPublicLookupStateFromStatus(state, runtimeStatus);
 	managerUI.replaceStatusText(managerUI.ids.CURRENT_SERVER_STATUS_ID, managerUI.currentServerSummaryFromStatus(runtimeStatus, state));
 	managerUI.replaceStatusText(managerUI.ids.PREFERRED_SERVER_STATUS_ID, managerUI.preferredServerSummaryFromStatus(runtimeStatus));
 	managerUI.replaceStatusText(managerUI.ids.ENDPOINT_STATUS_ID, runtimeStatus.endpoint || _('Unavailable'));
@@ -850,9 +840,26 @@ function renderLocalStatusSnapshot(state, status) {
 	return runtimeStatus;
 }
 
+function parsePublicIpSnapshot(res) {
+	const raw = service.parseExecJsonResponse(res, null);
+	const fallbackIp = (res && res.code === 0) ? normalizePublicIpValue(res.stdout) : '';
+	const snapshot = {
+		ip: fallbackIp,
+		changed: false,
+		country: ''
+	};
+
+	if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+		snapshot.ip = normalizePublicIpValue(raw.ip || '');
+		snapshot.changed = !!raw.changed;
+		snapshot.country = managerData.normalizeCountryCode(raw.country || '');
+	}
+
+	return snapshot;
+}
+
 function updatePublicIp(state, options) {
 	const opts = options || {};
-	const extraArgs = opts.quiet ? [ 'quiet' ] : [];
 
 	if (state.pollingSuspended && !opts.force)
 		return Promise.resolve();
@@ -870,17 +877,13 @@ function updatePublicIp(state, options) {
 			return Promise.resolve();
 		}
 
-		return service.execService('public_ip', extraArgs).then(function(res) {
-			const publicIp = (res.code === 0) ? normalizePublicIpValue(res.stdout) : '';
-			const previousPublicIp = state.currentPublicIp;
-			const shouldRefreshCountry = !!publicIp && (
-				opts.force ||
-				publicIp !== previousPublicIp ||
-				!state.currentPublicCountry ||
-				state.currentPublicCountryIp !== publicIp
-			);
-
+		return service.execService('public_ip').then(function(res) {
+			const snapshot = parsePublicIpSnapshot(res);
+			const publicIp = (res.code === 0) ? snapshot.ip : '';
 			state.currentPublicIp = publicIp;
+			state.currentPublicCountry = snapshot.changed
+				? snapshot.country
+				: (snapshot.country || state.currentPublicCountry || '');
 			managerUI.replaceStatusText(
 				managerUI.ids.PUBLIC_IP_STATUS_ID,
 				publicIp || _('Unavailable')
@@ -888,71 +891,20 @@ function updatePublicIp(state, options) {
 
 			if (!publicIp) {
 				state.currentPublicCountry = '';
-				state.currentPublicCountryIp = '';
 				managerUI.replaceStatusText(managerUI.ids.PUBLIC_COUNTRY_STATUS_ID, _('Unavailable'));
 				managerUI.updateCountryMatchStatus(state);
 				return Promise.resolve();
 			}
 
-			if (!shouldRefreshCountry)
-				return Promise.resolve();
-
-			managerUI.replaceStatusText(managerUI.ids.PUBLIC_COUNTRY_STATUS_ID, _('Checking...'));
-			return updatePublicCountry(state, {
-				quiet: opts.quiet,
-				force: !!opts.force,
-				expectedPublicIp: publicIp
-			});
+			managerUI.replaceStatusText(
+				managerUI.ids.PUBLIC_COUNTRY_STATUS_ID,
+				state.currentPublicCountry || _('Unavailable')
+			);
+			managerUI.updateCountryMatchStatus(state);
 		}).catch(function() {
 			state.currentPublicIp = '';
 			state.currentPublicCountry = '';
-			state.currentPublicCountryIp = '';
 			managerUI.replaceStatusText(managerUI.ids.PUBLIC_IP_STATUS_ID, _('Unavailable'));
-			managerUI.replaceStatusText(managerUI.ids.PUBLIC_COUNTRY_STATUS_ID, _('Unavailable'));
-			managerUI.updateCountryMatchStatus(state);
-		});
-	});
-}
-
-function updatePublicCountry(state, options) {
-	const opts = options || {};
-	const extraArgs = opts.quiet ? [ 'quiet' ] : [];
-	const expectedPublicIp = normalizePublicIpValue(opts.expectedPublicIp || state.currentPublicIp);
-
-	if (state.pollingSuspended && !opts.force)
-		return Promise.resolve();
-
-	if (!publicLookupsAllowed(state, state.currentLocalStatus)) {
-		clearPublicLookupDisplay(state);
-		managerUI.updateCountryMatchStatus(state);
-		return Promise.resolve();
-	}
-
-	return managerStore.runExclusive(state, 'publicCountry', function() {
-		if (!publicLookupsAllowed(state, state.currentLocalStatus)) {
-			clearPublicLookupDisplay(state);
-			managerUI.updateCountryMatchStatus(state);
-			return Promise.resolve();
-		}
-
-		if (!expectedPublicIp) {
-			state.currentPublicCountry = '';
-			state.currentPublicCountryIp = '';
-			managerUI.replaceStatusText(managerUI.ids.PUBLIC_COUNTRY_STATUS_ID, _('Unavailable'));
-			managerUI.updateCountryMatchStatus(state);
-			return Promise.resolve();
-		}
-
-		return service.execService('public_country', extraArgs).then(function(res) {
-			const publicCountry = managerData.normalizeCountryCode(res.stdout ? res.stdout.trim() : '');
-
-			state.currentPublicCountry = (res.code === 0 && publicCountry) ? publicCountry : '';
-			state.currentPublicCountryIp = state.currentPublicCountry ? expectedPublicIp : '';
-			managerUI.replaceStatusText(managerUI.ids.PUBLIC_COUNTRY_STATUS_ID, state.currentPublicCountry || _('Unavailable'));
-			managerUI.updateCountryMatchStatus(state);
-		}).catch(function() {
-			state.currentPublicCountry = '';
-			state.currentPublicCountryIp = '';
 			managerUI.replaceStatusText(managerUI.ids.PUBLIC_COUNTRY_STATUS_ID, _('Unavailable'));
 			managerUI.updateCountryMatchStatus(state);
 		});
@@ -1478,7 +1430,6 @@ function handleSaveApply(viewState, state, ev, mode) {
 	driftEvaluationAllowed: driftEvaluationAllowed,
 	suppressDriftUi: suppressDriftUi,
 	updatePublicIp: updatePublicIp,
-	updatePublicCountry: updatePublicCountry,
 	updateLocalStatus: updateLocalStatus,
 	updateDiagnosticsSummary: updateDiagnosticsSummary,
 	onCountryChanged: onCountryChanged,

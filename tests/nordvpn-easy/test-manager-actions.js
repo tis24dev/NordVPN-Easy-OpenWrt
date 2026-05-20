@@ -466,10 +466,6 @@ function buildUpdateLocalStatusState() {
 		appliedEnabled: true,
 		currentPublicIp: '',
 		currentPublicCountry: '',
-		currentPublicCountryIp: '',
-		cachedPublicIp: '',
-		cachedPublicCountry: '',
-		cachedPublicCountryIp: '',
 		appliedCountryCode: 'UY'
 	};
 }
@@ -500,114 +496,6 @@ async function testUpdateLocalStatusMarksSnapshotsStaleOnRejectedExec() {
 	assert.deepEqual(normalizeValue(status), normalizeValue(buildUpdateLocalStatusState().currentLocalStatus), 'rejected status_json keeps the last known runtime status for display');
 	assert.equal(state.currentLocalStatusFresh, false, 'rejected status_json marks runtime status as stale');
 	assert.equal(state.currentLocalStatusLastUpdated, 0, 'rejected status_json clears the freshness timestamp');
-}
-
-async function testUpdateLocalStatusDoesNotClobberLivePublicLookupWithCache() {
-	const replacements = {};
-	const actions = loadManagerActionsModule({
-		managerData: {
-			normalizeCountryCode(value) {
-				return String(value || '').trim().toUpperCase();
-			},
-			parseLocalStatus(raw) {
-				return JSON.parse(raw || '{}');
-			}
-		},
-		managerStore: {
-			PHASES: { RUNTIME_BUSY: 'runtime_busy' },
-			runExclusive(_state, _key, factory) {
-				return Promise.resolve().then(factory);
-			},
-			clearError() {},
-			setError() {},
-			syncPhase() {},
-			setPhase() {}
-		},
-		managerUI: {
-			ids: {
-				CURRENT_SERVER_STATUS_ID: 'current',
-				PREFERRED_SERVER_STATUS_ID: 'preferred',
-				ENDPOINT_STATUS_ID: 'endpoint',
-				HANDSHAKE_STATUS_ID: 'handshake',
-				TRANSFER_STATUS_ID: 'transfer',
-				OPERATION_STATUS_ID: 'operation',
-				LAST_ERROR_STATUS_ID: 'last_error',
-				PUBLIC_IP_STATUS_ID: 'public_ip',
-				PUBLIC_COUNTRY_STATUS_ID: 'public_country'
-			},
-			replaceStatusText(id, value) {
-				replacements[id] = value;
-			},
-			setManagerControlsDisabled() {},
-			setVpnStatusIndicator() {},
-			updateCountryMatchStatus() {},
-			updateServerSelectionState() {},
-			currentServerSummaryFromStatus() {
-				return '';
-			},
-			preferredServerSummaryFromStatus() {
-				return '';
-			},
-			isDisableRequested() {
-				return false;
-			}
-		},
-		service: {
-			parseExecJsonResponse(res, fallback) {
-				if (!res || res.code !== 0)
-					return fallback;
-
-				return JSON.parse(res.stdout || '');
-			},
-			execService() {
-				return Promise.resolve({
-					code: 0,
-					stdout: JSON.stringify({
-						desired_enabled: true,
-						operation_status: 'idle',
-						runtime_disabled: false,
-						interface_disabled: false,
-						public_ip_cached: '198.51.100.10',
-						public_country_cached: 'US'
-					}),
-					stderr: ''
-				});
-			}
-		},
-		_: function(message) {
-			return {
-				format: function() {
-					let index = 0;
-					const args = arguments;
-
-					return String(message).replace(/%[sd]/g, function() {
-						return String(args[index++]);
-					});
-				},
-				toString: function() {
-					return String(message);
-				},
-				valueOf: function() {
-					return String(message);
-				}
-			};
-		}
-	}).managerActions;
-	const state = buildUpdateLocalStatusState();
-
-	state.currentPublicIp = '203.0.113.20';
-	state.currentPublicCountry = 'IT';
-	state.currentPublicCountryIp = '203.0.113.20';
-
-	await actions.updateLocalStatus(state);
-
-	assert.equal(state.currentPublicIp, '203.0.113.20', 'cached status does not replace fresher live public IP');
-	assert.equal(state.currentPublicCountry, 'IT', 'cached status does not replace fresher live public country');
-	assert.equal(state.currentPublicCountryIp, '203.0.113.20', 'cached status does not replace fresher live country IP binding');
-	assert.equal(state.cachedPublicIp, '198.51.100.10', 'cached public IP is retained separately');
-	assert.equal(state.cachedPublicCountry, 'US', 'cached public country is retained separately');
-	assert.equal(replacements.public_ip, '203.0.113.20', 'public IP display prefers live value over cached status');
-	assert.equal(replacements.public_country, 'IT', 'public country display prefers live value over cached status');
 }
 
 function testRenderLocalStatusSnapshotClearsDisabledPlaceholders() {
@@ -689,11 +577,7 @@ function testRenderLocalStatusSnapshotClearsDisabledPlaceholders() {
 		currentOperationStatus: 'idle',
 		pendingOperationLabel: '',
 		currentPublicIp: '203.0.113.20',
-		currentPublicCountry: 'IT',
-		currentPublicCountryIp: '203.0.113.20',
-		cachedPublicIp: '',
-		cachedPublicCountry: '',
-		cachedPublicCountryIp: ''
+		currentPublicCountry: 'IT'
 	};
 
 	actions.renderLocalStatusSnapshot(state, status);
@@ -709,8 +593,6 @@ function testRenderLocalStatusSnapshotClearsDisabledPlaceholders() {
 	assert.equal(replacements.public_country, 'Unavailable', 'disabled status does not expose stale public country data');
 	assert.equal(state.currentPublicIp, '', 'disabled rendering clears live public IP state');
 	assert.equal(state.currentPublicCountry, '', 'disabled rendering clears live public country state');
-	assert.equal(state.cachedPublicIp, '198.51.100.10', 'cached public IP is retained separately for later enabled states');
-	assert.equal(state.cachedPublicCountry, 'US', 'cached public country is retained separately for later enabled states');
 	assert.deepEqual(indicators.vpn, { state: 'inactive', label: 'Disabled' }, 'disabled status renders the VPN indicator as disabled');
 	assert.deepEqual(controls, [ false ], 'disabled idle status leaves manager controls enabled');
 }
@@ -758,12 +640,10 @@ async function testPublicLookupsReturnEarlyWhenRuntimeDisabled() {
 			interface_disabled: true
 		},
 		currentPublicIp: '203.0.113.20',
-		currentPublicCountry: 'IT',
-		currentPublicCountryIp: '203.0.113.20'
+		currentPublicCountry: 'IT'
 	};
 
 	await actions.updatePublicIp(state, { force: true });
-	await actions.updatePublicCountry(state, { force: true, expectedPublicIp: '203.0.113.20' });
 
 	assert.deepEqual(networkCalls, [], 'disabled public lookups do not invoke service exec');
 	assert.deepEqual(lockCalls, [], 'disabled public lookups return before acquiring operation locks');
@@ -771,8 +651,161 @@ async function testPublicLookupsReturnEarlyWhenRuntimeDisabled() {
 	assert.equal(replacements.public_country, 'Unavailable', 'disabled public country lookup renders unavailable');
 	assert.equal(state.currentPublicIp, '', 'disabled public IP lookup clears live IP state');
 	assert.equal(state.currentPublicCountry, '', 'disabled public country lookup clears live country state');
-	assert.equal(state.currentPublicCountryIp, '', 'disabled public country lookup clears live country binding');
-	assert.equal(countryMatchUpdates, 2, 'disabled public lookups refresh country-match status without network calls');
+	assert.equal(countryMatchUpdates, 1, 'disabled public lookups refresh country-match status without network calls');
+}
+
+async function testPublicIpPollUpdatesCountryFromSingleSnapshot() {
+	const serviceCalls = [];
+	const replacements = {};
+	let countryMatchUpdates = 0;
+	const actions = loadManagerActionsModule({
+		managerStore: {
+			runExclusive(_state, key, factory) {
+				serviceCalls.push('lock:' + key);
+				return Promise.resolve().then(factory);
+			}
+		},
+		managerUI: {
+			ids: {
+				PUBLIC_IP_STATUS_ID: 'public_ip',
+				PUBLIC_COUNTRY_STATUS_ID: 'public_country'
+			},
+			replaceStatusText(id, value) {
+				replacements[id] = String(value);
+			},
+			updateCountryMatchStatus() {
+				countryMatchUpdates++;
+			},
+			isDisableRequested() {
+				return false;
+			}
+		},
+		service: {
+			parseExecJsonResponse(res, fallback) {
+				try {
+					return JSON.parse((res && res.stdout) || '');
+				} catch (e) {
+					return fallback;
+				}
+			},
+			execService(action) {
+				serviceCalls.push(action);
+				if (action === 'public_ip') {
+					return Promise.resolve({
+						code: 0,
+						stdout: JSON.stringify({
+							ip: '203.0.113.20',
+							changed: false,
+							detected_at: 42,
+							detected_at_iso: '2026-05-20T16:00:00Z',
+							source: 'https://ifconfig.me/ip',
+							country: 'IT'
+						}),
+						stderr: ''
+					});
+				}
+
+				return Promise.reject(new Error('country lookup should not run when IP is unchanged'));
+			}
+		}
+	}).managerActions;
+	const state = {
+		pollingSuspended: false,
+		appliedEnabled: true,
+		currentLocalStatus: {
+			desired_enabled: true,
+			runtime_disabled: false,
+			interface_disabled: false
+		},
+		currentPublicIp: '203.0.113.20',
+		currentPublicCountry: ''
+	};
+
+	await actions.updatePublicIp(state);
+
+	assert.deepEqual(serviceCalls, [ 'lock:publicIp', 'public_ip' ],
+		'public IP poll uses one backend action');
+	assert.equal(replacements.public_ip, '203.0.113.20', 'unchanged public IP still updates the display');
+	assert.equal(replacements.public_country, 'IT', 'public IP snapshot updates the country display');
+	assert.equal(countryMatchUpdates, 1, 'public IP snapshot refreshes country-match once');
+}
+
+async function testPublicIpChangeReplacesCountryFromSnapshot() {
+	const serviceCalls = [];
+	const replacements = {};
+	let countryMatchUpdates = 0;
+	const actions = loadManagerActionsModule({
+		managerStore: {
+			runExclusive(_state, key, factory) {
+				serviceCalls.push('lock:' + key);
+				return Promise.resolve().then(factory);
+			}
+		},
+		managerUI: {
+			ids: {
+				PUBLIC_IP_STATUS_ID: 'public_ip',
+				PUBLIC_COUNTRY_STATUS_ID: 'public_country'
+			},
+			replaceStatusText(id, value) {
+				replacements[id] = String(value);
+			},
+			updateCountryMatchStatus() {
+				countryMatchUpdates++;
+			},
+			isDisableRequested() {
+				return false;
+			}
+		},
+		service: {
+			parseExecJsonResponse(res, fallback) {
+				try {
+					return JSON.parse((res && res.stdout) || '');
+				} catch (e) {
+					return fallback;
+				}
+			},
+			execService(action, args) {
+				serviceCalls.push([ action, args || [] ]);
+				if (action === 'public_ip') {
+					return Promise.resolve({
+						code: 0,
+						stdout: JSON.stringify({
+							ip: '198.51.100.55',
+							changed: true,
+							detected_at: 43,
+							detected_at_iso: '2026-05-20T16:00:05Z',
+							source: 'https://ifconfig.me/ip',
+							country: 'UY'
+						}),
+						stderr: ''
+					});
+				}
+				return Promise.reject(new Error('unexpected service action: ' + action));
+			}
+		}
+	}).managerActions;
+	const state = {
+		pollingSuspended: false,
+		appliedEnabled: true,
+		currentLocalStatus: {
+			desired_enabled: true,
+			runtime_disabled: false,
+			interface_disabled: false
+		},
+		currentPublicIp: '203.0.113.20',
+		currentPublicCountry: 'IT'
+	};
+
+	await actions.updatePublicIp(state);
+
+	assert.deepEqual(normalizeValue(serviceCalls), [
+		'lock:publicIp',
+		[ 'public_ip', [] ]
+	], 'changed public IP is handled by one backend call');
+	assert.equal(replacements.public_ip, '198.51.100.55', 'changed public IP updates the display');
+	assert.equal(replacements.public_country, 'UY', 'changed public IP renders the refreshed country');
+	assert.equal(state.currentPublicCountry, 'UY', 'changed public IP stores the refreshed country');
+	assert.equal(countryMatchUpdates, 1, 'changed public IP refreshes country-match after the snapshot');
 }
 
 function testRenderLocalStatusSnapshotHandlesBusyOperation() {
@@ -860,11 +893,7 @@ function testRenderLocalStatusSnapshotHandlesBusyOperation() {
 		currentOperationStatus: 'busy',
 		pendingOperationLabel: '',
 		currentPublicIp: '',
-		currentPublicCountry: '',
-		currentPublicCountryIp: '',
-		cachedPublicIp: '',
-		cachedPublicCountry: '',
-		cachedPublicCountryIp: ''
+		currentPublicCountry: ''
 	};
 
 	actions.renderLocalStatusSnapshot(state, status);
@@ -1172,9 +1201,6 @@ function buildHandleSaveApplyHarness(options) {
 				if (action === 'public_ip')
 					return Promise.resolve({ code: 1, stdout: '', stderr: '' });
 
-				if (action === 'public_country')
-					return Promise.resolve({ code: 1, stdout: '', stderr: '' });
-
 				return Promise.resolve({ code: 0, stdout: '', stderr: '' });
 			},
 			runActions(actions) {
@@ -1299,10 +1325,6 @@ function buildHandleSaveApplyHarness(options) {
 		appliedCountryCode: opts.previousCountry || 'UY',
 		currentPublicIp: '',
 		currentPublicCountry: '',
-		currentPublicCountryIp: '',
-		cachedPublicIp: '',
-		cachedPublicCountry: '',
-		cachedPublicCountryIp: '',
 		serverCatalogIndex: Object.assign({ uy123: selectedServer }, opts.serverCatalogIndex || {}),
 		inFlight: {}
 	}, opts.state || {});
@@ -1930,9 +1952,10 @@ function testParseDiagnosticsSummaryNormalizesPayload() {
 Promise.resolve().then(async function() {
 	await testUpdateLocalStatusMarksSnapshotsStaleOnFailedResponse();
 	await testUpdateLocalStatusMarksSnapshotsStaleOnRejectedExec();
-	await testUpdateLocalStatusDoesNotClobberLivePublicLookupWithCache();
 	testRenderLocalStatusSnapshotClearsDisabledPlaceholders();
 	await testPublicLookupsReturnEarlyWhenRuntimeDisabled();
+	await testPublicIpPollUpdatesCountryFromSingleSnapshot();
+	await testPublicIpChangeReplacesCountryFromSnapshot();
 	testRenderLocalStatusSnapshotHandlesBusyOperation();
 	testSaveApplyTransitionSuppressesConnectedAndDrift();
 	await testHandleSaveApplyRejectsManualModeWithoutCountry();

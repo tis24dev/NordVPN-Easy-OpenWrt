@@ -6,6 +6,7 @@
 'require poll';
 
 const LOCAL_STATUS_POLL_SECONDS = 3;
+const PUBLIC_IP_POLL_SECONDS = 5;
 
 function documentIsHidden() {
 	return (typeof document !== 'undefined') && !!document.hidden;
@@ -16,6 +17,10 @@ function shouldSkipBackgroundPoll(state) {
 		state.phase === managerStore.PHASES.SAVING ||
 		managerActions.runtimeOperationIsBusy(state, state.currentLocalStatus) ||
 		documentIsHidden();
+}
+
+function shouldSkipPublicIpPoll(state) {
+	return state.pollingSuspended || documentIsHidden();
 }
 
 function start(state) {
@@ -32,11 +37,11 @@ function start(state) {
 	}, LOCAL_STATUS_POLL_SECONDS);
 
 	poll.add(function() {
-		if (shouldSkipBackgroundPoll(state) || !state.appliedEnabled)
+		if (shouldSkipPublicIpPoll(state) || !state.appliedEnabled)
 			return Promise.resolve();
 
 		return managerActions.updatePublicIp(state, { quiet: true });
-	}, 60);
+	}, PUBLIC_IP_POLL_SECONDS);
 
 	poll.add(function() {
 		if (shouldSkipBackgroundPoll(state) || !state.appliedEnabled)
@@ -48,5 +53,6 @@ function start(state) {
 
 return baseclass.extend({
 	LOCAL_STATUS_POLL_SECONDS: LOCAL_STATUS_POLL_SECONDS,
+	PUBLIC_IP_POLL_SECONDS: PUBLIC_IP_POLL_SECONDS,
 	start: start
 });

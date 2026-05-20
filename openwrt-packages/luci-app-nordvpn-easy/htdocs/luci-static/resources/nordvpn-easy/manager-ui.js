@@ -246,7 +246,7 @@ function updateCountryMatchStatus(state) {
 	const runtimeStatus = state.currentLocalStatus || {};
 	const expectedCountry = managerData.normalizeCountryCode(state.appliedCountryCode);
 	const actualCountry = managerData.normalizeCountryCode(
-		state.currentPublicCountry || runtimeStatus.current_server_country || ''
+		state.currentPublicCountry || ''
 	);
 
 	if (state.saveApplyInProgress || state.pendingOperationLabel ||
