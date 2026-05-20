@@ -44,7 +44,7 @@ function parseDiagnosticsLoadResult(summaryResult) {
 
 	if (summaryResult.code != null || summaryResult.stdout != null || summaryResult.message != null) {
 		if (summaryResult.stdout)
-			payload = service.parseJson(summaryResult.stdout, null);
+			payload = managerData.parseJson(summaryResult.stdout, null);
 
 		if (!payload)
 			payload = service.parseExecJsonResponse(summaryResult, null);
