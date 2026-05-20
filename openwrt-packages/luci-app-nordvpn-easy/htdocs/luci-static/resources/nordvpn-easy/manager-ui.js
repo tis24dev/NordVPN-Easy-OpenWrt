@@ -249,6 +249,10 @@ function updateCountryMatchStatus(state) {
 		state.currentPublicCountry || runtimeStatus.current_server_country || ''
 	);
 
+	if (state.saveApplyInProgress || state.pendingOperationLabel ||
+		state.phase === 'saving' || state.phase === 'runtime_busy')
+		return setCountryMatchIndicator('checking', _('Applying'));
+
 	if (!state.appliedEnabled || state.currentLocalStatus.runtime_disabled || state.currentLocalStatus.interface_disabled || isDisableRequested(state))
 		return setCountryMatchIndicator('inactive', _('Inactive'));
 

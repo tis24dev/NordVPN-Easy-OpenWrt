@@ -93,6 +93,9 @@ function loadManagerActionsModule(overrides) {
 			},
 			diagnosticsHasAlert(summary) {
 				return managerData.diagnosticsHasAlert(summary);
+			},
+			hideSelectionDriftDiagnostics(summary) {
+				return managerData.hideSelectionDriftDiagnostics(summary);
 			}
 		},
 		managerFormat: {
@@ -874,6 +877,128 @@ function testRenderLocalStatusSnapshotHandlesBusyOperation() {
 	assert.deepEqual(indicators.vpn, { state: 'starting', label: 'Activating' }, 'busy status renders an activating VPN indicator');
 	assert.equal(countryMatchUpdates, 1, 'busy status updates country-match indicator once');
 	assert.equal(serverSelectionUpdates, 1, 'busy status updates server-selection controls once');
+}
+
+function testSaveApplyTransitionSuppressesConnectedAndDrift() {
+	const diagnosticsBanners = [];
+	const actions = loadManagerActionsModule({
+		managerStore: {
+			PHASES: {
+				SAVING: 'saving',
+				RUNTIME_BUSY: 'runtime_busy'
+			},
+			setPhase(state, phase) {
+				state.phase = phase;
+			}
+		},
+		managerUI: {
+			ids: {
+				OPERATION_STATUS_ID: 'operation',
+				CURRENT_SERVER_STATUS_ID: 'current',
+				ENDPOINT_STATUS_ID: 'endpoint',
+				HANDSHAKE_STATUS_ID: 'handshake'
+			},
+			replaceStatusText(id, value) {},
+			setManagerControlsDisabled() {},
+			setVpnStatusIndicator(state, label) {
+				diagnosticsBanners.vpn = { state: state, label: String(label) };
+			},
+			updateCountryMatchStatus() {},
+			updateServerSelectionState() {},
+			currentServerSummaryFromStatus() {
+				return 'TH - Bangkok - th30.nordvpn.com';
+			},
+			preferredServerSummaryFromStatus() {
+				return 'Automatic / Best recommended';
+			},
+			isDisableRequested() {
+				return false;
+			},
+			updateDiagnosticsBanner(summary) {
+				diagnosticsBanners.summary = summary;
+				diagnosticsBanners.summaryHidden = !managerData.diagnosticsHasAlert(summary);
+			}
+		}
+	}).managerActions;
+	const driftSummary = {
+		primary_finding: {
+			code: 'selection.drift',
+			message: 'country drift',
+			action: 'Run Save & Apply',
+			severity: 'warning',
+			priority: 150
+		},
+		findings: [
+			{
+				code: 'selection.drift',
+				message: 'country drift',
+				action: 'Run Save & Apply',
+				severity: 'warning',
+				priority: 150
+			}
+		]
+	};
+	const status = {
+		desired_enabled: true,
+		runtime_disabled: false,
+		interface_disabled: false,
+		runtime_configured: true,
+		vpn_status: 'active',
+		connected: true,
+		operation_status: 'idle',
+		selected_country: 'ES',
+		current_server_country: 'TH',
+		endpoint: '45.80.184.45:51820',
+		latest_handshake: '1 minute ago',
+		transfer_rx: '43 KiB',
+		transfer_tx: '30 KiB',
+		last_error: ''
+	};
+	const state = {
+		appliedEnabled: true,
+		appliedCountryCode: 'ES',
+		currentLocalStatus: status,
+		currentOperationStatus: 'busy:configuration',
+		pendingOperationLabel: 'configuration',
+		saveApplyInProgress: true,
+		phase: 'saving',
+		currentDiagnosticsSummary: driftSummary
+	};
+
+	actions.renderLocalStatusSnapshot(state, status);
+	actions.renderDiagnosticsSnapshot(state, driftSummary, true);
+
+	assert.deepEqual(
+		diagnosticsBanners.vpn,
+		{ state: 'stopping', label: 'Applying changes' },
+		'Save & Apply transition shows interrupted connection instead of connected'
+	);
+	assert.equal(
+		diagnosticsBanners.summaryHidden,
+		true,
+		'drift banner stays hidden until Save & Apply finishes'
+	);
+	assert.equal(
+		actions.driftEvaluationAllowed(state),
+		false,
+		'drift evaluation is disabled during Save & Apply'
+	);
+
+	state.saveApplyInProgress = false;
+	state.pendingOperationLabel = '';
+	state.phase = 'idle';
+
+	assert.equal(
+		actions.driftEvaluationAllowed(state),
+		true,
+		'drift evaluation resumes after Save & Apply completes'
+	);
+	actions.renderDiagnosticsSnapshot(state, driftSummary, true);
+	assert.equal(
+		managerData.diagnosticsHasAlert(diagnosticsBanners.summary),
+		true,
+		'selection.drift is shown only after Save & Apply completes'
+	);
 }
 
 function buildHandleSaveApplyHarness(options) {
@@ -1724,6 +1849,7 @@ Promise.resolve().then(async function() {
 	testRenderLocalStatusSnapshotClearsDisabledPlaceholders();
 	await testPublicLookupsReturnEarlyWhenRuntimeDisabled();
 	testRenderLocalStatusSnapshotHandlesBusyOperation();
+	testSaveApplyTransitionSuppressesConnectedAndDrift();
 	await testHandleSaveApplyRejectsManualModeWithoutCountry();
 	await testHandleSaveApplyRejectsManualModeWithoutCatalogServer();
 	await testHandleSaveApplyCancellationStopsRuntimeChange();

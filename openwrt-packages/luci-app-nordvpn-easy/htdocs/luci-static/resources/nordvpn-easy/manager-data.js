@@ -182,6 +182,39 @@ function diagnosticsHasAlert(summary) {
 	return code !== '' && code !== 'none';
 }
 
+function hideSelectionDriftDiagnostics(summary) {
+	const primary = (summary && summary.primary_finding) || {};
+	const findings = (summary && summary.findings) || [];
+
+	if (primary.code !== 'selection.drift')
+		return summary;
+
+	const remaining = findings.filter(function(finding) {
+		return finding.code !== 'selection.drift';
+	});
+
+	if (!remaining.length)
+		return emptyDiagnosticsSummary();
+
+	const nextPrimary = remaining.reduce(function(best, finding) {
+		const bestPriority = Number((best && best.priority) || 0);
+		const findingPriority = Number(finding.priority || 0);
+
+		return findingPriority > bestPriority ? finding : best;
+	}, remaining[0]);
+
+	return Object.assign({}, summary, {
+		primary_finding: {
+			code: nextPrimary.code,
+			message: nextPrimary.message,
+			action: nextPrimary.action,
+			severity: nextPrimary.severity,
+			priority: nextPrimary.priority
+		},
+		findings: remaining
+	});
+}
+
 function isDiagnosticsSummaryPayload(value) {
 	return !!value && typeof value === 'object' && !Array.isArray(value) &&
 		(Object.prototype.hasOwnProperty.call(value, 'generated_at') ||
@@ -210,5 +243,6 @@ return baseclass.extend({
 	emptyDiagnosticsSummary: emptyDiagnosticsSummary,
 	parseDiagnosticsSummary: parseDiagnosticsSummary,
 	diagnosticsHasAlert: diagnosticsHasAlert,
+	hideSelectionDriftDiagnostics: hideSelectionDriftDiagnostics,
 	isDiagnosticsSummaryPayload: isDiagnosticsSummaryPayload
 });

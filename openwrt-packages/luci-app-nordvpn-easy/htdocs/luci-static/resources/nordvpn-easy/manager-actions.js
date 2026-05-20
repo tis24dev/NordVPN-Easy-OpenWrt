@@ -183,10 +183,8 @@ function autoReconcileIsAllowed(state, status, drift) {
 
 	return !!drift &&
 		!!state &&
-		!state.saveApplyInProgress &&
+		driftEvaluationAllowed(state) &&
 		!runtimeActionCooldownActive(state) &&
-		state.phase !== managerStore.PHASES.SAVING &&
-		state.phase !== managerStore.PHASES.RUNTIME_BUSY &&
 		!!state.appliedEnabled &&
 		!!runtimeStatus.desired_enabled &&
 		!!runtimeStatus.runtime_configured &&
@@ -552,14 +550,35 @@ function normalizePublicIpValue(value) {
 	return publicIp;
 }
 
+function driftEvaluationAllowed(state) {
+	if (!state)
+		return false;
+
+	if (state.saveApplyInProgress || state.pendingOperationLabel)
+		return false;
+
+	if (state.phase === 'saving' || state.phase === 'runtime_busy')
+		return false;
+
+	return true;
+}
+
+function configurationTransitionActive(state) {
+	return !driftEvaluationAllowed(state);
+}
+
 function runtimeOperationIsBusy(state, status) {
 	const runtimeStatus = status || (state && state.currentLocalStatus) || {};
 	const operationStatus = String(runtimeStatus.operation_status || (state && state.currentOperationStatus) || 'idle');
 
-	return !!(state && state.pendingOperationLabel) ||
+	return configurationTransitionActive(state) ||
 		operationStatus === 'busy' ||
 		operationStatus.indexOf('busy:') === 0 ||
 		String(runtimeStatus.operation_lock_state || 'none') === 'held';
+}
+
+function suppressDriftUi(state) {
+	managerUI.updateDiagnosticsBanner(managerData.emptyDiagnosticsSummary());
 }
 
 function publicLookupsAllowed(state, status) {
@@ -626,6 +645,26 @@ function renderLocalStatusDetails(state, status) {
 	renderPublicLookupStatus(state, runtimeStatus);
 }
 
+function renderApplyingTransitionUi(state) {
+	const label = state.pendingOperationLabel || _('configuration');
+
+	managerUI.replaceStatusText(
+		managerUI.ids.OPERATION_STATUS_ID,
+		_('Applying (%s)...').format(managerFormat.humanizeAction(label))
+	);
+	managerUI.replaceStatusText(managerUI.ids.CURRENT_SERVER_STATUS_ID, _('Applying server change...'));
+	managerUI.replaceStatusText(managerUI.ids.ENDPOINT_STATUS_ID, _('Unavailable'));
+	managerUI.replaceStatusText(managerUI.ids.HANDSHAKE_STATUS_ID, _('Unavailable'));
+	managerUI.setManagerControlsDisabled(true);
+	managerStore.setPhase(
+		state,
+		state.saveApplyInProgress ? managerStore.PHASES.SAVING : managerStore.PHASES.RUNTIME_BUSY
+	);
+	managerUI.setVpnStatusIndicator('stopping', _('Applying changes'));
+	managerUI.updateCountryMatchStatus(state);
+	managerUI.updateServerSelectionState(state);
+}
+
 function renderLocalStatusSnapshot(state, status) {
 	let busyAction;
 	const runtimeStatus = status || managerData.parseLocalStatus('{}');
@@ -634,6 +673,11 @@ function renderLocalStatusSnapshot(state, status) {
 
 	state.currentLocalStatus = runtimeStatus;
 	renderLocalStatusDetails(state, runtimeStatus);
+
+	if (configurationTransitionActive(state)) {
+		renderApplyingTransitionUi(state);
+		return runtimeStatus;
+	}
 
 	if (operationStatus.indexOf('busy:') === 0) {
 		busyAction = operationStatus.substring(5);
@@ -815,6 +859,12 @@ function updatePublicCountry(state, options) {
 function renderDiagnosticsSnapshot(state, summary, fresh) {
 	state.currentDiagnosticsSummary = summary;
 	state.currentDiagnosticsSummaryFresh = !!fresh;
+
+	if (!driftEvaluationAllowed(state)) {
+		suppressDriftUi(state);
+		return;
+	}
+
 	managerUI.updateDiagnosticsBanner(summary);
 }
 
@@ -823,6 +873,11 @@ function updateDiagnosticsSummary(state, options) {
 
 	if (state.pollingSuspended && !opts.force)
 		return Promise.resolve(state.currentDiagnosticsSummary);
+
+	if (!driftEvaluationAllowed(state)) {
+		suppressDriftUi(state);
+		return Promise.resolve(state.currentDiagnosticsSummary);
+	}
 
 	if (!state.appliedEnabled) {
 		renderDiagnosticsSnapshot(state, managerData.emptyDiagnosticsSummary(), false);
@@ -858,13 +913,20 @@ function updateLocalStatus(state, options) {
 			state.currentLocalStatus = status;
 			state.currentLocalStatusFresh = localStatusSnapshot.fresh;
 			state.currentLocalStatusLastUpdated = localStatusSnapshot.fresh ? Date.now() : 0;
-			state.currentOperationStatus = String(status.operation_status || 'idle');
+			if (configurationTransitionActive(state) && state.pendingOperationLabel)
+				state.currentOperationStatus = 'busy:' + state.pendingOperationLabel;
+			else if (configurationTransitionActive(state))
+				state.currentOperationStatus = state.currentOperationStatus || 'busy:configuration';
+			else
+				state.currentOperationStatus = String(status.operation_status || 'idle');
 			state.appliedEnabled = desiredEnabled;
 			state.appliedCountryCode = managerData.normalizeCountryCode(status.selected_country || state.appliedCountryCode);
 			renderLocalStatusSnapshot(state, status);
-			// Drift recovery runs from Save & Apply or the diagnostics Apply button only.
-			if (desiredEnabled)
+			// Drift is evaluated only after Save & Apply / runtime actions finish.
+			if (desiredEnabled && driftEvaluationAllowed(state))
 				void updateDiagnosticsSummary(state, { force: opts.force });
+			else if (!driftEvaluationAllowed(state))
+				suppressDriftUi(state);
 			else
 				renderDiagnosticsSnapshot(state, managerData.emptyDiagnosticsSummary(), false);
 			return status;
@@ -1013,7 +1075,7 @@ function refreshAfterSaveApply(state, refreshPublicIp, options) {
 
 	state.pendingOperationLabel = '';
 	state.saveApplyInProgress = false;
-	managerStore.resumePolling(state);
+	managerStore.setPhase(state, managerStore.PHASES.IDLE);
 
 	return updateLocalStatus(state, {
 		force: true,
@@ -1025,6 +1087,12 @@ function refreshAfterSaveApply(state, refreshPublicIp, options) {
 		return null;
 	}).then(function() {
 		return refreshLuCiChangeTracker();
+	}).then(function(result) {
+		managerStore.resumePolling(state);
+		return result;
+	}).catch(function(err) {
+		managerStore.resumePolling(state);
+		return Promise.reject(err);
 	});
 }
 
@@ -1128,6 +1196,7 @@ function handleSaveApply(viewState, state, ev, mode) {
 		markRuntimeActionCooldown(state);
 		managerStore.suspendPolling(state);
 		managerStore.setPhase(state, managerStore.PHASES.SAVING);
+		suppressDriftUi(state);
 
 		return new Promise(function(resolve, reject) {
 			let settled = false;
@@ -1290,6 +1359,9 @@ function handleSaveApply(viewState, state, ev, mode) {
 		runtimeOperationIsBusy: runtimeOperationIsBusy,
 		loadServerCatalog: loadServerCatalog,
 	renderLocalStatusSnapshot: renderLocalStatusSnapshot,
+	renderDiagnosticsSnapshot: renderDiagnosticsSnapshot,
+	driftEvaluationAllowed: driftEvaluationAllowed,
+	suppressDriftUi: suppressDriftUi,
 	updatePublicIp: updatePublicIp,
 	updatePublicCountry: updatePublicCountry,
 	updateLocalStatus: updateLocalStatus,
