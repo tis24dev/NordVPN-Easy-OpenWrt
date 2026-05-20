@@ -6,10 +6,6 @@ function humanizeAction(action) {
 	return String(action || _('operation')).replace(/_/g, ' ');
 }
 
-function formatActionsLabel(actions) {
-	return actions.map(humanizeAction).join(' + ');
-}
-
 function formatServerLabel(server) {
 	const parts = [];
 	const numericLoad = Number(server.load);
@@ -94,7 +90,6 @@ function formatRelativeTimestamp(epochSeconds) {
 
 return baseclass.extend({
 	humanizeAction: humanizeAction,
-	formatActionsLabel: formatActionsLabel,
 	formatServerLabel: formatServerLabel,
 	formatServerSummary: formatServerSummary,
 	formatRelativeAge: formatRelativeAge,

@@ -1203,7 +1203,7 @@ function refreshAfterSaveApply(state, refreshPublicIp, options) {
 	});
 }
 
-function handleSaveApply(viewState, state, ev, mode) {
+function handleSaveApply(viewState, state, ev) {
 	const previousEnabled = !!viewState.initialEnabled;
 	const previousCountry = viewState.initialCountry || '';
 	const previousMode = viewState.initialMode || 'auto';

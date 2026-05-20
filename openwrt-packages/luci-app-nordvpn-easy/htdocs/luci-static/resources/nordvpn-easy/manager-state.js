@@ -13,6 +13,5 @@ return baseclass.extend({
 	onCountryChanged: managerActions.onCountryChanged,
 	onModeChanged: managerActions.onModeChanged,
 	handleRefreshServerCatalog: managerActions.handleRefreshServerCatalog,
-	handleSaveApply: managerActions.handleSaveApply,
-	runApplyCycle: managerActions.runApplyCycle
+	handleSaveApply: managerActions.handleSaveApply
 });

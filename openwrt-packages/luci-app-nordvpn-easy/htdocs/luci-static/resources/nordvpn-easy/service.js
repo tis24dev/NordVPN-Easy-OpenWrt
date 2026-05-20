@@ -344,30 +344,6 @@ function runAction(action, extraArgs) {
 	});
 }
 
-function runActions(actions) {
-	const results = [];
-
-	return actions.reduce(function(chain, action) {
-		return chain.then(function() {
-			return runAction(action).then(function(result) {
-				results.push(result);
-
-				if (!result.success) {
-					const error = resultToError(result);
-
-					error.result = result;
-					error.results = results.slice();
-					throw error;
-				}
-
-				return result;
-			});
-		});
-	}, Promise.resolve()).then(function() {
-		return results;
-	});
-}
-
 function parseExecJsonResponse(res, fallback) {
 	if (!res || res.code !== 0)
 		return fallback;
@@ -409,7 +385,6 @@ return baseclass.extend({
 	resultToError: resultToError,
 	execService: execService,
 	runAction: runAction,
-	runActions: runActions,
 	notifyInfo: notifyInfo,
 	notifyError: notifyError,
 	downloadTextFile: downloadTextFile

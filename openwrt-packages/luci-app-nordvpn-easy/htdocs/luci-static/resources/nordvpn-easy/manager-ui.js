@@ -259,9 +259,6 @@ function updateCountryMatchStatus(state) {
 	if (state.currentOperationStatus.indexOf('busy:') === 0) {
 		busyAction = state.currentOperationStatus.substring(5);
 
-		if (busyAction === 'reconcile')
-			return setCountryMatchIndicator('checking', _('Syncing'));
-
 		if (busyAction !== 'refresh_countries' && busyAction !== 'server_catalog' && !actualCountry)
 			return setCountryMatchIndicator('checking', _('Checking'));
 	}
@@ -269,9 +266,6 @@ function updateCountryMatchStatus(state) {
 		if (!actualCountry)
 			return setCountryMatchIndicator('checking', _('Checking'));
 	}
-
-	if (state.pendingOperationLabel === 'reconcile')
-		return setCountryMatchIndicator('checking', _('Syncing'));
 
 	if (!expectedCountry)
 		return setCountryMatchIndicator('automatic', _('Automatic'));
@@ -373,37 +367,6 @@ function updateServerSelectionState(state) {
 
 	if (refreshButton)
 		refreshButton.disabled = busy || !country;
-}
-
-function showConfirmationModal(title, lines) {
-	return new Promise(function(resolve) {
-		const body = [
-			E('p', {}, lines[0])
-		];
-
-		if (lines[1])
-			body.push(E('p', {}, lines[1]));
-
-		body.push(E('div', { class: 'right' }, [
-			E('button', {
-				class: 'btn',
-				click: function() {
-					ui.hideModal();
-					resolve(false);
-				}
-			}, [ _('Cancel') ]),
-			' ',
-			E('button', {
-				class: 'btn cbi-button-apply',
-				click: function() {
-					ui.hideModal();
-					resolve(true);
-				}
-			}, [ _('Apply') ])
-		]));
-
-		ui.showModal(title, body);
-	});
 }
 
 function diagnosticsPageHref() {
@@ -551,7 +514,6 @@ return baseclass.extend({
 	setManagerControlsDisabled: setManagerControlsDisabled,
 	updateServerCatalogStatus: updateServerCatalogStatus,
 	updateServerSelectionState: updateServerSelectionState,
-	showConfirmationModal: showConfirmationModal,
 	renderDiagnosticsBanner: renderDiagnosticsBanner,
 	updateDiagnosticsBanner: updateDiagnosticsBanner,
 	renderStatusSection: renderStatusSection

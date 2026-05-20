@@ -1,0 +1,6 @@
+# Local planning notes (not for the repository)
+plans/
+
+# Local diagnostics exports
+nordvpn-easy-diagnostics-*.log
+problem.md
