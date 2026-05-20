@@ -380,7 +380,7 @@ const TokenValue = form.Value.extend({
 		}.bind(this));
 	},
 
-	handleSaveApply: function(ev, mode) {
-		return managerActions.handleSaveApply(this, state, ev, mode);
+	handleSaveApply: function(ev) {
+		return managerActions.handleSaveApply(this, state, ev);
 	}
 	});
