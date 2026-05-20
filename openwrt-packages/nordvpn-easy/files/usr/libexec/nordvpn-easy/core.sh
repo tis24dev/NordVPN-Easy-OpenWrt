@@ -599,6 +599,7 @@ update_public_ip_cache () {
     PUBLIC_IP_SOURCE="$previous_source"
   fi
 
+  PUBLIC_IP_DETECTED_AT="$(nordvpn_easy_wg_runtime_non_negative_int "$PUBLIC_IP_DETECTED_AT")"
   return 0
 }
 
@@ -607,7 +608,7 @@ emit_public_ip_cache_snapshot () {
 {
   "ip": "$(nordvpn_easy_json_escape "$PUBLIC_IP")",
   "changed": $([ "${PUBLIC_IP_CHANGED:-0}" = '1' ] && printf '%s' 'true' || printf '%s' 'false'),
-  "detected_at": ${PUBLIC_IP_DETECTED_AT:-0},
+  "detected_at": $(nordvpn_easy_wg_runtime_non_negative_int "${PUBLIC_IP_DETECTED_AT:-0}"),
   "detected_at_iso": "$(nordvpn_easy_json_escape "$PUBLIC_IP_DETECTED_AT_ISO")",
   "source": "$(nordvpn_easy_json_escape "$PUBLIC_IP_SOURCE")",
   "country": "$(nordvpn_easy_json_escape "$PUBLIC_COUNTRY")"

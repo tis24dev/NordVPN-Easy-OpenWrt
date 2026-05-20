@@ -156,6 +156,14 @@ assert_eq '198.51.100.10' "$(printf '%s' "$STATUS_JSON" | jq -r '.public_ip_cach
 assert_eq '1770000000' "$(printf '%s' "$STATUS_JSON" | jq -r '.public_ip_detected_at')" 'status json exposes public IP detection timestamp'
 assert_eq '2026-02-01T00:00:00Z' "$(printf '%s' "$STATUS_JSON" | jq -r '.public_ip_detected_at_iso')" 'status json exposes public IP detection time'
 assert_eq 'https://ifconfig.me/ip' "$(printf '%s' "$STATUS_JSON" | jq -r '.public_ip_source')" 'status json exposes public IP lookup source'
+assert_eq '0' "$(nordvpn_easy_wg_runtime_non_negative_int 'not-a-number')" 'non-numeric epoch sanitizes to zero'
+assert_eq '1770000000' "$(nordvpn_easy_wg_runtime_non_negative_int '1770000000')" 'numeric epoch is preserved'
+printf '%s\n' 'ip=198.51.100.10' > "$NORDVPN_EASY_PUBLIC_IP_CACHE"
+printf '%s\n' 'detected_at=not-a-number' >> "$NORDVPN_EASY_PUBLIC_IP_CACHE"
+printf '%s\n' 'detected_at_iso=2026-02-01T00:00:00Z' >> "$NORDVPN_EASY_PUBLIC_IP_CACHE"
+printf '%s\n' 'source=https://ifconfig.me/ip' >> "$NORDVPN_EASY_PUBLIC_IP_CACHE"
+CORRUPT_STATUS_JSON="$(nordvpn_easy_emit_status_json)"
+assert_eq '0' "$(printf '%s' "$CORRUPT_STATUS_JSON" | jq -r '.public_ip_detected_at')" 'status json sanitizes corrupt public IP cache timestamp'
 assert_eq 'ES' "$(printf '%s' "$STATUS_JSON" | jq -r '.public_country_cached')" 'status json exposes cached public country'
 assert_eq 'wg0server' "$(nordvpn_easy_peer_section_name 'wg0')" 'peer section lookup falls back to exact section match'
 
