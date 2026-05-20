@@ -14,7 +14,7 @@
 
 const AUTO_RECONCILE_RETRY_DELAY_MS = 5 * 60 * 1000;
 const MAX_DRIFT_RESTART_DEPTH = 1;
-const SAVE_APPLY_TIMEOUT_MS = 150000;
+const SAVE_APPLY_TIMEOUT_MS = 240000;
 const RUNTIME_ACTION_RECOVERY_POLL_MS = 3000;
 const RUNTIME_ACTION_COOLDOWN_MS = SAVE_APPLY_TIMEOUT_MS + 30000;
 let callUciCommit = null;
@@ -285,7 +285,7 @@ function maybeAutoReconcileSelectionDrift(state, status) {
 			state.lastAutoReconcileFailureKey = latestDrift.key;
 			state.lastAutoReconcileFailureAt = Date.now();
 			managerStore.setError(state, err);
-			return refreshAfterSaveApply(state, true, { suppressAutoReconcile: true }).then(function() {
+			return finishApplyCycle(state, { suppressAutoReconcile: true }).then(function() {
 				service.notifyError(new Error(_('Automatic runtime sync failed: ') + message));
 				return false;
 			});
@@ -320,9 +320,7 @@ function buildDiagnosticsSnapshot(res) {
 function runApplyCycleConnectPhase(state, savedConfig) {
 	const successMessage = APPLY_CYCLE_SUCCESS_CONNECTED;
 
-	state.pendingOperationLabel = 'connect';
-	state.currentOperationStatus = 'busy:connect';
-	managerStore.setPhase(state, managerStore.PHASES.RUNTIME_BUSY);
+	state.applyPhase = 'connect';
 
 	return service.runAction('connect').then(function(result) {
 		if (!result.success) {
@@ -333,11 +331,10 @@ function runApplyCycleConnectPhase(state, savedConfig) {
 		}
 
 		service.notifyInfo(successMessage);
-		return refreshAfterSaveApply(state, true, { suppressAutoReconcile: true });
+		return finishApplyCycle(state, { suppressAutoReconcile: true });
 	}).catch(function(err) {
-		if (runtimeActionErrorLooksAborted(err)) {
+		if (runtimeActionErrorLooksAborted(err))
 			return recoverAbortedRuntimeAction(state, savedConfig, err, successMessage);
-		}
 
 		throw err;
 	});
@@ -351,15 +348,14 @@ function runApplyCycle(viewState, state, ev, options) {
 	if (opts.notifyDriftQueued && opts.driftContext)
 		notifyDebugBlock(_('Runtime sync queued'), autoReconcileDebugLines(opts.driftContext));
 
-	state.pendingOperationLabel = 'stop_vpn';
-	state.currentOperationStatus = 'busy:stop_vpn';
-	managerStore.setPhase(state, managerStore.PHASES.RUNTIME_BUSY);
+	state.applyPhase = 'stop_vpn';
 
 	return service.runAction('stop_vpn').then(function(stopResult) {
 		if (!stopResult.success)
 			throw service.resultToError(stopResult);
 
 		if (!skipFormSave && submitted) {
+			state.applyPhase = 'configuration';
 			syncPreferredServerFieldsToUci(submitted, state.serverCatalogIndex || {});
 			syncSubmittedRuntimeConfigToUci(submitted);
 			return Promise.resolve(viewState && viewState.handleSave ? viewState.handleSave(ev) : null);
@@ -384,14 +380,14 @@ function runApplyCycle(viewState, state, ev, options) {
 			const tokenError = new Error(_('NordVPN token is required before enabling NordVPN Easy.'));
 
 			service.notifyError(tokenError);
-			return refreshAfterSaveApply(state, false, { suppressAutoReconcile: true }).then(function() {
+			return finishApplyCycle(state, { suppressAutoReconcile: true }).then(function() {
 				throw tokenError;
 			});
 		}
 
 		if (!savedConfig.enabled) {
 			service.notifyInfo(APPLY_CYCLE_SUCCESS_DISABLED);
-			return refreshAfterSaveApply(state, false, { suppressAutoReconcile: true });
+			return finishApplyCycle(state, { suppressAutoReconcile: true });
 		}
 
 		return runApplyCycleConnectPhase(state, savedConfig);
@@ -599,28 +595,42 @@ function normalizePublicIpValue(value) {
 	return publicIp;
 }
 
+function effectiveOperationStatus(runtimeStatus, state) {
+	const status = runtimeStatus || {};
+	let operation = String(status.operation_status || 'idle');
+	const lockState = String(status.operation_lock_state || 'none');
+	const lockAction = String(status.operation_lock_action || '').trim();
+
+	if (lockState === 'held' || lockState === 'stale_recovered') {
+		if (lockAction)
+			operation = 'busy:' + lockAction;
+		else if (operation === 'idle')
+			operation = 'busy';
+	}
+	else if (state && state.saveApplyInProgress && operation === 'idle') {
+		const phase = String(state.applyPhase || 'configuration').trim();
+
+		operation = phase ? ('busy:' + phase) : 'busy:configuration';
+	}
+
+	return operation;
+}
+
 function driftEvaluationAllowed(state) {
 	if (!state)
 		return false;
 
-	if (state.saveApplyInProgress || state.pendingOperationLabel)
-		return false;
-
-	if (state.phase === 'saving' || state.phase === 'runtime_busy')
+	if (state.saveApplyInProgress)
 		return false;
 
 	return true;
 }
 
-function configurationTransitionActive(state) {
-	return !driftEvaluationAllowed(state);
-}
-
 function runtimeOperationIsBusy(state, status) {
 	const runtimeStatus = status || (state && state.currentLocalStatus) || {};
 
-	return configurationTransitionActive(state) ||
-		runtimeStatusIndicatesBusy(runtimeStatus, state && state.currentOperationStatus);
+	return !!state.saveApplyInProgress ||
+		runtimeStatusIndicatesBusy(runtimeStatus);
 }
 
 function runtimeStatusIndicatesBusy(status, fallbackOperationStatus) {
@@ -698,11 +708,23 @@ function abortedRuntimeActionRecoveryError(err) {
 function recoverAbortedRuntimeAction(state, savedConfig, originalError, successMessage) {
 	const deadline = Date.now() + SAVE_APPLY_TIMEOUT_MS;
 	const recoveryError = abortedRuntimeActionRecoveryError(originalError);
+	let interruptionNotified = false;
 
-	notifyDebugBlock(_('Runtime action response interrupted'), [
-		_('LuCI lost the backend response while the runtime action may still be running.'),
-		_('Polling local status until the runtime finishes.')
-	]);
+	const notifyInterruptionOnce = function() {
+		if (interruptionNotified)
+			return;
+
+		interruptionNotified = true;
+		notifyDebugBlock(_('Runtime action response interrupted'), [
+			_('LuCI lost the backend response while the runtime action may still be running.'),
+			_('Polling local status until the runtime finishes.')
+		]);
+	};
+
+	if (runtimeActionRecoverySucceeded(savedConfig, state.currentLocalStatusFresh ? state.currentLocalStatus : null)) {
+		service.notifyInfo(successMessage);
+		return finishApplyCycle(state, { suppressAutoReconcile: true });
+	}
 
 	const poll = function() {
 		return updateLocalStatus(state, {
@@ -713,8 +735,10 @@ function recoverAbortedRuntimeAction(state, savedConfig, originalError, successM
 
 			if (runtimeActionRecoverySucceeded(savedConfig, freshStatus)) {
 				service.notifyInfo(successMessage);
-				return refreshAfterSaveApply(state, true, { suppressAutoReconcile: true });
+				return finishApplyCycle(state, { suppressAutoReconcile: true });
 			}
+
+			notifyInterruptionOnce();
 
 			if (Date.now() >= deadline)
 				return Promise.reject(recoveryError);
@@ -788,89 +812,79 @@ function renderLocalStatusDetails(state, status) {
 	renderPublicLookupStatus(state, runtimeStatus);
 }
 
-function renderApplyingTransitionUi(state) {
-	const label = state.pendingOperationLabel || _('configuration');
+function statusErrorMessage(err) {
+	const message = (err && err.message) ? String(err.message) : String(err || '');
 
-	managerUI.replaceStatusText(
-		managerUI.ids.OPERATION_STATUS_ID,
-		_('Applying (%s)...').format(managerFormat.humanizeAction(label))
-	);
-	managerUI.replaceStatusText(managerUI.ids.CURRENT_SERVER_STATUS_ID, _('Applying server change...'));
+	return message || _('Backend status unavailable');
+}
+
+function renderLocalStatusUnavailable(state, err) {
+	const message = statusErrorMessage(err);
+
+	state.currentLocalStatus = Object.assign(managerData.parseLocalStatus('{}'), {
+		desired_enabled: !!state.appliedEnabled,
+		vpn_status: 'error',
+		operation_status: 'unknown',
+		last_error: message
+	});
+	state.currentLocalStatusFresh = false;
+	state.currentOperationStatus = 'unknown';
+	state.currentPublicIp = '';
+	state.currentPublicCountry = '';
+
+	managerUI.replaceStatusText(managerUI.ids.CURRENT_SERVER_STATUS_ID, _('Unavailable'));
+	managerUI.replaceStatusText(managerUI.ids.PREFERRED_SERVER_STATUS_ID, _('Unavailable'));
 	managerUI.replaceStatusText(managerUI.ids.ENDPOINT_STATUS_ID, _('Unavailable'));
 	managerUI.replaceStatusText(managerUI.ids.HANDSHAKE_STATUS_ID, _('Unavailable'));
-	managerUI.setManagerControlsDisabled(true);
-	managerStore.setPhase(
-		state,
-		state.saveApplyInProgress ? managerStore.PHASES.SAVING : managerStore.PHASES.RUNTIME_BUSY
-	);
-	managerUI.setVpnStatusIndicator('stopping', _('Applying changes'));
+	managerUI.replaceStatusText(managerUI.ids.TRANSFER_STATUS_ID, _('0 B / 0 B'));
+	managerUI.replaceStatusText(managerUI.ids.OPERATION_STATUS_ID, _('Unknown'));
+	managerUI.replaceStatusText(managerUI.ids.LAST_ERROR_STATUS_ID, message);
+	managerUI.replaceStatusText(managerUI.ids.PUBLIC_IP_STATUS_ID, _('Unavailable'));
+	managerUI.replaceStatusText(managerUI.ids.PUBLIC_COUNTRY_STATUS_ID, _('Unavailable'));
+	managerUI.setManagerControlsDisabled(!!state.saveApplyInProgress);
+	managerUI.setVpnStatusIndicator('error', _('Unavailable'));
 	managerUI.updateCountryMatchStatus(state);
 	managerUI.updateServerSelectionState(state);
+
+	return state.currentLocalStatus;
 }
 
 function renderLocalStatusSnapshot(state, status) {
 	let busyAction;
 	const runtimeStatus = status || managerData.parseLocalStatus('{}');
 	const desiredEnabled = !!runtimeStatus.desired_enabled;
-	const operationStatus = String(state.currentOperationStatus || 'idle');
+	const operationStatus = effectiveOperationStatus(runtimeStatus, state);
+	const controlsLocked = !!state.saveApplyInProgress || runtimeStatusIndicatesBusy(runtimeStatus);
 
 	state.currentLocalStatus = runtimeStatus;
+	state.currentOperationStatus = operationStatus;
 	renderLocalStatusDetails(state, runtimeStatus);
-
-	if (configurationTransitionActive(state)) {
-		renderApplyingTransitionUi(state);
-		return runtimeStatus;
-	}
 
 	if (operationStatus.indexOf('busy:') === 0) {
 		busyAction = operationStatus.substring(5);
-		managerUI.replaceStatusText(managerUI.ids.OPERATION_STATUS_ID, _('Applying (%s)...').format(managerFormat.humanizeAction(busyAction)));
-		managerUI.setManagerControlsDisabled(true);
-
-		if (busyAction !== 'refresh_countries' && busyAction !== 'server_catalog') {
-			managerStore.setPhase(state, managerStore.PHASES.RUNTIME_BUSY);
-			managerUI.setVpnStatusIndicator(
-				managerUI.isDisableRequested(state) ? 'stopping' : 'starting',
-				managerUI.isDisableRequested(state) ? _('Disabling') : _('Activating')
-			);
-			managerUI.updateCountryMatchStatus(state);
-			managerUI.updateServerSelectionState(state);
-			return runtimeStatus;
-		}
+		managerUI.replaceStatusText(
+			managerUI.ids.OPERATION_STATUS_ID,
+			_('Applying (%s)...').format(managerFormat.humanizeAction(busyAction))
+		);
 	}
 	else if (operationStatus === 'busy') {
 		managerUI.replaceStatusText(managerUI.ids.OPERATION_STATUS_ID, _('Applying...'));
-		managerUI.setVpnStatusIndicator(
-			managerUI.isDisableRequested(state) ? 'stopping' : 'starting',
-			managerUI.isDisableRequested(state) ? _('Disabling') : _('Activating')
-		);
-		managerUI.setManagerControlsDisabled(true);
-		managerStore.setPhase(state, managerStore.PHASES.RUNTIME_BUSY);
-		managerUI.updateCountryMatchStatus(state);
-		managerUI.updateServerSelectionState(state);
-		return runtimeStatus;
-	}
-
-	if (state.pendingOperationLabel) {
-		managerUI.replaceStatusText(
-			managerUI.ids.OPERATION_STATUS_ID,
-			_('Applying (%s)...').format(managerFormat.humanizeAction(state.pendingOperationLabel))
-		);
-		managerUI.setVpnStatusIndicator(
-			managerUI.isDisableRequested(state) ? 'stopping' : 'starting',
-			managerUI.isDisableRequested(state) ? _('Disabling') : _('Activating')
-		);
-		managerUI.setManagerControlsDisabled(true);
-		managerStore.setPhase(state, managerStore.PHASES.RUNTIME_BUSY);
 	}
 	else {
 		managerUI.replaceStatusText(
 			managerUI.ids.OPERATION_STATUS_ID,
 			operationStatus === 'unknown' ? _('Unknown') : _('Idle')
 		);
-		managerUI.setManagerControlsDisabled(false);
-		managerStore.syncPhase(state);
 	}
+
+	managerUI.setManagerControlsDisabled(controlsLocked);
+
+	if (state.saveApplyInProgress)
+		managerStore.setPhase(state, managerStore.PHASES.SAVING);
+	else if (runtimeStatusIndicatesBusy(runtimeStatus))
+		managerStore.setPhase(state, managerStore.PHASES.RUNTIME_BUSY);
+	else
+		managerStore.syncPhase(state);
 
 	if (!desiredEnabled || runtimeStatus.runtime_disabled || runtimeStatus.interface_disabled || managerUI.isDisableRequested(state))
 		managerUI.setVpnStatusIndicator('inactive', _('Disabled'));
@@ -1005,9 +1019,6 @@ function updateDiagnosticsSummary(state, options) {
 function updateLocalStatus(state, options) {
 	const opts = options || {};
 
-	if (state.pollingSuspended && !opts.force)
-		return Promise.resolve(state.currentLocalStatus);
-
 	return managerStore.runExclusive(state, 'status', function() {
 		return service.execService('status_json').then(function(res) {
 			const localStatusSnapshot = buildLocalStatusSnapshot(res);
@@ -1018,12 +1029,7 @@ function updateLocalStatus(state, options) {
 			state.currentLocalStatus = status;
 			state.currentLocalStatusFresh = localStatusSnapshot.fresh;
 			state.currentLocalStatusLastUpdated = localStatusSnapshot.fresh ? Date.now() : 0;
-			if (configurationTransitionActive(state) && state.pendingOperationLabel)
-				state.currentOperationStatus = 'busy:' + state.pendingOperationLabel;
-			else if (configurationTransitionActive(state))
-				state.currentOperationStatus = state.currentOperationStatus || 'busy:configuration';
-			else
-				state.currentOperationStatus = String(status.operation_status || 'idle');
+			state.currentOperationStatus = effectiveOperationStatus(status, state);
 			state.appliedEnabled = desiredEnabled;
 			state.appliedCountryCode = managerData.normalizeCountryCode(status.selected_country || state.appliedCountryCode);
 			renderLocalStatusSnapshot(state, status);
@@ -1040,15 +1046,22 @@ function updateLocalStatus(state, options) {
 
 			return status;
 		}).catch(function(err) {
+			const fallbackStatus = state.currentLocalStatusLastUpdated ? state.currentLocalStatus : null;
+
 			state.currentLocalStatusFresh = false;
 			state.currentLocalStatusLastUpdated = 0;
-			state.currentOperationStatus = state.pendingOperationLabel ? ('busy:' + state.pendingOperationLabel) : 'unknown';
+			managerStore.setError(state, err);
+			if (fallbackStatus) {
+				renderLocalStatusSnapshot(state, fallbackStatus);
+				managerUI.replaceStatusText(managerUI.ids.OPERATION_STATUS_ID, _('Unknown'));
+				managerUI.replaceStatusText(managerUI.ids.LAST_ERROR_STATUS_ID, statusErrorMessage(err));
+				state.currentOperationStatus = 'unknown';
+				return fallbackStatus;
+			}
 
-			if (!state.pendingOperationLabel)
-				managerStore.setError(state, err);
-			return renderLocalStatusSnapshot(state, state.currentLocalStatus || managerData.parseLocalStatus('{}'));
+			return renderLocalStatusUnavailable(state, err);
 		});
-	});
+	}, { fresh: !!(opts.force || state.saveApplyInProgress) });
 }
 
 function onCountryChanged(state) {
@@ -1179,29 +1192,21 @@ function rememberSavedRuntimeConfig(viewState, state, savedConfig) {
 	state.appliedCountryCode = savedConfig.country;
 }
 
-function refreshAfterSaveApply(state, refreshPublicIp, options) {
+function finishApplyCycle(state, options) {
 	const opts = options || {};
 
 	state.pendingOperationLabel = '';
+	state.applyPhase = '';
 	state.saveApplyInProgress = false;
+	managerStore.clearInFlight(state, 'status');
+	managerStore.resumePolling(state);
 	managerStore.setPhase(state, managerStore.PHASES.IDLE);
 
 	return updateLocalStatus(state, {
 		force: true,
 		suppressAutoReconcile: !!opts.suppressAutoReconcile
 	}).then(function() {
-		if (refreshPublicIp)
-			return updatePublicIp(state, { force: true });
-
-		return null;
-	}).then(function() {
 		return refreshLuCiChangeTracker();
-	}).then(function(result) {
-		managerStore.resumePolling(state);
-		return result;
-	}).catch(function(err) {
-		managerStore.resumePolling(state);
-		return Promise.reject(err);
 	});
 }
 
@@ -1232,8 +1237,9 @@ function handleSaveApply(viewState, state, ev) {
 
 	managerStore.clearError(state);
 	state.saveApplyInProgress = true;
+	state.pendingOperationLabel = '';
+	state.applyPhase = 'configuration';
 	markRuntimeActionCooldown(state);
-	managerStore.suspendPolling(state);
 	managerStore.setPhase(state, managerStore.PHASES.SAVING);
 	suppressDriftUi(state);
 
@@ -1270,30 +1276,22 @@ function handleSaveApply(viewState, state, ev) {
 			const timeoutError = new Error(_('Configuration apply timed out.'));
 
 			managerStore.setError(state, timeoutError);
-			state.pendingOperationLabel = '';
-			state.saveApplyInProgress = false;
-			managerStore.resumePolling(state);
-			updateLocalStatus(state, { force: true });
-			finishReject(timeoutError);
+			finishApplyCycle(state, { suppressAutoReconcile: true }).finally(function() {
+				finishReject(timeoutError);
+			});
 		}, SAVE_APPLY_TIMEOUT_MS);
-
-		state.pendingOperationLabel = _('configuration');
-		state.currentOperationStatus = 'busy:configuration';
-		updateLocalStatus(state, { force: true });
 
 		runApplyCycle(viewState, state, ev, {
 			submitted: submittedRuntimeConfig,
-			skipDriftRestart: false,
+			skipDriftRestart: true,
 			driftDepth: 0
 		}).then(function() {
-			state.saveApplyInProgress = false;
 			finishResolve();
 		}).catch(function(err) {
 			const message = (err && err.message) ? err.message : String(err);
 
-			state.saveApplyInProgress = false;
 			managerStore.setError(state, err);
-			return refreshAfterSaveApply(state, true, { suppressAutoReconcile: true }).then(function() {
+			return finishApplyCycle(state, { suppressAutoReconcile: true }).then(function() {
 				service.notifyError(new Error(_('Save & Apply failed: ') + message));
 				finishReject(err);
 			});
@@ -1307,6 +1305,7 @@ return baseclass.extend({
 	runtimeOperationIsBusy: runtimeOperationIsBusy,
 	loadServerCatalog: loadServerCatalog,
 	renderLocalStatusSnapshot: renderLocalStatusSnapshot,
+	renderLocalStatusUnavailable: renderLocalStatusUnavailable,
 	renderDiagnosticsSnapshot: renderDiagnosticsSnapshot,
 	updatePublicIp: updatePublicIp,
 	updateLocalStatus: updateLocalStatus,

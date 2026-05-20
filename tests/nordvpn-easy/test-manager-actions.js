@@ -111,6 +111,7 @@ function loadManagerActionsModule(overrides) {
 		},
 		managerStore: {
 			PHASES: {},
+			clearInFlight() {},
 			runExclusive() {
 				throw new Error('runExclusive should not be used in this test');
 			}
@@ -705,13 +706,142 @@ function testRenderLocalStatusSnapshotHandlesBusyOperation() {
 	assert.equal(replacements.endpoint, '203.0.113.10:51820', 'busy status keeps endpoint visible');
 	assert.deepEqual(controls, [ true ], 'busy status disables manager controls');
 	assert.deepEqual(phaseTransitions, [ 'runtime_busy' ], 'busy status moves the UI into runtime-busy phase');
-	assert.deepEqual(indicators.vpn, { state: 'starting', label: 'Activating' }, 'busy status renders an activating VPN indicator');
+	assert.deepEqual(indicators.vpn, { state: 'inactive', label: 'Disconnected' },
+		'busy operation status does not mask vpn_status from the runtime snapshot');
 	assert.equal(countryMatchUpdates, 1, 'busy status updates country-match indicator once');
 	assert.equal(serverSelectionUpdates, 1, 'busy status updates server-selection controls once');
 }
 
+function testRenderLocalStatusSnapshotUsesHeldLockAction() {
+	const replacements = {};
+	const actions = loadManagerActionsModule({
+		managerStore: {
+			PHASES: {
+				RUNTIME_BUSY: 'runtime_busy'
+			},
+			setPhase() {},
+			syncPhase() {}
+		},
+		managerUI: {
+			ids: {
+				OPERATION_STATUS_ID: 'operation',
+				CURRENT_SERVER_STATUS_ID: 'current',
+				PREFERRED_SERVER_STATUS_ID: 'preferred',
+				ENDPOINT_STATUS_ID: 'endpoint',
+				HANDSHAKE_STATUS_ID: 'handshake',
+				TRANSFER_STATUS_ID: 'transfer',
+				LAST_ERROR_STATUS_ID: 'last_error',
+				PUBLIC_IP_STATUS_ID: 'public_ip',
+				PUBLIC_COUNTRY_STATUS_ID: 'public_country'
+			},
+			replaceStatusText(id, value) {
+				replacements[id] = String(value);
+			},
+			setManagerControlsDisabled() {},
+			setVpnStatusIndicator() {},
+			updateCountryMatchStatus() {},
+			updateServerSelectionState() {},
+			currentServerSummaryFromStatus() {
+				return 'server';
+			},
+			preferredServerSummaryFromStatus() {
+				return 'preferred';
+			},
+			isDisableRequested() {
+				return false;
+			}
+		}
+	}).managerActions;
+	const status = {
+		desired_enabled: true,
+		runtime_disabled: false,
+		interface_disabled: false,
+		vpn_status: 'starting',
+		operation_status: 'idle',
+		operation_lock_state: 'held',
+		operation_lock_action: 'setup',
+		endpoint: '203.0.113.10:51820',
+		latest_handshake: 'Never',
+		transfer_rx: '0 B',
+		transfer_tx: '0 B',
+		last_error: ''
+	};
+	const state = {
+		appliedEnabled: true,
+		currentLocalStatus: status,
+		currentOperationStatus: 'idle',
+		saveApplyInProgress: false
+	};
+
+	actions.renderLocalStatusSnapshot(state, status);
+
+	assert.equal(
+		replacements.operation,
+		'Applying (setup)...',
+		'held lock action is shown even when operation_status is idle'
+	);
+}
+
+async function testStatusRpcFailureDoesNotRenderDisabled() {
+	const replacements = {};
+	let indicator = null;
+	const actions = loadManagerActionsModule({
+		managerStore: {
+			PHASES: {},
+			runExclusive(_state, _key, factory) {
+				return Promise.resolve().then(factory);
+			},
+			clearError() {},
+			setError(state, err) {
+				state.lastError = (err && err.message) ? err.message : String(err);
+			}
+		},
+		managerUI: {
+			ids: {
+				CURRENT_SERVER_STATUS_ID: 'current',
+				PREFERRED_SERVER_STATUS_ID: 'preferred',
+				ENDPOINT_STATUS_ID: 'endpoint',
+				HANDSHAKE_STATUS_ID: 'handshake',
+				TRANSFER_STATUS_ID: 'transfer',
+				OPERATION_STATUS_ID: 'operation',
+				LAST_ERROR_STATUS_ID: 'last_error',
+				PUBLIC_IP_STATUS_ID: 'public_ip',
+				PUBLIC_COUNTRY_STATUS_ID: 'public_country'
+			},
+			replaceStatusText(id, value) {
+				replacements[id] = String(value);
+			},
+			setManagerControlsDisabled() {},
+			setVpnStatusIndicator(state, label) {
+				indicator = { state: state, label: String(label) };
+			},
+			updateCountryMatchStatus() {},
+			updateServerSelectionState() {}
+		},
+		service: {
+			execService() {
+				return Promise.reject(new Error('backend RPC unavailable'));
+			}
+		}
+	}).managerActions;
+	const state = {
+		appliedEnabled: true,
+		currentLocalStatus: null,
+		currentLocalStatusLastUpdated: 0,
+		inFlight: {}
+	};
+
+	await actions.updateLocalStatus(state, { force: true });
+
+	assert.equal(replacements.current, 'Unavailable', 'missing backend status does not render a disabled server');
+	assert.equal(replacements.operation, 'Unknown', 'missing backend status renders unknown operation status');
+	assert.equal(replacements.last_error, 'backend RPC unavailable', 'missing backend status exposes the backend error');
+	assert.deepEqual(indicator, { state: 'error', label: 'Unavailable' }, 'missing backend status renders an unavailable connection');
+	assert.equal(state.currentLocalStatus.desired_enabled, true, 'synthetic unavailable status keeps the saved enabled intent');
+}
+
 function testSaveApplyTransitionSuppressesConnectedAndDrift() {
-	const diagnosticsBanners = [];
+	const diagnosticsBanners = {};
 	const actions = loadManagerActionsModule({
 		managerStore: {
 			PHASES: {
@@ -729,7 +859,9 @@ function testSaveApplyTransitionSuppressesConnectedAndDrift() {
 				ENDPOINT_STATUS_ID: 'endpoint',
 				HANDSHAKE_STATUS_ID: 'handshake'
 			},
-			replaceStatusText(id, value) {},
+			replaceStatusText(id, value) {
+				diagnosticsBanners[id] = String(value);
+			},
 			setManagerControlsDisabled() {},
 			setVpnStatusIndicator(state, label) {
 				diagnosticsBanners.vpn = { state: state, label: String(label) };
@@ -789,9 +921,10 @@ function testSaveApplyTransitionSuppressesConnectedAndDrift() {
 		appliedEnabled: true,
 		appliedCountryCode: 'ES',
 		currentLocalStatus: status,
-		currentOperationStatus: 'busy:configuration',
-		pendingOperationLabel: 'configuration',
+		currentOperationStatus: 'idle',
+		pendingOperationLabel: '',
 		saveApplyInProgress: true,
+		applyPhase: 'configuration',
 		phase: 'saving',
 		currentDiagnosticsSummary: driftSummary
 	};
@@ -799,10 +932,15 @@ function testSaveApplyTransitionSuppressesConnectedAndDrift() {
 	actions.renderLocalStatusSnapshot(state, status);
 	actions.renderDiagnosticsSnapshot(state, driftSummary, true);
 
+	assert.equal(
+		diagnosticsBanners.operation,
+		'Applying (configuration)...',
+		'Save & Apply shows the local apply phase when backend status is still idle'
+	);
 	assert.deepEqual(
 		diagnosticsBanners.vpn,
-		{ state: 'stopping', label: 'Applying changes' },
-		'Save & Apply transition shows interrupted connection instead of connected'
+		{ state: 'active', label: 'Connected' },
+		'Save & Apply keeps live runtime status visible while controls stay locked'
 	);
 	assert.equal(
 		diagnosticsBanners.summaryHidden,
@@ -916,6 +1054,7 @@ function buildHandleSaveApplyHarness(options) {
 			runExclusive(_state, _key, factory) {
 				return Promise.resolve().then(factory);
 			},
+			clearInFlight() {},
 			clearError(state) {
 				state.lastError = '';
 			},
@@ -1347,7 +1486,6 @@ async function testHandleSaveApplyClearsBusyStateWhenPostApplySyncFails() {
 	assert.equal(harness.state.pendingOperationLabel, '', 'post-apply sync failure clears the applying label');
 	assert.equal(harness.pollingTransitions[harness.pollingTransitions.length - 1], 'resume', 'post-apply sync failure resumes polling');
 	assert.ok(harness.serviceCalls.indexOf('status_json') !== -1, 'post-apply sync failure refreshes local status');
-	assert.ok(harness.serviceCalls.indexOf('public_ip') !== -1, 'post-apply sync failure refreshes public IP state');
 	assert.match(harness.notifications[harness.notifications.length - 1].message, /Save & Apply failed: uci reload failed/, 'post-apply sync failure reports a readable notification');
 }
 
@@ -1384,10 +1522,8 @@ async function testHandleSaveApplyAutoModeClearsManualSelectionAndReconnects() {
 	assert.equal(harness.viewState.initialMode, 'auto', 'view state tracks saved automatic mode');
 	assert.equal(harness.viewState.initialPreferredStation, '', 'view state clears saved preferred station');
 	assert.equal(harness.state.pendingOperationLabel, '', 'runtime action completion clears pending operation label');
-	assert.equal(harness.pollingTransitions[0], 'suspend', 'save/apply suspends polling while committing');
 	assert.equal(harness.pollingTransitions[harness.pollingTransitions.length - 1], 'resume', 'save/apply resumes polling after runtime handling');
 	assert.ok(harness.phaseTransitions.indexOf('saving') !== -1, 'save/apply enters saving phase');
-	assert.ok(harness.phaseTransitions.indexOf('runtime_busy') !== -1, 'apply cycle enters runtime-busy phase');
 	assert.ok(harness.serviceCalls.indexOf('status_json') !== -1, 'save/apply refreshes local status during the flow');
 }
 
@@ -1448,8 +1584,8 @@ async function testHandleSaveApplyQueuesReconnectWhenSavedCountryDriftsFromPeer(
 
 	assert.deepEqual(
 		normalizeValue(harness.runtimeActions),
-		[ [ 'stop_vpn' ], [ 'connect' ], [ 'stop_vpn' ], [ 'connect' ] ],
-		'peer drift after Save & Apply reruns one clean stop/connect cycle'
+		[ [ 'stop_vpn' ], [ 'connect' ] ],
+		'Save & Apply runs a single stop/connect cycle; post-apply drift is left to background reconcile'
 	);
 }
 
@@ -1576,9 +1712,7 @@ async function testAutoReconcileRunsForCountryDrift() {
 	assert.equal(harness.runtimeActions[0][0], 'stop_vpn', 'country drift starts with stop_vpn');
 	assert.equal(harness.runtimeActions[1][0], 'connect', 'country drift follows with connect');
 	assert.equal(harness.state.pendingOperationLabel, '', 'auto reconcile clears the pending label after completion');
-	assert.ok(harness.phaseTransitions.indexOf('runtime_busy') !== -1, 'auto reconcile enters runtime-busy phase');
 	assert.ok(harness.serviceCalls.indexOf('status_json') !== -1, 'auto reconcile refreshes status after completion');
-	assert.ok(harness.serviceCalls.indexOf('public_ip') !== -1, 'auto reconcile refreshes public IP after completion');
 }
 
 async function testAutoReconcileSkipsWhileSaveApplyInProgress() {
@@ -1888,6 +2022,8 @@ Promise.resolve().then(async function() {
 	await testPublicIpPollUpdatesCountryFromSingleSnapshot();
 	await testPublicIpChangeReplacesCountryFromSnapshot();
 	testRenderLocalStatusSnapshotHandlesBusyOperation();
+	testRenderLocalStatusSnapshotUsesHeldLockAction();
+	await testStatusRpcFailureDoesNotRenderDisabled();
 	testSaveApplyTransitionSuppressesConnectedAndDrift();
 	await testHandleSaveApplyManualWithoutPreferredFallsBackToAuto();
 	await testHandleSaveApplyFormCountryOverridesStaleDiskCountry();

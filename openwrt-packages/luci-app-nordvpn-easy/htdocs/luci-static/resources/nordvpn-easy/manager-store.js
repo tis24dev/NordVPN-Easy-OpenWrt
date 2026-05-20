@@ -67,7 +67,7 @@ function clearError(state) {
 function derivePhase(state) {
 	const operation = String(state.currentOperationStatus || 'idle');
 
-	if (state.pendingOperationLabel || operation === 'busy' || operation.indexOf('busy:') === 0)
+	if (state.saveApplyInProgress || operation === 'busy' || operation.indexOf('busy:') === 0)
 		return PHASES.RUNTIME_BUSY;
 
 	if (state.lastError)
@@ -91,7 +91,19 @@ function resumePolling(state) {
 	state.pollingSuspended = false;
 }
 
-function runExclusive(state, key, factory) {
+function clearInFlight(state, key) {
+	if (!state || !state.inFlight)
+		return;
+
+	state.inFlight[key] = null;
+}
+
+function runExclusive(state, key, factory, options) {
+	const opts = options || {};
+
+	if (opts.fresh)
+		clearInFlight(state, key);
+
 	const current = state.inFlight[key];
 
 	if (current)
@@ -114,5 +126,6 @@ return baseclass.extend({
 	syncPhase: syncPhase,
 	suspendPolling: suspendPolling,
 	resumePolling: resumePolling,
+	clearInFlight: clearInFlight,
 	runExclusive: runExclusive
 });

@@ -323,7 +323,10 @@ const TokenValue = form.Value.extend({
 			const modeSelect = managerUI.getSelectElement(managerUI.ids.MODE_FIELD_ID);
 
 			managerUI.renderServerChoices(managerUI.getSelectElement(managerUI.ids.SERVER_FIELD_ID), state.currentServerCatalog, currentPreferredStation);
-			managerActions.renderLocalStatusSnapshot(state, state.currentLocalStatus);
+			if (state.currentLocalStatusFresh)
+				managerActions.renderLocalStatusSnapshot(state, state.currentLocalStatus);
+			else
+				managerActions.renderLocalStatusUnavailable(state);
 			managerActions.renderDiagnosticsSnapshot(
 				state,
 				state.currentDiagnosticsSummary,

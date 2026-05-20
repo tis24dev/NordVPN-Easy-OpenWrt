@@ -202,7 +202,7 @@ function replaceStatusText(elementId, value) {
 function isDisableRequested(state) {
 	const enabledCheckbox = getEnabledCheckboxElement();
 
-	return !!(state && state.pendingOperationLabel && enabledCheckbox && !enabledCheckbox.checked);
+	return !!(state && state.saveApplyInProgress && enabledCheckbox && !enabledCheckbox.checked);
 }
 
 function currentServerSummaryFromStatus(status, state) {
@@ -248,10 +248,6 @@ function updateCountryMatchStatus(state) {
 	const actualCountry = managerData.normalizeCountryCode(
 		state.currentPublicCountry || ''
 	);
-
-	if (state.saveApplyInProgress || state.pendingOperationLabel ||
-		state.phase === 'saving' || state.phase === 'runtime_busy')
-		return setCountryMatchIndicator('checking', _('Applying'));
 
 	if (!state.appliedEnabled || state.currentLocalStatus.runtime_disabled || state.currentLocalStatus.interface_disabled || isDisableRequested(state))
 		return setCountryMatchIndicator('inactive', _('Inactive'));
@@ -356,7 +352,7 @@ function updateServerCatalogStatus(state) {
 function updateServerSelectionState(state) {
 	const mode = getSelectedMode();
 	const country = getSelectedCountry();
-	const busy = state.currentOperationStatus.indexOf('busy') === 0 || state.pendingOperationLabel !== '';
+	const busy = !!state.saveApplyInProgress || state.currentOperationStatus.indexOf('busy') === 0;
 	const selectEl = getSelectElement(ids.SERVER_FIELD_ID);
 	const refreshButton = getInputElement(ids.SERVER_REFRESH_BUTTON_ID, 'button');
 
