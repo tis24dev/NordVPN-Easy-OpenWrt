@@ -258,6 +258,25 @@ assert_eq 'connected' "$(nordvpn_easy_enterprise_state_value 1 0 yes yes idle)" 
 
 rm -rf "$LOCK_DIR"
 
+CACHE_FILE="$TMP_DIR/status.json"
+printf '{"operation_status":"idle","operation_lock_state":"none","operation_lock_action":"","operation_lock_age_seconds":0,"connected":false}' > "$CACHE_FILE"
+NORDVPN_EASY_STATUS_CACHE="$CACHE_FILE"
+LOCK_DIR="$TMP_DIR/lock-overlay"
+mkdir -p "$LOCK_DIR"
+printf '%s\n' "$$" > "$LOCK_DIR/pid"
+printf '%s\n' 'setup' > "$LOCK_DIR/action"
+printf '%s\n' 'held' > "$LOCK_DIR/state"
+printf '%s\n' "$(date +%s)" > "$LOCK_DIR/started_at"
+
+CACHED_STATUS_JSON="$(nordvpn_easy_emit_cached_status_json)"
+
+assert_eq 'busy:setup' "$(printf '%s' "$CACHED_STATUS_JSON" | jq -r '.operation_status')" 'cached status overlays live lock action'
+assert_eq 'held' "$(printf '%s' "$CACHED_STATUS_JSON" | jq -r '.operation_lock_state')" 'cached status overlays live lock state'
+assert_eq 'setup' "$(printf '%s' "$CACHED_STATUS_JSON" | jq -r '.operation_lock_action')" 'cached status overlays live lock action name'
+
+rm -rf "$LOCK_DIR"
+LOCK_DIR="$TMP_DIR/lock"
+
 SNAPSHOT_STATUS_JSON="$(nordvpn_easy_emit_status_json)"
 
 assert_eq 'true' "$(printf '%s' "$SNAPSHOT_STATUS_JSON" | jq -r '.connected')" 'status json uses wireguard snapshot for connected flag'

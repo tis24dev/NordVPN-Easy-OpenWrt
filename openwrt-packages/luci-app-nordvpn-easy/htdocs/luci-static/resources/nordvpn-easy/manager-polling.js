@@ -30,10 +30,12 @@ function start(state) {
 	state.pollersStarted = true;
 
 	poll.add(function() {
-		if (shouldSkipBackgroundPoll(state) || documentIsHidden())
+		if (documentIsHidden())
 			return Promise.resolve();
 
-		return managerActions.updateLocalStatus(state);
+		return managerActions.updateLocalStatus(state, {
+			suppressAutoReconcile: !!state.saveApplyInProgress
+		});
 	}, LOCAL_STATUS_POLL_SECONDS);
 
 	poll.add(function() {
