@@ -1,6 +1,7 @@
 'use strict';
-/* global baseclass, rpc, ui, document, window, Blob, E, _, L */
+/* global baseclass, managerData, rpc, ui, document, window, Blob, E, _, L */
 'require baseclass';
+'require nordvpn-easy/manager-data as managerData';
 'require rpc';
 'require ui';
 
@@ -74,12 +75,6 @@ const callRemoveHooks = rpc.declare({
 	timeout: RUNTIME_RPC_TIMEOUT
 });
 
-const callDisableRuntime = rpc.declare({
-	object: 'nordvpn.easy',
-	method: 'disable_runtime',
-	timeout: RUNTIME_RPC_TIMEOUT
-});
-
 const callPublicIp = rpc.declare({
 	object: 'nordvpn.easy',
 	method: 'public_ip',
@@ -112,13 +107,6 @@ const callServerCatalog = rpc.declare({
 	timeout: 90
 });
 
-const callRefreshServers = rpc.declare({
-	object: 'nordvpn.easy',
-	method: 'refresh_servers',
-	params: [ 'country', 'force' ],
-	timeout: 90
-});
-
 function rpcErrorMessage(err) {
 	return (err && err.message) ? String(err.message) : String(err);
 }
@@ -133,14 +121,6 @@ function normalizeRpcError(err) {
 	}
 
 	return err;
-}
-
-function parseJson(raw, fallback) {
-	try {
-		return JSON.parse(raw || '');
-	} catch (e) {
-		return fallback;
-	}
 }
 
 function responseMessage(res, fallback) {
@@ -243,8 +223,6 @@ function callSimpleAction(action) {
 		return callInstallHooks();
 	case 'remove_hooks':
 		return callRemoveHooks();
-	case 'disable_runtime':
-		return callDisableRuntime();
 	case 'public_ip':
 		return callPublicIp();
 	default:
@@ -265,9 +243,6 @@ function execService(action, extraArgs) {
 		break;
 	case 'refresh_countries_force':
 		request = callRefreshCountries(true);
-		break;
-	case 'refresh_servers':
-		request = callRefreshServers(args[0] || '', args[1] === '1' || args[1] === true);
 		break;
 	case 'server_catalog':
 		request = callServerCatalog(args[0] || '', args[1] === '1' || args[1] === true);
@@ -324,7 +299,7 @@ function parseExecJsonResponse(res, fallback) {
 	if (!res || res.code !== 0)
 		return fallback;
 
-	return parseJson(res.stdout || '', fallback);
+	return managerData.parseJson(res.stdout || '', fallback);
 }
 
 function notifyInfo(message) {
@@ -355,7 +330,6 @@ function downloadTextFile(name, content) {
 return baseclass.extend({
 	LUCI_RPC_TIMEOUT_SEC: LUCI_RPC_TIMEOUT_SEC,
 	ensureLuCiRpcTimeout: ensureLuCiRpcTimeout,
-	parseJson: parseJson,
 	parseExecJsonResponse: parseExecJsonResponse,
 	responseMessage: responseMessage,
 	resultToError: resultToError,
