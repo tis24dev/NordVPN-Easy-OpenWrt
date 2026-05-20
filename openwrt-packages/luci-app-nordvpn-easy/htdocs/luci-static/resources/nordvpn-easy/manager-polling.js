@@ -5,6 +5,8 @@
 'require nordvpn-easy/manager-store as managerStore';
 'require poll';
 
+const LOCAL_STATUS_POLL_SECONDS = 3;
+
 function documentIsHidden() {
 	return (typeof document !== 'undefined') && !!document.hidden;
 }
@@ -27,7 +29,7 @@ function start(state) {
 			return Promise.resolve();
 
 		return managerActions.updateLocalStatus(state);
-	}, 10);
+	}, LOCAL_STATUS_POLL_SECONDS);
 
 	poll.add(function() {
 		if (shouldSkipBackgroundPoll(state) || !state.appliedEnabled)
@@ -45,5 +47,6 @@ function start(state) {
 }
 
 return baseclass.extend({
+	LOCAL_STATUS_POLL_SECONDS: LOCAL_STATUS_POLL_SECONDS,
 	start: start
 });
