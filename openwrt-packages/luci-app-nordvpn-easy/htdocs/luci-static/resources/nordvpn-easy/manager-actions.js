@@ -14,6 +14,7 @@
 
 const AUTO_RECONCILE_RETRY_DELAY_MS = 5 * 60 * 1000;
 const SAVE_APPLY_TIMEOUT_MS = 150000;
+const RUNTIME_ACTION_RECOVERY_POLL_MS = 3000;
 const RUNTIME_ACTION_COOLDOWN_MS = SAVE_APPLY_TIMEOUT_MS + 30000;
 let callUciCommit = null;
 
@@ -569,12 +570,114 @@ function configurationTransitionActive(state) {
 
 function runtimeOperationIsBusy(state, status) {
 	const runtimeStatus = status || (state && state.currentLocalStatus) || {};
-	const operationStatus = String(runtimeStatus.operation_status || (state && state.currentOperationStatus) || 'idle');
 
 	return configurationTransitionActive(state) ||
-		operationStatus === 'busy' ||
+		runtimeStatusIndicatesBusy(runtimeStatus, state && state.currentOperationStatus);
+}
+
+function runtimeStatusIndicatesBusy(status, fallbackOperationStatus) {
+	const runtimeStatus = status || {};
+	const operationStatus = String(runtimeStatus.operation_status || fallbackOperationStatus || 'idle');
+
+	return operationStatus === 'busy' ||
 		operationStatus.indexOf('busy:') === 0 ||
 		String(runtimeStatus.operation_lock_state || 'none') === 'held';
+}
+
+function runtimeActionErrorLooksAborted(err) {
+	const message = String((err && err.message) || err || '').toLowerCase();
+
+	return message.indexOf('xhr request aborted') !== -1 ||
+		message.indexOf('request aborted') !== -1 ||
+		message.indexOf('aborted by browser') !== -1;
+}
+
+function savedRuntimeCountryMatches(status, savedConfig) {
+	const savedCountry = managerData.normalizeCountryCode((savedConfig && savedConfig.country) || '');
+	const runtimeCountry = managerData.normalizeCountryCode(
+		(status && (status.current_server_country || status.selected_country)) || ''
+	);
+
+	return !savedCountry || runtimeCountry === savedCountry;
+}
+
+function savedRuntimeManualServerMatches(status, savedConfig) {
+	const savedMode = normalizeSelectionMode((savedConfig && savedConfig.mode) || 'auto');
+	const savedStation = String((savedConfig && savedConfig.preferredStation) || '');
+	const runtimeStation = String((status && status.current_server_station) || '');
+
+	return savedMode !== 'manual' || !savedStation || runtimeStation === savedStation;
+}
+
+function runtimeActionRecoverySucceeded(savedConfig, status) {
+	const runtimeStatus = status || {};
+	const savedEnabled = !!(savedConfig && savedConfig.enabled);
+
+	if (runtimeStatusIndicatesBusy(runtimeStatus))
+		return false;
+
+	if (!savedEnabled) {
+		return runtimeStatus.desired_enabled === false ||
+			!!runtimeStatus.runtime_disabled ||
+			!!runtimeStatus.interface_disabled ||
+			String(runtimeStatus.vpn_status || '') === 'inactive' ||
+			runtimeStatus.connected === false;
+	}
+
+	if (runtimeStatus.runtime_configured === false ||
+		!!runtimeStatus.runtime_disabled ||
+		!!runtimeStatus.interface_disabled) {
+		return false;
+	}
+
+	if (!(runtimeStatus.connected || String(runtimeStatus.vpn_status || '') === 'active'))
+		return false;
+
+	return savedRuntimeCountryMatches(runtimeStatus, savedConfig) &&
+		savedRuntimeManualServerMatches(runtimeStatus, savedConfig);
+}
+
+function abortedRuntimeActionRecoveryError(err) {
+	const message = (err && err.message) ? err.message : String(err);
+
+	return new Error(
+		_('Runtime action request was interrupted before LuCI received the response. Original error: ') + message
+	);
+}
+
+function recoverAbortedRuntimeAction(state, savedConfig, originalError, successMessage) {
+	const deadline = Date.now() + SAVE_APPLY_TIMEOUT_MS;
+	const recoveryError = abortedRuntimeActionRecoveryError(originalError);
+
+	notifyDebugBlock(_('Runtime action response interrupted'), [
+		_('LuCI lost the backend response while the runtime action may still be running.'),
+		_('Polling local status until the runtime finishes.')
+	]);
+
+	const poll = function() {
+		return updateLocalStatus(state, {
+			force: true,
+			suppressAutoReconcile: true
+		}).then(function(status) {
+			const freshStatus = state.currentLocalStatusFresh ? status : null;
+
+			if (runtimeActionRecoverySucceeded(savedConfig, freshStatus)) {
+				service.notifyInfo(successMessage);
+				return refreshAfterSaveApply(state, true, { suppressAutoReconcile: true });
+			}
+
+			if (Date.now() >= deadline)
+				return Promise.reject(recoveryError);
+
+			return new Promise(function(resolve, reject) {
+				setTimeout(function() {
+					poll().then(resolve, reject);
+				}, RUNTIME_ACTION_RECOVERY_POLL_MS);
+			});
+		});
+	};
+
+	return poll();
 }
 
 function suppressDriftUi(state) {
@@ -1301,6 +1404,18 @@ function handleSaveApply(viewState, state, ev, mode) {
 							}).then(function() {
 								finishResolve();
 							}).catch(function(err) {
+								if (runtimeActionErrorLooksAborted(err)) {
+									return recoverAbortedRuntimeAction(state, savedConfig, err, successMessage).then(function() {
+										finishResolve();
+									}).catch(function(recoveryErr) {
+										managerStore.setError(state, recoveryErr);
+										service.notifyError(recoveryErr);
+										return refreshAfterSaveApply(state, true, { suppressAutoReconcile: true }).then(function() {
+											finishReject(recoveryErr);
+										});
+									});
+								}
+
 								managerStore.setError(state, err);
 								service.notifyError(err);
 								return refreshAfterSaveApply(state, true, { suppressAutoReconcile: true }).then(function() {

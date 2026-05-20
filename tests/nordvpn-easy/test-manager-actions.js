@@ -1546,6 +1546,91 @@ async function testHandleSaveApplyQueuesReconnectWhenSavedCountryDriftsFromPeer(
 		'saved country that drifts from the active peer queues reconnect on Save & Apply');
 }
 
+async function testHandleSaveApplyRecoversAbortedRuntimeActionWhenStatusConverges() {
+	const abortError = new Error('connect failed with exit code -1: XHR request aborted by browser');
+	const harness = buildHandleSaveApplyHarness({
+		previousEnabled: true,
+		previousCountry: 'AT',
+		currentEnabled: true,
+		currentMode: 'auto',
+		currentCountry: 'UY',
+		savedCountry: 'UY',
+		runActionsReject: abortError,
+		statusPayload: {
+			desired_enabled: true,
+			runtime_disabled: false,
+			interface_disabled: false,
+			runtime_configured: true,
+			operation_status: 'idle',
+			operation_lock_state: 'none',
+			selected_country: 'UY',
+			server_selection_mode: 'auto',
+			current_server_country: 'UY',
+			current_server_station: 'uy123',
+			connected: true,
+			vpn_status: 'active'
+		}
+	});
+
+	await harness.actions.handleSaveApply(harness.viewState, harness.state, {}, '1');
+	await Promise.resolve();
+	await Promise.resolve();
+
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn', 'connect' ] ],
+		'aborted runtime XHR still queues the selected reconnect action');
+	assert.equal(harness.state.pendingOperationLabel, '', 'aborted runtime recovery clears pending operation label');
+	assert.equal(harness.pollingTransitions[harness.pollingTransitions.length - 1], 'resume', 'aborted runtime recovery resumes polling');
+	assert.equal(harness.notifications.filter(function(entry) {
+		return entry.type === 'error';
+	}).length, 0, 'aborted runtime recovery does not show a false error notification');
+	assert.ok(harness.notifications.some(function(entry) {
+		return entry.type === 'info' && /selected automatic server/.test(entry.message);
+	}), 'aborted runtime recovery reports the normal Save & Apply success message');
+	assert.ok(harness.serviceCalls.filter(function(action) {
+		return action === 'status_json';
+	}).length >= 2, 'aborted runtime recovery polls status after the interrupted request');
+}
+
+async function testHandleSaveApplyDoesNotRecoverNonAbortRuntimeActionFailure() {
+	const runError = new Error('connect failed with exit code 1: backend failed');
+	const harness = buildHandleSaveApplyHarness({
+		previousEnabled: true,
+		previousCountry: 'AT',
+		currentEnabled: true,
+		currentMode: 'auto',
+		currentCountry: 'UY',
+		savedCountry: 'UY',
+		runActionsReject: runError,
+		statusPayload: {
+			desired_enabled: true,
+			runtime_disabled: false,
+			interface_disabled: false,
+			runtime_configured: true,
+			operation_status: 'idle',
+			operation_lock_state: 'none',
+			selected_country: 'UY',
+			server_selection_mode: 'auto',
+			current_server_country: 'UY',
+			connected: true,
+			vpn_status: 'active'
+		}
+	});
+	let rejected = null;
+
+	await harness.actions.handleSaveApply(harness.viewState, harness.state, {}, '1').catch(function(err) {
+		rejected = err;
+	});
+	await Promise.resolve();
+	await Promise.resolve();
+
+	assert.equal(rejected, runError, 'non-abort runtime failure rejects with the original error');
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn', 'connect' ] ],
+		'non-abort runtime failure still attempted the selected reconnect action');
+	assert.ok(harness.notifications.some(function(entry) {
+		return entry.type === 'error' && /backend failed/.test(entry.message);
+	}), 'non-abort runtime failure still reports an error notification');
+}
+
 async function testAutoReconcileRunsForCountryDrift() {
 	const harness = buildHandleSaveApplyHarness({
 		previousEnabled: true,
@@ -1858,6 +1943,8 @@ Promise.resolve().then(async function() {
 	await testHandleSaveApplyAutoModeClearsManualSelectionAndReconnects();
 	await testHandleSaveApplyReconcilesDisabledRuntimeAfterSave();
 	await testHandleSaveApplyQueuesReconnectWhenSavedCountryDriftsFromPeer();
+	await testHandleSaveApplyRecoversAbortedRuntimeActionWhenStatusConverges();
+	await testHandleSaveApplyDoesNotRecoverNonAbortRuntimeActionFailure();
 	await testAutoReconcileRunsForCountryDrift();
 	await testAutoReconcileThrottlesSuccessfulNoChange();
 	await testAutoReconcileSkipsNonDriftCases();
