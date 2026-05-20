@@ -338,7 +338,7 @@ const TokenValue = form.Value.extend({
 				state.currentDiagnosticsSummary,
 				state.currentDiagnosticsSummaryFresh
 			);
-			// Drift recovery runs from Save & Apply or background polling after cooldown.
+			// Drift recovery runs from the unified apply cycle and background status polling.
 			if (!countries.length && !statusPayloadIsBusy(initialStatusPayload))
 				refreshCountriesInBackground(countrySelect, currentCountry);
 

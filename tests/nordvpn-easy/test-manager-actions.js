@@ -102,9 +102,6 @@ function loadManagerActionsModule(overrides) {
 			formatServerLabel(server) {
 				return String((server && server.hostname) || (server && server.station) || '');
 			},
-			formatActionsLabel(actions) {
-				return actions.join(' + ');
-			},
 			humanizeAction(action) {
 				return String(action || '');
 			}
@@ -191,22 +188,6 @@ const healthyRuntime = {
 	interface_disabled: false,
 	runtime_configured: true
 };
-
-const disabledRuntime = {
-	interface: 'wg0',
-	runtime_disabled: true,
-	interface_disabled: true,
-	runtime_configured: true
-};
-
-const missingRuntime = {
-	interface: 'wg0',
-	runtime_disabled: false,
-	interface_disabled: false,
-	runtime_configured: false
-};
-
-const unknownRuntime = {};
 
 assert.equal(typeof managerActions.normalizeSubmittedConfig, 'function', 'normalizeSubmittedConfig is exported');
 assert.equal(typeof managerActions.runApplyCycle, 'function', 'runApplyCycle is exported');
@@ -936,7 +917,6 @@ function buildHandleSaveApplyHarness(options) {
 	}, opts.uciValues || {});
 	const uciSets = [];
 	const notifications = [];
-	const confirmations = [];
 	const runtimeActions = [];
 	const serviceCalls = [];
 	const phaseTransitions = [];
@@ -969,9 +949,6 @@ function buildHandleSaveApplyHarness(options) {
 		managerFormat: {
 			formatServerLabel(server) {
 				return [ server.country_code, server.city, server.hostname, server.load + '%' ].filter(Boolean).join(' - ');
-			},
-			formatActionsLabel(actions) {
-				return actions.join(' + ');
 			},
 			humanizeAction(action) {
 				return String(action || '');
@@ -1039,13 +1016,6 @@ function buildHandleSaveApplyHarness(options) {
 			getSelectedPreferredStation() {
 				return opts.preferredStation || '';
 			},
-			showConfirmationModal(title, lines) {
-				confirmations.push({
-					title: String(title),
-					lines: lines.map(String)
-				});
-				return Promise.resolve(opts.confirmed !== false);
-			},
 			replaceStatusText() {},
 			setManagerControlsDisabled() {},
 			setVpnStatusIndicator() {},
@@ -1096,8 +1066,8 @@ function buildHandleSaveApplyHarness(options) {
 			runAction(action) {
 				runtimeActions.push([ action ]);
 
-				if (opts.runActionsReject && action === 'connect')
-					return Promise.reject(opts.runActionsReject);
+				if (opts.connectActionReject && action === 'connect')
+					return Promise.reject(opts.connectActionReject);
 
 				return Promise.resolve({
 					action: action,
@@ -1108,12 +1078,6 @@ function buildHandleSaveApplyHarness(options) {
 			},
 			resultToError(result) {
 				return new Error(String((result && result.message) || 'runtime action failed'));
-			},
-			runActions(actions) {
-				runtimeActions.push(actions.slice());
-				return opts.runActionsReject
-					? Promise.reject(opts.runActionsReject)
-					: Promise.resolve({ success: true });
 			},
 			notifyInfo(message) {
 				notifications.push({ type: 'info', message: String(message) });
@@ -1252,7 +1216,6 @@ function buildHandleSaveApplyHarness(options) {
 		state: state,
 		uciSets: uciSets,
 		notifications: notifications,
-		confirmations: confirmations,
 		runtimeActions: runtimeActions,
 		serviceCalls: serviceCalls,
 		phaseTransitions: phaseTransitions,
@@ -1399,7 +1362,6 @@ async function testHandleSaveApplyAutoModeClearsManualSelectionAndReconnects() {
 		],
 		'returning to automatic mode clears manual preferred server UCI fields'
 	);
-	assert.equal(harness.confirmations.length, 0, 'unified apply flow does not ask for runtime confirmation');
 	assert.equal(harness.calls.handleSave, 1, 'manual-to-auto changes save the form once');
 	assert.equal(harness.calls.apply, 0, 'manual-to-auto changes do not use the legacy LuCI apply path');
 	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn' ], [ 'connect' ] ], 'manual-to-auto changes run stop then connect');
@@ -1484,7 +1446,7 @@ async function testHandleSaveApplyRecoversAbortedRuntimeActionWhenStatusConverge
 		currentMode: 'auto',
 		currentCountry: 'UY',
 		savedCountry: 'UY',
-		runActionsReject: abortError,
+		connectActionReject: abortError,
 		statusPayload: {
 			desired_enabled: true,
 			runtime_disabled: false,
@@ -1529,7 +1491,7 @@ async function testHandleSaveApplyDoesNotRecoverNonAbortRuntimeActionFailure() {
 		currentMode: 'auto',
 		currentCountry: 'UY',
 		savedCountry: 'UY',
-		runActionsReject: runError,
+		connectActionReject: runError,
 		statusPayload: {
 			desired_enabled: true,
 			runtime_disabled: false,
@@ -1785,7 +1747,7 @@ async function testAutoReconcileThrottlesRepeatedFailures() {
 	const harness = buildHandleSaveApplyHarness({
 		previousEnabled: true,
 		savedCountry: 'AU',
-		runActionsReject: runError,
+		connectActionReject: runError,
 		statusPayload: {
 			desired_enabled: true,
 			runtime_disabled: false,
