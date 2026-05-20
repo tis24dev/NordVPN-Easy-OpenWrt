@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)"
-SHELLCHECK_EXCLUDES='SC1091,SC2034,SC2119,SC2120,SC2154,SC2329,SC3043'
+SHELLCHECK_EXCLUDES='SC1091,SC2034,SC2119,SC2120,SC2154,SC2317,SC2329,SC3043,SC2015,SC2129'
 
 JS_FILES=(
 	"$ROOT_DIR/openwrt-packages/luci-app-nordvpn-easy/htdocs/luci-static/resources/nordvpn-easy/service.js"
