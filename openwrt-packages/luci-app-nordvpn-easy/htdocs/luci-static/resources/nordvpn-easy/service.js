@@ -9,6 +9,7 @@
 const RUNTIME_RPC_TIMEOUT = 120;
 const DIAGNOSTICS_RPC_TIMEOUT = 180;
 // OpenWrt 24 LuCI rpc.js ignores rpc.declare({ timeout }) and uses L.env.rpctimeout only.
+// Match rpcd/uhttpd minimums in 99-nordvpn-easy-rpcd-timeout (180s).
 const LUCI_RPC_TIMEOUT_SEC = 180;
 
 function ensureLuCiRpcTimeout(minSeconds) {
