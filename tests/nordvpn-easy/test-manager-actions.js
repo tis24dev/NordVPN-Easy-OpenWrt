@@ -186,6 +186,12 @@ function normalizeValue(value) {
 	return JSON.parse(JSON.stringify(value));
 }
 
+function delay(ms) {
+	return new Promise(function(resolve) {
+		setTimeout(resolve, ms);
+	});
+}
+
 const healthyRuntime = {
 	interface: 'wg0',
 	runtime_disabled: false,
@@ -273,16 +279,20 @@ function buildUpdateLocalStatusState() {
 	};
 }
 
-async function testUpdateLocalStatusMarksSnapshotsStaleOnFailedResponse() {
+async function testUpdateLocalStatusPreservesSnapshotOnFailedResponse() {
 	const actions = buildUpdateLocalStatusHarness({
 		execService() {
 			return Promise.resolve({ code: 1, stdout: '', stderr: 'status_json failed' });
 		}
 	});
 	const state = buildUpdateLocalStatusState();
+	const previousStatus = Object.assign({}, state.currentLocalStatus);
 	const status = await actions.updateLocalStatus(state);
 
-	assert.deepEqual(normalizeValue(status), {}, 'failed status_json responses fall back to empty runtime status');
+	assert.deepEqual(normalizeValue(status), normalizeValue(previousStatus), 'failed status_json responses keep the last known runtime status for display');
+	assert.deepEqual(normalizeValue(state.currentLocalStatus), normalizeValue(previousStatus), 'failed status_json responses do not overwrite currentLocalStatus with an empty snapshot');
+	assert.equal(state.appliedEnabled, true, 'failed status_json responses do not mark the applied configuration disabled');
+	assert.equal(state.appliedCountryCode, 'UY', 'failed status_json responses preserve the applied country');
 	assert.equal(state.currentLocalStatusFresh, false, 'failed status_json responses mark runtime status as stale');
 	assert.equal(state.currentLocalStatusLastUpdated, 0, 'failed status_json responses clear the freshness timestamp');
 }
@@ -1246,6 +1256,8 @@ function buildHandleSaveApplyHarness(options) {
 				calls.uciLoad++;
 				if (opts.uciLoadReject)
 					return Promise.reject(opts.uciLoadReject);
+				if (opts.uciLoadPromise)
+					return opts.uciLoadPromise;
 				return Promise.resolve();
 			},
 			changes() {
@@ -1487,6 +1499,44 @@ async function testHandleSaveApplyClearsBusyStateWhenPostApplySyncFails() {
 	assert.equal(harness.pollingTransitions[harness.pollingTransitions.length - 1], 'resume', 'post-apply sync failure resumes polling');
 	assert.ok(harness.serviceCalls.indexOf('status_json') !== -1, 'post-apply sync failure refreshes local status');
 	assert.match(harness.notifications[harness.notifications.length - 1].message, /Save & Apply failed: uci reload failed/, 'post-apply sync failure reports a readable notification');
+}
+
+async function testHandleSaveApplyIgnoresLateApplyCycleAfterTimeout() {
+	let releaseLoad;
+	const delayedLoad = new Promise(function(resolve) {
+		releaseLoad = resolve;
+	});
+	const harness = buildHandleSaveApplyHarness({
+		previousEnabled: true,
+		currentEnabled: true,
+		currentMode: 'auto',
+		currentCountry: 'UY',
+		savedEnabled: '1',
+		uciLoadPromise: delayedLoad,
+		timeoutMs: 10
+	});
+	let rejected = null;
+	const applyPromise = harness.actions.handleSaveApply(harness.viewState, harness.state, {}).catch(function(err) {
+		rejected = err;
+	});
+
+	await delay(25);
+	await applyPromise;
+
+	assert.equal(rejected && rejected.message, 'Configuration apply timed out.', 'Save & Apply rejects with timeout');
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn' ] ],
+		'timed-out apply cycle does not connect before delayed load resolves');
+	assert.equal(harness.state.currentApplyAttempt, null, 'timeout clears the active apply attempt token');
+
+	releaseLoad();
+	await Promise.resolve();
+	await Promise.resolve();
+
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn' ] ],
+		'late apply cycle resolution does not reconnect after timeout');
+	assert.equal(harness.notifications.filter(function(entry) {
+		return entry.type === 'info' && /connected/.test(entry.message);
+	}).length, 0, 'late apply cycle resolution does not show a success notification');
 }
 
 async function testHandleSaveApplyAutoModeClearsManualSelectionAndReconnects() {
@@ -2015,7 +2065,7 @@ function testHideSelectionDriftDiagnosticsPicksMostUrgentRemaining() {
 }
 
 Promise.resolve().then(async function() {
-	await testUpdateLocalStatusMarksSnapshotsStaleOnFailedResponse();
+	await testUpdateLocalStatusPreservesSnapshotOnFailedResponse();
 	await testUpdateLocalStatusMarksSnapshotsStaleOnRejectedExec();
 	testRenderLocalStatusSnapshotClearsDisabledPlaceholders();
 	await testPublicLookupsReturnEarlyWhenRuntimeDisabled();
@@ -2031,6 +2081,7 @@ Promise.resolve().then(async function() {
 	await testHandleSaveApplyStopsAfterStopWhenDisabled();
 	await testHandleSaveApplyTimesOutWhenPostSaveSyncNeverFinishes();
 	await testHandleSaveApplyClearsBusyStateWhenPostApplySyncFails();
+	await testHandleSaveApplyIgnoresLateApplyCycleAfterTimeout();
 	await testHandleSaveApplyAutoModeClearsManualSelectionAndReconnects();
 	await testHandleSaveApplyReconcilesDisabledRuntimeAfterSave();
 	await testHandleSaveApplyQueuesReconnectWhenSavedCountryDriftsFromPeer();

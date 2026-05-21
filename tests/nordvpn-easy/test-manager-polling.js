@@ -35,7 +35,7 @@ function loadManagerPollingModule(overrides) {
 				return false;
 			},
 			updateLocalStatus(_state, options) {
-				calls.push(options && options.force ? 'status:force' : 'status');
+				calls.push(options && options.suppressAutoReconcile ? 'status:suppress' : 'status');
 				return Promise.resolve();
 			},
 			updatePublicIp() {
@@ -114,10 +114,14 @@ Promise.resolve().then(async function() {
 	assert.deepEqual(harness.calls, [ 'status' ], 'first poller refreshes local status');
 
 	state.pollingSuspended = true;
+	await harness.pollers[0].fn();
+	assert.deepEqual(harness.calls, [ 'status' ],
+		'local status poller skips while polling is suspended');
+
 	state.saveApplyInProgress = true;
 	await harness.pollers[0].fn();
-	assert.deepEqual(harness.calls, [ 'status', 'status' ],
-		'local status keeps refreshing during Save & Apply even when other polls are suspended');
+	assert.deepEqual(harness.calls, [ 'status', 'status:suppress' ],
+		'local status keeps refreshing during Save & Apply with auto reconcile suppressed');
 	state.saveApplyInProgress = false;
 	state.pollingSuspended = false;
 

@@ -30,7 +30,7 @@ function start(state) {
 	state.pollersStarted = true;
 
 	poll.add(function() {
-		if (documentIsHidden())
+		if (documentIsHidden() || (state.pollingSuspended && !state.saveApplyInProgress))
 			return Promise.resolve();
 
 		return managerActions.updateLocalStatus(state, {

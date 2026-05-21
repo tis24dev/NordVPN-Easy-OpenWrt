@@ -5,11 +5,14 @@ set -eu
 ROOT_DIR="$(CDPATH='' cd -- "$(dirname "$0")/../.." && pwd)"
 COMMON_LIB="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/common.sh"
 RUNTIME_LIB="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/runtime.sh"
+PUBLIC_IP_LIB="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/public-ip.sh"
 
 # shellcheck disable=SC1090
 . "$COMMON_LIB"
 # shellcheck disable=SC1090
 . "$RUNTIME_LIB"
+# shellcheck disable=SC1090
+. "$PUBLIC_IP_LIB"
 
 assert_eq() {
 	expected="$1"
@@ -20,6 +23,28 @@ assert_eq() {
 		printf '%s\n' "FAIL: $label" >&2
 		printf '%s\n' "expected: $expected" >&2
 		printf '%s\n' "actual:   $actual" >&2
+		exit 1
+	fi
+}
+
+assert_valid_ip() {
+	ip="$1"
+	label="$2"
+
+	if ! nordvpn_easy_public_ip_valid_ip "$ip"; then
+		printf '%s\n' "FAIL: $label" >&2
+		printf '%s\n' "expected valid IP: $ip" >&2
+		exit 1
+	fi
+}
+
+assert_invalid_ip() {
+	ip="$1"
+	label="$2"
+
+	if nordvpn_easy_public_ip_valid_ip "$ip"; then
+		printf '%s\n' "FAIL: $label" >&2
+		printf '%s\n' "expected invalid IP: $ip" >&2
 		exit 1
 	fi
 }
@@ -36,6 +61,18 @@ emit_public_ip_cache_snapshot_fixture() {
 }
 EOF
 }
+
+assert_valid_ip '203.0.113.9' 'public IP validator accepts IPv4'
+assert_valid_ip '2001:db8:85a3:0:0:8a2e:370:7334' 'public IP validator accepts full IPv6'
+assert_valid_ip '2001:db8::1' 'public IP validator accepts compressed IPv6'
+assert_valid_ip '::1' 'public IP validator accepts loopback IPv6'
+assert_valid_ip '::' 'public IP validator accepts unspecified IPv6'
+assert_valid_ip 'fe80::' 'public IP validator accepts trailing IPv6 compression'
+assert_invalid_ip '::::' 'public IP validator rejects repeated colon noise'
+assert_invalid_ip '12345::1' 'public IP validator rejects overlong IPv6 group'
+assert_invalid_ip '2001:db8::1::2' 'public IP validator rejects multiple IPv6 compression markers'
+assert_invalid_ip 'g001:db8::1' 'public IP validator rejects non-hex IPv6 group'
+assert_invalid_ip '1:2:3:4:5:6:7' 'public IP validator rejects short uncompressed IPv6'
 
 PUBLIC_IP='203.0.113.9'
 PUBLIC_IP_CHANGED='0'

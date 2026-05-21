@@ -42,6 +42,13 @@ function createState() {
 			publicIp: null,
 			catalog: null,
 			autoReconcile: null
+		},
+		inFlightEpochs: {
+			status: 0,
+			diagnostics: 0,
+			publicIp: 0,
+			catalog: 0,
+			autoReconcile: 0
 		}
 	};
 }
@@ -91,29 +98,66 @@ function resumePolling(state) {
 	state.pollingSuspended = false;
 }
 
+function ensureInFlightState(state, key) {
+	if (!state.inFlight)
+		state.inFlight = {};
+
+	if (!state.inFlightEpochs)
+		state.inFlightEpochs = {};
+
+	if (state.inFlightEpochs[key] == null)
+		state.inFlightEpochs[key] = 0;
+}
+
+function inFlightPromise(entry) {
+	if (!entry)
+		return null;
+
+	if (typeof entry.then === 'function')
+		return entry;
+
+	return entry.promise || null;
+}
+
 function clearInFlight(state, key) {
-	if (!state || !state.inFlight)
+	if (!state)
 		return;
 
+	ensureInFlightState(state, key);
+	state.inFlightEpochs[key]++;
 	state.inFlight[key] = null;
 }
 
 function runExclusive(state, key, factory, options) {
 	const opts = options || {};
+	let current;
+	let entry;
+	let promise;
+	let epoch;
+
+	ensureInFlightState(state, key);
 
 	if (opts.fresh)
 		clearInFlight(state, key);
 
-	const current = state.inFlight[key];
+	current = inFlightPromise(state.inFlight[key]);
 
 	if (current)
 		return current;
 
-	state.inFlight[key] = Promise.resolve().then(factory).finally(function() {
-		state.inFlight[key] = null;
+	epoch = state.inFlightEpochs[key];
+	entry = {
+		epoch: epoch,
+		promise: null
+	};
+	promise = Promise.resolve().then(factory).finally(function() {
+		if (state.inFlight[key] === entry && state.inFlightEpochs[key] === epoch)
+			state.inFlight[key] = null;
 	});
+	entry.promise = promise;
+	state.inFlight[key] = entry;
 
-	return state.inFlight[key];
+	return promise;
 }
 
 return baseclass.extend({

@@ -274,6 +274,12 @@ assert_eq 'busy:setup' "$(printf '%s' "$CACHED_STATUS_JSON" | jq -r '.operation_
 assert_eq 'held' "$(printf '%s' "$CACHED_STATUS_JSON" | jq -r '.operation_lock_state')" 'cached status overlays live lock state'
 assert_eq 'setup' "$(printf '%s' "$CACHED_STATUS_JSON" | jq -r '.operation_lock_action')" 'cached status overlays live lock action name'
 
+printf '%s\n' '{' > "$CACHE_FILE"
+CORRUPT_CACHED_STATUS_JSON="$(nordvpn_easy_emit_cached_status_json 2>/dev/null)"
+
+assert_eq 'true' "$(printf '%s' "$CORRUPT_CACHED_STATUS_JSON" | jq -r '.connected')" 'cached status falls back to live status when jq rejects cache'
+assert_eq 'busy:setup' "$(printf '%s' "$CORRUPT_CACHED_STATUS_JSON" | jq -r '.operation_status')" 'cached status fallback keeps live lock action'
+
 rm -rf "$LOCK_DIR"
 LOCK_DIR="$TMP_DIR/lock"
 

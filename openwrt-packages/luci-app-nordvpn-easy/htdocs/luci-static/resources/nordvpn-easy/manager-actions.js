@@ -18,6 +18,27 @@ const SAVE_APPLY_TIMEOUT_MS = 240000;
 const RUNTIME_ACTION_RECOVERY_POLL_MS = 3000;
 const RUNTIME_ACTION_COOLDOWN_MS = SAVE_APPLY_TIMEOUT_MS + 30000;
 let callUciCommit = null;
+let nextApplyAttemptId = 0;
+
+function newApplyAttemptId() {
+	nextApplyAttemptId++;
+	return 'apply-' + nextApplyAttemptId;
+}
+
+function applyAttemptIsCurrent(state, applyAttemptId) {
+	return !applyAttemptId || (state && state.currentApplyAttempt === applyAttemptId);
+}
+
+function staleApplyAttemptError() {
+	const err = new Error('Apply attempt was superseded.');
+
+	err.staleApplyAttempt = true;
+	return err;
+}
+
+function rejectStaleApplyAttempt() {
+	return Promise.reject(staleApplyAttemptError());
+}
 
 function formatDebugValue(value, fallback) {
 	const normalized = String(value != null ? value : '').trim();
@@ -236,7 +257,8 @@ function maybeRestartApplyCycleOnDrift(viewState, state, ev, restartOptions) {
 		skipDriftRestart: false,
 		driftDepth: depth + 1,
 		driftContext: drift,
-		notifyDriftQueued: !!opts.notifyDriftQueued
+		notifyDriftQueued: !!opts.notifyDriftQueued,
+		applyAttemptId: opts.applyAttemptId || null
 	});
 }
 
@@ -317,12 +339,18 @@ function buildDiagnosticsSnapshot(res) {
 	};
 }
 
-function runApplyCycleConnectPhase(state, savedConfig) {
+function runApplyCycleConnectPhase(state, savedConfig, applyAttemptId) {
 	const successMessage = APPLY_CYCLE_SUCCESS_CONNECTED;
+
+	if (!applyAttemptIsCurrent(state, applyAttemptId))
+		return rejectStaleApplyAttempt();
 
 	state.applyPhase = 'connect';
 
 	return service.runAction('connect').then(function(result) {
+		if (!applyAttemptIsCurrent(state, applyAttemptId))
+			return rejectStaleApplyAttempt();
+
 		if (!result.success) {
 			const error = service.resultToError(result);
 
@@ -331,10 +359,16 @@ function runApplyCycleConnectPhase(state, savedConfig) {
 		}
 
 		service.notifyInfo(successMessage);
-		return finishApplyCycle(state, { suppressAutoReconcile: true });
+		return finishApplyCycle(state, {
+			suppressAutoReconcile: true,
+			applyAttemptId: applyAttemptId
+		});
 	}).catch(function(err) {
+		if (!applyAttemptIsCurrent(state, applyAttemptId))
+			return rejectStaleApplyAttempt();
+
 		if (runtimeActionErrorLooksAborted(err))
-			return recoverAbortedRuntimeAction(state, savedConfig, err, successMessage);
+			return recoverAbortedRuntimeAction(state, savedConfig, err, successMessage, applyAttemptId);
 
 		throw err;
 	});
@@ -344,6 +378,10 @@ function runApplyCycle(viewState, state, ev, options) {
 	const opts = options || {};
 	const submitted = opts.submitted || null;
 	const skipFormSave = !!opts.skipFormSave;
+	const applyAttemptId = opts.applyAttemptId || null;
+
+	if (!applyAttemptIsCurrent(state, applyAttemptId))
+		return rejectStaleApplyAttempt();
 
 	if (opts.notifyDriftQueued && opts.driftContext)
 		notifyDebugBlock(_('Runtime sync queued'), autoReconcileDebugLines(opts.driftContext));
@@ -351,6 +389,9 @@ function runApplyCycle(viewState, state, ev, options) {
 	state.applyPhase = 'stop_vpn';
 
 	return service.runAction('stop_vpn').then(function(stopResult) {
+		if (!applyAttemptIsCurrent(state, applyAttemptId))
+			return rejectStaleApplyAttempt();
+
 		if (!stopResult.success)
 			throw service.resultToError(stopResult);
 
@@ -363,13 +404,22 @@ function runApplyCycle(viewState, state, ev, options) {
 
 		return null;
 	}).then(function() {
+		if (!applyAttemptIsCurrent(state, applyAttemptId))
+			return rejectStaleApplyAttempt();
+
 		if (skipFormSave)
 			return null;
 
 		return flushLuCiPendingChanges();
 	}).then(function() {
+		if (!applyAttemptIsCurrent(state, applyAttemptId))
+			return rejectStaleApplyAttempt();
+
 		return loadSavedRuntimeConfig();
 	}).then(function(savedConfig) {
+		if (!applyAttemptIsCurrent(state, applyAttemptId))
+			return rejectStaleApplyAttempt();
+
 		if (submitted && !skipFormSave)
 			savedConfig = mergeSavedConfigWithSubmittedValues(savedConfig, submitted);
 
@@ -380,25 +430,35 @@ function runApplyCycle(viewState, state, ev, options) {
 			const tokenError = new Error(_('NordVPN token is required before enabling NordVPN Easy.'));
 
 			service.notifyError(tokenError);
-			return finishApplyCycle(state, { suppressAutoReconcile: true }).then(function() {
+			return finishApplyCycle(state, {
+				suppressAutoReconcile: true,
+				applyAttemptId: applyAttemptId
+			}).then(function() {
 				throw tokenError;
 			});
 		}
 
 		if (!savedConfig.enabled) {
 			service.notifyInfo(APPLY_CYCLE_SUCCESS_DISABLED);
-			return finishApplyCycle(state, { suppressAutoReconcile: true });
+			return finishApplyCycle(state, {
+				suppressAutoReconcile: true,
+				applyAttemptId: applyAttemptId
+			});
 		}
 
-		return runApplyCycleConnectPhase(state, savedConfig);
+		return runApplyCycleConnectPhase(state, savedConfig, applyAttemptId);
 	}).then(function(refreshResult) {
+		if (!applyAttemptIsCurrent(state, applyAttemptId))
+			return rejectStaleApplyAttempt();
+
 		if (opts.skipDriftRestart)
 			return refreshResult;
 
 		return maybeRestartApplyCycleOnDrift(viewState, state, ev, {
 			driftDepth: Number(opts.driftDepth) || 0,
 			driftContext: opts.driftContext || null,
-			notifyDriftQueued: true
+			notifyDriftQueued: true,
+			applyAttemptId: applyAttemptId
 		}).then(function() {
 			return refreshResult;
 		});
@@ -705,12 +765,15 @@ function abortedRuntimeActionRecoveryError(err) {
 	);
 }
 
-function recoverAbortedRuntimeAction(state, savedConfig, originalError, successMessage) {
+function recoverAbortedRuntimeAction(state, savedConfig, originalError, successMessage, applyAttemptId) {
 	const deadline = Date.now() + SAVE_APPLY_TIMEOUT_MS;
 	const recoveryError = abortedRuntimeActionRecoveryError(originalError);
 	let interruptionNotified = false;
 
 	const notifyInterruptionOnce = function() {
+		if (!applyAttemptIsCurrent(state, applyAttemptId))
+			return;
+
 		if (interruptionNotified)
 			return;
 
@@ -722,20 +785,35 @@ function recoverAbortedRuntimeAction(state, savedConfig, originalError, successM
 	};
 
 	if (runtimeActionRecoverySucceeded(savedConfig, state.currentLocalStatusFresh ? state.currentLocalStatus : null)) {
+		if (!applyAttemptIsCurrent(state, applyAttemptId))
+			return rejectStaleApplyAttempt();
+
 		service.notifyInfo(successMessage);
-		return finishApplyCycle(state, { suppressAutoReconcile: true });
+		return finishApplyCycle(state, {
+			suppressAutoReconcile: true,
+			applyAttemptId: applyAttemptId
+		});
 	}
 
 	const poll = function() {
+		if (!applyAttemptIsCurrent(state, applyAttemptId))
+			return rejectStaleApplyAttempt();
+
 		return updateLocalStatus(state, {
 			force: true,
 			suppressAutoReconcile: true
 		}).then(function(status) {
+			if (!applyAttemptIsCurrent(state, applyAttemptId))
+				return rejectStaleApplyAttempt();
+
 			const freshStatus = state.currentLocalStatusFresh ? status : null;
 
 			if (runtimeActionRecoverySucceeded(savedConfig, freshStatus)) {
 				service.notifyInfo(successMessage);
-				return finishApplyCycle(state, { suppressAutoReconcile: true });
+				return finishApplyCycle(state, {
+					suppressAutoReconcile: true,
+					applyAttemptId: applyAttemptId
+				});
 			}
 
 			notifyInterruptionOnce();
@@ -818,6 +896,12 @@ function statusErrorMessage(err) {
 	return message || _('Backend status unavailable');
 }
 
+function statusResponseError(res) {
+	const message = String((res && res.stderr) || '').trim();
+
+	return new Error(message || _('Backend status unavailable'));
+}
+
 function renderLocalStatusUnavailable(state, err) {
 	const message = statusErrorMessage(err);
 
@@ -847,6 +931,27 @@ function renderLocalStatusUnavailable(state, err) {
 	managerUI.updateServerSelectionState(state);
 
 	return state.currentLocalStatus;
+}
+
+function handleLocalStatusUnavailable(state, err) {
+	let fallbackStatus = state.currentLocalStatusLastUpdated ? state.currentLocalStatus : null;
+
+	state.currentLocalStatusFresh = false;
+	state.currentLocalStatusLastUpdated = 0;
+	managerStore.setError(state, err);
+
+	if (fallbackStatus) {
+		renderLocalStatusSnapshot(state, fallbackStatus);
+		managerUI.replaceStatusText(managerUI.ids.OPERATION_STATUS_ID, _('Unknown'));
+		managerUI.replaceStatusText(managerUI.ids.LAST_ERROR_STATUS_ID, statusErrorMessage(err));
+		state.currentOperationStatus = 'unknown';
+		renderDiagnosticsSnapshot(state, managerData.emptyDiagnosticsSummary(), false);
+		return fallbackStatus;
+	}
+
+	fallbackStatus = renderLocalStatusUnavailable(state, err);
+	renderDiagnosticsSnapshot(state, managerData.emptyDiagnosticsSummary(), false);
+	return fallbackStatus;
 }
 
 function renderLocalStatusSnapshot(state, status) {
@@ -1022,6 +1127,10 @@ function updateLocalStatus(state, options) {
 	return managerStore.runExclusive(state, 'status', function() {
 		return service.execService('status_json').then(function(res) {
 			const localStatusSnapshot = buildLocalStatusSnapshot(res);
+
+			if (!localStatusSnapshot.fresh)
+				return handleLocalStatusUnavailable(state, statusResponseError(res));
+
 			const status = localStatusSnapshot.status;
 			const desiredEnabled = !!status.desired_enabled;
 
@@ -1046,20 +1155,7 @@ function updateLocalStatus(state, options) {
 
 			return status;
 		}).catch(function(err) {
-			const fallbackStatus = state.currentLocalStatusLastUpdated ? state.currentLocalStatus : null;
-
-			state.currentLocalStatusFresh = false;
-			state.currentLocalStatusLastUpdated = 0;
-			managerStore.setError(state, err);
-			if (fallbackStatus) {
-				renderLocalStatusSnapshot(state, fallbackStatus);
-				managerUI.replaceStatusText(managerUI.ids.OPERATION_STATUS_ID, _('Unknown'));
-				managerUI.replaceStatusText(managerUI.ids.LAST_ERROR_STATUS_ID, statusErrorMessage(err));
-				state.currentOperationStatus = 'unknown';
-				return fallbackStatus;
-			}
-
-			return renderLocalStatusUnavailable(state, err);
+			return handleLocalStatusUnavailable(state, err);
 		});
 	}, { fresh: !!(opts.force || state.saveApplyInProgress) });
 }
@@ -1194,6 +1290,10 @@ function rememberSavedRuntimeConfig(viewState, state, savedConfig) {
 
 function finishApplyCycle(state, options) {
 	const opts = options || {};
+	const applyAttemptId = opts.applyAttemptId || null;
+
+	if (!applyAttemptIsCurrent(state, applyAttemptId))
+		return Promise.resolve();
 
 	state.pendingOperationLabel = '';
 	state.applyPhase = '';
@@ -1230,11 +1330,13 @@ function handleSaveApply(viewState, state, ev) {
 		submittedRuntimeConfig.preferredStation,
 		selectedServer
 	);
+	const applyAttemptId = newApplyAttemptId();
 
 	notifyDebugBlock(_('Save & Apply requested'), debugLines.concat([
 		_('Runtime flow: stop VPN, save configuration, connect when enabled.')
 	]));
 
+	state.currentApplyAttempt = applyAttemptId;
 	managerStore.clearError(state);
 	state.saveApplyInProgress = true;
 	state.pendingOperationLabel = '';
@@ -1255,28 +1357,48 @@ function handleSaveApply(viewState, state, ev) {
 		};
 
 		const finishResolve = function(value) {
+			if (!applyAttemptIsCurrent(state, applyAttemptId))
+				return;
+
 			if (settled)
 				return;
 
 			settled = true;
+			state.currentApplyAttempt = null;
 			cleanup();
 			resolve(value);
 		};
 
 		const finishReject = function(err) {
+			if (!applyAttemptIsCurrent(state, applyAttemptId))
+				return;
+
 			if (settled)
 				return;
 
 			settled = true;
+			state.currentApplyAttempt = null;
 			cleanup();
 			reject(err);
 		};
 
 		timeoutId = setTimeout(function() {
 			const timeoutError = new Error(_('Configuration apply timed out.'));
+			const timeoutApplyAttemptId = applyAttemptId + ':timeout';
+
+			if (!applyAttemptIsCurrent(state, applyAttemptId))
+				return;
 
 			managerStore.setError(state, timeoutError);
-			finishApplyCycle(state, { suppressAutoReconcile: true }).finally(function() {
+			state.currentApplyAttempt = timeoutApplyAttemptId;
+			finishApplyCycle(state, {
+				suppressAutoReconcile: true,
+				applyAttemptId: timeoutApplyAttemptId
+			}).finally(function() {
+				if (!applyAttemptIsCurrent(state, timeoutApplyAttemptId))
+					return;
+
+				state.currentApplyAttempt = applyAttemptId;
 				finishReject(timeoutError);
 			});
 		}, SAVE_APPLY_TIMEOUT_MS);
@@ -1284,14 +1406,24 @@ function handleSaveApply(viewState, state, ev) {
 		runApplyCycle(viewState, state, ev, {
 			submitted: submittedRuntimeConfig,
 			skipDriftRestart: true,
-			driftDepth: 0
+			driftDepth: 0,
+			applyAttemptId: applyAttemptId
 		}).then(function() {
 			finishResolve();
 		}).catch(function(err) {
 			const message = (err && err.message) ? err.message : String(err);
 
+			if (!applyAttemptIsCurrent(state, applyAttemptId))
+				return;
+
 			managerStore.setError(state, err);
-			return finishApplyCycle(state, { suppressAutoReconcile: true }).then(function() {
+			return finishApplyCycle(state, {
+				suppressAutoReconcile: true,
+				applyAttemptId: applyAttemptId
+			}).then(function() {
+				if (!applyAttemptIsCurrent(state, applyAttemptId))
+					return;
+
 				service.notifyError(new Error(_('Save & Apply failed: ') + message));
 				finishReject(err);
 			});

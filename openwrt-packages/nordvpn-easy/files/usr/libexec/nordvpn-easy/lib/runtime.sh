@@ -662,6 +662,7 @@ nordvpn_easy_emit_cached_status_json() {
 	local lock_pid=''
 	local lock_action=''
 	local lock_age='0'
+	local jq_status='0'
 
 	nordvpn_easy_load_lock_metadata "${LOCK_DIR:-/tmp/nordvpn-easy.lock}"
 	operation="$(nordvpn_easy_operation_status_from_loaded_lock)"
@@ -682,8 +683,8 @@ nordvpn_easy_emit_cached_status_json() {
 			| .operation_lock_pid = $lock_pid
 			| .operation_lock_action = $lock_action
 			| .operation_lock_age_seconds = $lock_age' \
-			"$cache_file"
-		return 0
+			"$cache_file" || jq_status=$?
+		[ "$jq_status" -eq 0 ] && return 0
 	fi
 
 	nordvpn_easy_emit_status_json

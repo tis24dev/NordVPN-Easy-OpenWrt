@@ -7,7 +7,11 @@ PUBLIC_COUNTRY_API="${PUBLIC_COUNTRY_API:-https://api.country.is}"
 PUBLIC_LOOKUP_LOG_MODE="${PUBLIC_LOOKUP_LOG_MODE:-verbose}"
 
 nordvpn_easy_public_ip_valid_ip() {
-	printf '%s' "$1" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$|^[0-9A-Fa-f:]+$'
+	local ipv4='([0-9]{1,3}\.){3}[0-9]{1,3}'
+	local h='[0-9A-Fa-f]{1,4}'
+	local ipv6="(${h}:){7}${h}|(${h}:){1,7}:|(${h}:){1,6}:${h}|(${h}:){1,5}(:${h}){1,2}|(${h}:){1,4}(:${h}){1,3}|(${h}:){1,3}(:${h}){1,4}|(${h}:){1,2}(:${h}){1,5}|${h}:(:${h}){1,6}|:((:${h}){1,7}|:)"
+
+	printf '%s' "$1" | grep -Eq "^(${ipv4}|${ipv6})$"
 }
 
 nordvpn_easy_public_ip_valid_country_code() {
