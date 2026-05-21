@@ -358,9 +358,11 @@ nordvpn_easy_configure_vpn_interface() {
 
 	uci set "network.${VPN_IF}"='interface'
 	uci set "network.${VPN_IF}.proto"='wireguard'
+	uci -q delete "network.${VPN_IF}.addresses" >/dev/null 2>&1 || true
 	uci add_list "network.${VPN_IF}.addresses"="$VPN_ADDR"
 	uci set "network.${VPN_IF}.private_key"="$PRIVATE_KEY"
 
+	uci -q delete "network.${VPN_IF}.dns" >/dev/null 2>&1 || true
 	if [ -n "$VPN_DNS1" ] || [ -n "$VPN_DNS2" ]; then
 		uci set "network.${VPN_IF}.peerdns"='0'
 		[ -n "$VPN_DNS1" ] && uci add_list "network.${VPN_IF}.dns"="$VPN_DNS1"

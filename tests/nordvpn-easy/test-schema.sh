@@ -54,6 +54,9 @@ assert_eq 'WIREGUARD_PERSISTENT_KEEPALIVE' "$(nordvpn_easy_env_name wireguard_pe
 assert_eq 'WIREGUARD_MTU' "$(nordvpn_easy_env_name wireguard_mtu)" 'runtime binding maps MTU env name'
 assert_eq 'FIREWALL_MTU_FIX' "$(nordvpn_easy_env_name firewall_mtu_fix)" 'runtime binding maps firewall MTU fix env name'
 assert_eq "$NORDVPN_EASY_BACKEND_PAYLOAD_SIGNATURE" "$(nordvpn_easy_backend_payload_signature)" 'backend payload signature helper'
+assert_eq "wan'\\''vpn" "$(nordvpn_easy_shell_quote "wan'vpn")" 'shell quote escapes single quotes'
+eval "SHELL_QUOTE_ROUNDTRIP='$(nordvpn_easy_shell_quote "wan'vpn")'"
+assert_eq "wan'vpn" "$SHELL_QUOTE_ROUNDTRIP" 'shell quote round-trips through eval'
 
 unset NORDVPN_TOKEN
 unset CHECK_CRON_SCHEDULE

@@ -7,35 +7,12 @@
 # Use NORDVPN_TOKEN with the token you get from https://my.nordaccount.com/dashboard/nordvpn/access-tokens/
 
 LIB_DIR='/usr/libexec/nordvpn-easy/lib'
-SCHEMA_LIB="${LIB_DIR}/schema.sh"
 CONFIG_CONTEXT_LIB="${LIB_DIR}/config-context.sh"
-COMMON_LIB="${LIB_DIR}/common.sh"
 CATALOG_LIB="${LIB_DIR}/catalog.sh"
 RUNTIME_LIB="${LIB_DIR}/runtime.sh"
 WIREGUARD_LIB="${LIB_DIR}/wireguard.sh"
 DIAGNOSTICS_LIB="${LIB_DIR}/diagnostics.sh"
 ACTIONS_LIB="${LIB_DIR}/actions.sh"
-
-# shellcheck disable=SC1090
-. "$SCHEMA_LIB" || exit 1
-# shellcheck disable=SC1090
-. "$CONFIG_CONTEXT_LIB" || exit 1
-# shellcheck disable=SC1090
-. "$COMMON_LIB" || exit 1
-# shellcheck disable=SC1090
-. "$CATALOG_LIB" || exit 1
-# shellcheck disable=SC1090
-. "$RUNTIME_LIB" || exit 1
-# shellcheck disable=SC1090
-. "${LIB_DIR}/public-ip.sh" || exit 1
-# shellcheck disable=SC1090
-. "$WIREGUARD_LIB" || exit 1
-# shellcheck disable=SC1090
-. "$DIAGNOSTICS_LIB" || exit 1
-# shellcheck disable=SC1090
-. "$ACTIONS_LIB" || exit 1
-
-nordvpn_easy_apply_env_defaults
 
 VPN_INTERFACE_PRESENT_DELAY="${VPN_INTERFACE_PRESENT_DELAY:-10}"
 
@@ -49,6 +26,8 @@ SERVER_CATALOG_TS_FILE='/tmp/nordvpn-easy-servers.timestamp'
 COUNTRIES_CACHE_TTL="${COUNTRIES_CACHE_TTL:-86400}"
 NORDVPN_API='https://api.nordvpn.com/v1'
 COUNTRIES_URL="${NORDVPN_API}/servers/countries"
+# Consumed by the lazily sourced public-ip library.
+# shellcheck disable=SC2034
 PUBLIC_COUNTRY_API='https://api.country.is'   # Third-party API, no auth required; returns JSON like {"country":"XX"} with an ISO country code.
 # shellcheck disable=SC2034
 SERVER_RECOMMENDATIONS_URL_BASE="${NORDVPN_API}/servers/recommendations?filters[servers_technologies][identifier]=wireguard_udp&limit=10"
@@ -66,9 +45,58 @@ CONFIG_PATH_REQUIRED=0
 LOCK_ACQUIRED=0
 SERVER_CATALOG_QUERY=''
 SERVER_CATALOG_FORCE='0'
+# Consumed by the lazily sourced public-ip library.
+# shellcheck disable=SC2034
 PUBLIC_LOOKUP_LOG_MODE='verbose'
 CORE_QUIET_ACTION=0
 CORE_BACKEND_PAYLOAD_SIGNATURE='render-contract-v3'
+
+NORDVPN_EASY_RUN_DIR="${NORDVPN_EASY_RUN_DIR:-/tmp/run/nordvpn-easy}"
+NORDVPN_EASY_STATUS_CACHE="${NORDVPN_EASY_STATUS_CACHE:-$NORDVPN_EASY_RUN_DIR/status.json}"
+NORDVPN_EASY_PUBLIC_IP_CACHE="${NORDVPN_EASY_PUBLIC_IP_CACHE:-$NORDVPN_EASY_RUN_DIR/public_ip}"
+NORDVPN_EASY_PUBLIC_COUNTRY_CACHE="${NORDVPN_EASY_PUBLIC_COUNTRY_CACHE:-$NORDVPN_EASY_RUN_DIR/public_country}"
+NORDVPN_EASY_LAST_ERROR_CACHE="${NORDVPN_EASY_LAST_ERROR_CACHE:-$NORDVPN_EASY_RUN_DIR/last_error}"
+
+core_source_files() {
+  local core_lib
+
+  for core_lib in "$@"; do
+    # shellcheck disable=SC1090
+    . "$core_lib" || return 1
+  done
+}
+
+core_source_libs_for_action() {
+  # config-context.sh sources schema.sh, service-config.sh, and common.sh.
+  core_source_files "$CONFIG_CONTEXT_LIB" || return 1
+
+  case "$1" in
+    stop_vpn)
+      core_source_files "$RUNTIME_LIB" "$WIREGUARD_LIB" "$ACTIONS_LIB"
+      ;;
+    operation_status|vpn_status|status_json)
+      core_source_files "$RUNTIME_LIB"
+      ;;
+    public_ip)
+      core_source_files "$RUNTIME_LIB" "${LIB_DIR}/public-ip.sh"
+      ;;
+    diagnostics_log|diagnostics_summary)
+      core_source_files "$RUNTIME_LIB" "$WIREGUARD_LIB" "$DIAGNOSTICS_LIB"
+      ;;
+    refresh_countries|refresh_countries_force|server_catalog)
+      core_source_files "$CATALOG_LIB" "$RUNTIME_LIB"
+      ;;
+    *)
+      core_source_files \
+        "$CATALOG_LIB" \
+        "$RUNTIME_LIB" \
+        "${LIB_DIR}/public-ip.sh" \
+        "$WIREGUARD_LIB" \
+        "$DIAGNOSTICS_LIB" \
+        "$ACTIONS_LIB"
+      ;;
+  esac
+}
 
 log () {
   nordvpn_easy_log_phase "${LOG_PHASE:-runtime}" "$@"
@@ -145,7 +173,59 @@ validate_setup_runtime () {
   fi
 }
 
+validate_stop_runtime () {
+  MISSING_FIELDS=''
+
+  [ -n "$WAN_IF" ] || MISSING_FIELDS="${MISSING_FIELDS} WAN_IF"
+  [ -n "$VPN_IF" ] || MISSING_FIELDS="${MISSING_FIELDS} VPN_IF"
+
+  if [ -n "$MISSING_FIELDS" ]; then
+    nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "stop prerequisites missing:${MISSING_FIELDS}"
+    return 1
+  fi
+
+  log "Stop/runtime prerequisites verified (wan_if=${WAN_IF:-unset}, vpn_if=${VPN_IF:-unset}, interface_restart_delay=${INTERFACE_RESTART_DELAY:-10})"
+}
+
+load_stop_config () {
+  local uci_config='nordvpn_easy'
+  local uci_section='main'
+  local option raw_value normalized_value env_name
+
+  if [ -n "$CONFIG_PATH" ] && [ -f "$CONFIG_PATH" ]; then
+    nordvpn_easy_load_runtime_context_from_file "$CONFIG_PATH" || {
+      nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "failed to source runtime configuration from $CONFIG_PATH ($(backend_payload_summary))"
+      return 1
+    }
+    [ "$CORE_QUIET_ACTION" -eq 1 ] || log "Loaded stop runtime configuration from $CONFIG_PATH (wan_if=${WAN_IF:-unset}, vpn_if=${VPN_IF:-unset}, interface_restart_delay=${INTERFACE_RESTART_DELAY:-10}; $(backend_payload_summary))"
+    return 0
+  elif [ "$CONFIG_PATH_REQUIRED" -eq 1 ]; then
+    nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "required config file $CONFIG_PATH was not found ($(backend_payload_summary))"
+    return 1
+  fi
+
+  for option in enabled wan_if vpn_if interface_restart_delay; do
+    raw_value="$(nordvpn_easy_read_uci_option "$uci_config" "$uci_section" "$option")"
+    normalized_value="$(nordvpn_easy_normalize_value "$option" "$raw_value")"
+    if [ "$option" = 'enabled' ]; then
+      nordvpn_easy_assign_shell_var 'DESIRED_ENABLED' "$normalized_value"
+      nordvpn_easy_assign_shell_var 'ENABLED' "$normalized_value"
+    else
+      env_name="$(nordvpn_easy_env_name "$option")"
+      nordvpn_easy_assign_shell_var "$env_name" "$normalized_value"
+    fi
+  done
+
+  CONFIG_CONTEXT_SOURCE="uci:${uci_config}.${uci_section}:stop"
+  [ "$CORE_QUIET_ACTION" -eq 1 ] || log "Loaded stop runtime configuration from ${CONFIG_CONTEXT_SOURCE} (wan_if=${WAN_IF:-unset}, vpn_if=${VPN_IF:-unset}, interface_restart_delay=${INTERFACE_RESTART_DELAY:-10}; $(backend_payload_summary))"
+}
+
 load_config () {
+  if [ "$ACTION" = 'stop_vpn' ]; then
+    load_stop_config
+    return $?
+  fi
+
   if [ -n "$CONFIG_PATH" ] && [ -f "$CONFIG_PATH" ]; then
     nordvpn_easy_load_runtime_context_from_file "$CONFIG_PATH" || {
       nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "failed to source runtime configuration from $CONFIG_PATH ($(backend_payload_summary))"
@@ -171,6 +251,19 @@ require_commands () {
   local rc=$?
   NORDVPN_EASY_REQUIRE_COMMANDS_LOG_MODE="$previous_log_mode"
   return "$rc"
+}
+
+require_stop_commands () {
+  local cmd
+
+  [ "${CORE_QUIET_ACTION:-0}" -eq 1 ] || log 'Validating required stop commands'
+  for cmd in awk ifdown ip uci; do
+    command -v "$cmd" >/dev/null 2>&1 || {
+      nordvpn_easy_log_blocker 'runtime' "required command '$cmd' is missing"
+      return 1
+    }
+  done
+  [ "${CORE_QUIET_ACTION:-0}" -eq 1 ] || log 'Required stop commands are available'
 }
 
 server_selection_is_manual () {
@@ -879,6 +972,9 @@ case "$ACTION" in
     ;;
 esac
 
+core_source_libs_for_action "$ACTION" || exit 1
+nordvpn_easy_apply_env_defaults
+
 load_config || exit 1
 NORDVPN_EASY_LAST_ERROR_RECORDED=0
 
@@ -942,7 +1038,14 @@ if [ "$ACTION" = 'server_catalog' ]; then
   fi
 fi
 
-require_commands || exit 1
+case "$ACTION" in
+  stop_vpn)
+    require_stop_commands || exit 1
+    ;;
+  *)
+    require_commands || exit 1
+    ;;
+esac
 
 log "action dispatch starting (args=$(nordvpn_easy_debug_cli_args "$@"), config_source=${CONFIG_CONTEXT_SOURCE:-unknown}, vpn_if=${VPN_IF:-unset}, desired_enabled=${DESIRED_ENABLED:-0})"
 
@@ -972,7 +1075,7 @@ case "$ACTION" in
     ACTION_RC=$?
     ;;
   stop_vpn)
-    validate_setup_runtime &&
+    validate_stop_runtime &&
     nordvpn_easy_stop_vpn_for_server_change
     ACTION_RC=$?
     ;;

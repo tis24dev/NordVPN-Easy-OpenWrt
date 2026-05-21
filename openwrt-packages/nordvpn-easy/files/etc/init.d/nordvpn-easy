@@ -333,8 +333,11 @@ normalize_cron_schedule() {
 
 install_cron_hook() {
 	local effective_cron_schedule=''
+	local config_ready="${1:-0}"
 
-	load_service_config
+	if [ "$config_ready" != '1' ]; then
+		load_service_config
+	fi
 	mkdir -p /etc/cron.d
 
 	if [ "$cfg_enabled" -eq 1 ] && [ -n "$cfg_check_cron_schedule" ]; then
@@ -362,7 +365,11 @@ EOF
 }
 
 install_hotplug_hook() {
-	load_service_config
+	local config_ready="${1:-0}"
+
+	if [ "$config_ready" != '1' ]; then
+		load_service_config
+	fi
 	mkdir -p /etc/hotplug.d/iface
 
 	if [ "$cfg_enabled" -ne 1 ] || [ "$cfg_enable_hotplug" -ne 1 ]; then
@@ -445,8 +452,8 @@ install_hooks() {
 	load_service_config || return 1
 	log_service_info "install_hooks requested with $(nordvpn_easy_service_debug_summary 'cfg_')"
 	log_service_info 'installing runtime hooks'
-	install_cron_hook || return 1
-	install_hotplug_hook || return 1
+	install_cron_hook 1 || return 1
+	install_hotplug_hook 1 || return 1
 	log_service_info 'runtime hooks installed'
 }
 
