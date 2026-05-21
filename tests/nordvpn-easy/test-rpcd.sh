@@ -111,18 +111,25 @@ EOF
 chmod 755 "$FAKE_INIT"
 printf '%s\n' 'public_ip failed (rc=1)' > "$RUN_DIR/last_error"
 
+FAKE_POLL="$TMP_DIR/public-ip-poll"
+cat > "$FAKE_POLL" <<'EOF'
+#!/bin/sh
+printf '%s\n' 'public_ip failed (rc=1)' >&2
+exit 1
+EOF
+chmod 755 "$FAKE_POLL"
+
 LOOKUP_JSON="$(
 	printf '{}' |
 		NORDVPN_EASY_LIB_DIR="$LIB_DIR" \
-		NORDVPN_EASY_INIT_SCRIPT="$FAKE_INIT" \
-		NORDVPN_EASY_RUN_DIR="$RUN_DIR" \
+		NORDVPN_EASY_PUBLIC_IP_POLL_SCRIPT="$FAKE_POLL" \
 		sh "$RPCD_SCRIPT" call public_ip
 )"
 printf '%s' "$LOOKUP_JSON" | jq -er '
 	.success == false and
 	.stdout == "" and
-	.stderr == "public_ip failed (rc=1)" and
-	.message == "public_ip failed (rc=1)"
+	.stderr == "public_ip failed (rc=1)\n" and
+	.message == "public_ip failed (rc=1)\n"
 ' >/dev/null
 
 DIAG_JSON="$(

@@ -1,6 +1,7 @@
 #!/bin/sh
 
 INIT_SCRIPT="${NORDVPN_EASY_INIT_SCRIPT:-/etc/init.d/nordvpn-easy}"
+PUBLIC_IP_POLL_SCRIPT="${NORDVPN_EASY_PUBLIC_IP_POLL_SCRIPT:-/usr/libexec/nordvpn-easy/public-ip-poll.sh}"
 UCI_CONFIG='nordvpn_easy'
 UCI_SECTION='main'
 LIB_DIR="${NORDVPN_EASY_LIB_DIR:-/usr/libexec/nordvpn-easy/lib}"
@@ -158,6 +159,42 @@ rpc_stop_vpn() {
 	rpc_command_result 'stop_vpn' "$INIT_SCRIPT" stop_vpn
 }
 
+rpc_public_ip() {
+	local tmp_dir out_file err_file rc stdout_json stderr_json message_json
+
+	[ -x "$PUBLIC_IP_POLL_SCRIPT" ] || {
+		printf '{"action":"public_ip","code":1,"success":false,"busy":false,"skipped":false,"reason":"","holder_pid":"","holder_action":"","holder_age_seconds":0,"stdout":"","stderr":"missing public-ip poll script","message":"missing public-ip poll script"}\n'
+		return 0
+	}
+
+	tmp_dir="$(mktemp -d /tmp/nordvpn-easy.public-ip.XXXXXX 2>/dev/null)" || {
+		printf '{"action":"public_ip","code":1,"success":false,"busy":false,"skipped":false,"reason":"","holder_pid":"","holder_action":"","holder_age_seconds":0,"stdout":"","stderr":"could not create public-ip temp directory","message":"could not create public-ip temp directory"}\n'
+		return 0
+	}
+	out_file="${tmp_dir}/stdout"
+	err_file="${tmp_dir}/stderr"
+
+	"$PUBLIC_IP_POLL_SCRIPT" quiet > "$out_file" 2> "$err_file"
+	rc=$?
+
+	stdout_json="$(jq -Rs . < "$out_file")"
+	stderr_json="$(jq -Rs . < "$err_file")"
+	if [ "$rc" -eq 0 ]; then
+		message_json="$stdout_json"
+	else
+		message_json="$stderr_json"
+	fi
+	rm -rf -- "$tmp_dir"
+
+	printf '{"action":%s,"code":%s,"success":%s,"busy":false,"skipped":false,"reason":"","holder_pid":"","holder_action":"","holder_age_seconds":0,"stdout":%s,"stderr":%s,"message":%s}\n' \
+		"$(rpc_json_string 'public_ip')" \
+		"$rc" \
+		"$([ "$rc" -eq 0 ] && printf '%s' 'true' || printf '%s' 'false')" \
+		"$stdout_json" \
+		"$stderr_json" \
+		"$message_json"
+}
+
 rpc_diagnostics_summary() {
 	local tmp_dir out_file err_file rc err_msg
 
@@ -273,7 +310,7 @@ rpc_call() {
 			rpc_refresh_servers
 			;;
 		public_ip)
-			rpc_command_result 'public_ip' "$INIT_SCRIPT" public_ip quiet
+			rpc_public_ip
 			;;
 		diagnostics|diagnostics_log)
 			rpc_diagnostics

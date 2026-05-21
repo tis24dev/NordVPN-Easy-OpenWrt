@@ -103,6 +103,7 @@ endef
 define Package/nordvpn-easy/install
 	$(INSTALL_DIR) $(1)/usr/libexec/nordvpn-easy
 	$(INSTALL_BIN) ./files/usr/libexec/nordvpn-easy/core.sh $(1)/usr/libexec/nordvpn-easy/core.sh
+	$(INSTALL_BIN) ./files/usr/libexec/nordvpn-easy/public-ip-poll.sh $(1)/usr/libexec/nordvpn-easy/public-ip-poll.sh
 	$(INSTALL_BIN) ./files/usr/libexec/nordvpn-easy/migrate-config.sh $(1)/usr/libexec/nordvpn-easy/migrate-config.sh
 	$(INSTALL_DIR) $(1)/usr/libexec/nordvpn-easy/lib
 	$(CP) ./files/usr/libexec/nordvpn-easy/lib/. $(1)/usr/libexec/nordvpn-easy/lib/
