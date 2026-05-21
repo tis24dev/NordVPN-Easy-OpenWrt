@@ -105,6 +105,7 @@ run_core_action() {
 	local failure_log_mode="${RUN_CORE_ACTION_FAILURE_LOG_MODE:-error}"
 	local busy_is_ok="${RUN_CORE_ACTION_BUSY_IS_OK:-${NORDVPN_EASY_BUSY_IS_OK:-0}}"
 	local action_log_mode='verbose'
+	local direct_uci_config=0
 	local rc=0
 	shift
 
@@ -113,22 +114,32 @@ run_core_action() {
 		return 1
 	}
 
-	load_service_config || return 1
-	nordvpn_easy_mktemp_dir "core-${action}" action_temp_dir || {
-		log_service_error "apply: failed to create temporary config workspace for core action '$action'"
-		return 1
-	}
-	action_config="$(nordvpn_easy_temp_file_path "$action_temp_dir" "nordvpn-easy.${action}.conf")"
-	nordvpn_easy_render_runtime_config "$action_config" 'cfg_' written_options || {
-		rm -rf -- "$action_temp_dir"
-		log_service_error "apply: failed to render temporary config for core action '$action'"
-		return 1
-	}
-	nordvpn_easy_validate_runtime_config "$action_config" 'cfg_' || {
-		log_service_error "apply: rendered temporary config for '$action' failed validation at $action_config ($(nordvpn_easy_runtime_file_debug_summary "$action_config"), $(nordvpn_easy_runtime_config_validation_summary), $(nordvpn_easy_service_backend_payload_summary))"
-		rm -rf -- "$action_temp_dir"
-		return 1
-	}
+	case "$action" in
+		stop_vpn)
+			direct_uci_config=1
+			;;
+	esac
+
+	if [ "$direct_uci_config" -eq 1 ]; then
+		load_config_context_library || return 1
+	else
+		load_service_config || return 1
+		nordvpn_easy_mktemp_dir "core-${action}" action_temp_dir || {
+			log_service_error "apply: failed to create temporary config workspace for core action '$action'"
+			return 1
+		}
+		action_config="$(nordvpn_easy_temp_file_path "$action_temp_dir" "nordvpn-easy.${action}.conf")"
+		nordvpn_easy_render_runtime_config "$action_config" 'cfg_' written_options || {
+			rm -rf -- "$action_temp_dir"
+			log_service_error "apply: failed to render temporary config for core action '$action'"
+			return 1
+		}
+		nordvpn_easy_validate_runtime_config "$action_config" 'cfg_' || {
+			log_service_error "apply: rendered temporary config for '$action' failed validation at $action_config ($(nordvpn_easy_runtime_file_debug_summary "$action_config"), $(nordvpn_easy_runtime_config_validation_summary), $(nordvpn_easy_service_backend_payload_summary))"
+			rm -rf -- "$action_temp_dir"
+			return 1
+		}
+	fi
 
 	case "$action:${1:-}" in
 		status_json:*|operation_status:*|vpn_status:*|diagnostics_log:*|diagnostics_summary:*)
@@ -142,12 +153,20 @@ run_core_action() {
 	action_started_at="$(date +%s 2>/dev/null || printf '%s' '0')"
 	if [ "$action_log_mode" != 'quiet' ]; then
 		log_service_info "apply: running core action '$action' (args=$(nordvpn_easy_debug_cli_args "$@"))"
-		log_service_info "apply: core action context for $action: $(nordvpn_easy_service_debug_summary 'cfg_')"
-		log_service_info "apply: rendered temporary config for '$action' at $action_config (written_options=$written_options, $(nordvpn_easy_runtime_file_debug_summary "$action_config"), $(nordvpn_easy_runtime_config_validation_summary), $(nordvpn_easy_service_backend_payload_summary))"
+		if [ "$direct_uci_config" -eq 1 ]; then
+			log_service_info "apply: core action '$action' will load the current UCI runtime context directly"
+		else
+			log_service_info "apply: core action context for $action: $(nordvpn_easy_service_debug_summary 'cfg_')"
+			log_service_info "apply: rendered temporary config for '$action' at $action_config (written_options=$written_options, $(nordvpn_easy_runtime_file_debug_summary "$action_config"), $(nordvpn_easy_runtime_config_validation_summary), $(nordvpn_easy_service_backend_payload_summary))"
+		fi
 	fi
-	"$CORE_SCRIPT" "$action" --config "$action_config" "$@"
+	if [ "$direct_uci_config" -eq 1 ]; then
+		"$CORE_SCRIPT" "$action" "$@"
+	else
+		"$CORE_SCRIPT" "$action" --config "$action_config" "$@"
+	fi
 	rc=$?
-	rm -rf -- "$action_temp_dir"
+	[ -z "$action_temp_dir" ] || rm -rf -- "$action_temp_dir"
 	action_finished_at="$(date +%s 2>/dev/null || printf '%s' '0')"
 	case "$action_started_at" in
 		''|*[!0-9]*)
@@ -536,9 +555,7 @@ disconnect() {
 }
 
 stop_vpn() {
-	load_service_config || return 1
-	log_service_info "stop_vpn requested; stopping VPN runtime and clearing server caches; $(nordvpn_easy_service_debug_summary 'cfg_')"
-	remove_hooks
+	log_service_info 'stop_vpn requested; stopping VPN runtime and clearing server caches'
 	run_core_action stop_vpn || return $?
 }
 

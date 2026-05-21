@@ -53,6 +53,7 @@ remove_hooks() {
 	return 0
 }
 
+load_config_context_library() { :; }
 load_service_config() { :; }
 log_service_info() { printf '%s\n' "$1" >> "$INFO_CAPTURE"; }
 log_service_error() { printf '%s\n' "$1" >> "$ERROR_CAPTURE"; }
@@ -184,7 +185,7 @@ rm -f "$CORE_CAPTURE"
 RC=0
 reconnect || RC=$?
 assert_eq '1' "$RC" 'reconnect propagates stop_vpn failure'
-grep -qE "stop_vpn --config ${TMP_DIR}/action\\.[^/]+/nordvpn-easy\\.stop_vpn\\.conf" "$CORE_CAPTURE" || {
+grep -qx "stop_vpn" "$CORE_CAPTURE" || {
 	printf '%s\n' "FAIL: reconnect should run stop_vpn before connect: $(cat "$CORE_CAPTURE")" >&2
 	exit 1
 }
@@ -199,13 +200,13 @@ rm -f "$CORE_CAPTURE"
 RC=0
 reconnect || RC=$?
 assert_eq '0' "$RC" 'reconnect succeeds when stop_vpn, connect, and hook installation succeed'
-grep -qE "stop_vpn --config ${TMP_DIR}/action\\.[^/]+/nordvpn-easy\\.stop_vpn\\.conf" "$CORE_CAPTURE" || {
+grep -qx "stop_vpn" "$CORE_CAPTURE" || {
 	printf '%s\n' "FAIL: reconnect should run stop_vpn: $(cat "$CORE_CAPTURE")" >&2
 	exit 1
 }
 assert_eq '1' "$SETUP_COUNT" 'successful reconnect runs connect/setup after stop_vpn'
 assert_eq '1' "$INSTALL_HOOKS_COUNT" 'successful reconnect installs hooks once'
-assert_eq '1' "$REMOVE_HOOKS_COUNT" 'reconnect removes hooks before stop_vpn'
+assert_eq '0' "$REMOVE_HOOKS_COUNT" 'reconnect leaves hook lifecycle to connect/disconnect'
 
 cfg_enabled=0
 DISABLE_RUNTIME_COUNT=0
