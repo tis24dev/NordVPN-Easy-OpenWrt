@@ -70,6 +70,9 @@ SERVER_LIST_FILE="$DIAG_TMP/nordvpn-server-list.json"
 COUNTRIES_CACHE_FILE="$DIAG_TMP/nordvpn-countries.json"
 COUNTRIES_CACHE_TS_FILE="$DIAG_TMP/nordvpn-countries.timestamp"
 NORDVPN_EASY_LAST_ERROR_CACHE="$DIAG_TMP/last_error"
+NORDVPN_EASY_CONNECT_APPLY_RESULT="$DIAG_TMP/connect-apply-result"
+NORDVPN_EASY_CONNECT_APPLY_GUARD="$DIAG_TMP/connect-apply-guard"
+NORDVPN_EASY_PUBLIC_VERIFICATION_CACHE="$DIAG_TMP/public_verification"
 
 printf '%s\n' '[{"station":"hk270"}]' > "$SERVER_LIST_FILE"
 printf '%s\n' '[{"code":"HK","name":"Hong Kong"}]' > "$COUNTRIES_CACHE_FILE"
@@ -609,6 +612,16 @@ uci() {
 }
 JSON="$(assert_scenario_primary 'runtime.link_down' 'runtime.link_down is primary when VPN link is absent')"
 assert_scenario_includes "$JSON" 'runtime.link_down' 'runtime.link_down appears in findings'
+
+nordvpn_easy_connect_apply_result_begin "$NORDVPN_EASY_CONNECT_APPLY_RESULT"
+JSON="$(emit_scenario_json)"
+assert_eq 'none' "$(primary_code "$JSON")" \
+	'runtime.link_down is suppressed during pending connect_apply'
+if printf '%s' "$JSON" | jq -e '.findings[]? | select(.code == "runtime.link_down")' >/dev/null 2>&1; then
+	printf '%s\n' 'FAIL: runtime.link_down should not appear during pending connect_apply' >&2
+	exit 1
+fi
+rm -f "$NORDVPN_EASY_CONNECT_APPLY_RESULT"
 
 wg() { wg_connected "$@"; }
 ip() { ip_healthy "$@"; }

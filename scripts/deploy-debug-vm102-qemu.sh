@@ -55,6 +55,26 @@ FILES = [
         "644",
     ),
     (
+        f"{BASE}/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/public-ip.sh",
+        "/usr/libexec/nordvpn-easy/lib/public-ip.sh",
+        "644",
+    ),
+    (
+        f"{BASE}/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/diagnostics.sh",
+        "/usr/libexec/nordvpn-easy/lib/diagnostics.sh",
+        "644",
+    ),
+    (
+        f"{BASE}/nordvpn-easy/files/usr/libexec/nordvpn-easy/migrate-config.sh",
+        "/usr/libexec/nordvpn-easy/migrate-config.sh",
+        "755",
+    ),
+    (
+        f"{BASE}/nordvpn-easy/files/usr/libexec/nordvpn-easy/public-ip-poll.sh",
+        "/usr/libexec/nordvpn-easy/public-ip-poll.sh",
+        "755",
+    ),
+    (
         f"{BASE}/luci-app-nordvpn-easy/root/usr/share/rpcd/acl.d/luci-app-nordvpn-easy.json",
         "/usr/share/rpcd/acl.d/luci-app-nordvpn-easy.json",
         "644",

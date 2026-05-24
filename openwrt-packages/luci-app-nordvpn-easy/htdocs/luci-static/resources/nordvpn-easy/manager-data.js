@@ -98,6 +98,8 @@ function parseLocalStatus(raw) {
 		public_ip_detected_at_iso: String(status.public_ip_detected_at_iso || ''),
 		public_ip_source: String(status.public_ip_source || ''),
 		public_country_cached: normalizeCountryCode(status.public_country_cached || ''),
+		public_verification_status: String(status.public_verification_status || 'unknown'),
+		public_verification_checked_at: Number(status.public_verification_checked_at || 0),
 		last_error: String(status.last_error || ''),
 		current_server_hostname: String(status.current_server_hostname || ''),
 		current_server_station: String(status.current_server_station || ''),

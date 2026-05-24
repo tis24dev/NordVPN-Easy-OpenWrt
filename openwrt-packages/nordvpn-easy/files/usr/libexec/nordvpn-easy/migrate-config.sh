@@ -109,6 +109,9 @@ snapshot_existing_config() {
 	for option in $(nordvpn_easy_uci_options); do
 		old_value="$(read_snapshot_option "$option")"
 		normalized_value="$(nordvpn_easy_normalize_value "$option" "$old_value")"
+		if [ "$option" = 'post_restart_delay' ] && [ "$normalized_value" = '60' ]; then
+			normalized_value='30'
+		fi
 		eval "snapshot_${option}='$(nordvpn_easy_shell_quote "$normalized_value")'"
 	done
 }

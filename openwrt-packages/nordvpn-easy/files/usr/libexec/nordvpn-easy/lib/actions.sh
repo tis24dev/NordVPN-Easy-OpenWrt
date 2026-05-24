@@ -152,6 +152,7 @@ nordvpn_easy_clear_provision_caches() {
 nordvpn_easy_clear_connect_apply_caches() {
 	rm -f "${NORDVPN_EASY_PUBLIC_IP_CACHE:-}" \
 		"${NORDVPN_EASY_PUBLIC_COUNTRY_CACHE:-}" \
+		"${NORDVPN_EASY_PUBLIC_VERIFICATION_CACHE:-}" \
 		"${NORDVPN_EASY_LAST_ERROR_CACHE:-}" 2>/dev/null || true
 	return 0
 }
@@ -410,6 +411,28 @@ nordvpn_easy_stop_vpn_for_connect_apply() {
 	return 0
 }
 
+nordvpn_easy_start_public_verification_background() {
+	local expected_country="${RESOLVED_COUNTRY_CODE:-${VPN_COUNTRY:-}}"
+
+	expected_country="$(printf '%s' "$expected_country" | tr '[:lower:]' '[:upper:]')"
+	if command -v nordvpn_easy_public_verification_write >/dev/null 2>&1; then
+		nordvpn_easy_public_verification_write 'pending' "$expected_country" '' 'public IP check queued' >/dev/null 2>&1 || true
+	fi
+
+	if ! command -v nordvpn_easy_run_public_ip_check >/dev/null 2>&1; then
+		log 'apply: public IP background check skipped because public-ip helper is unavailable'
+		return 0
+	fi
+
+	(
+		NORDVPN_EASY_EXPECTED_PUBLIC_COUNTRY="$expected_country"
+		PUBLIC_LOOKUP_LOG_MODE='verbose'
+		nordvpn_easy_run_public_ip_check verbose >/dev/null 2>&1 || true
+	) &
+	log 'apply: public IP check queued in background after WireGuard readiness; country check will reuse the IP result'
+	return 0
+}
+
 nordvpn_easy_provision_vpn_connect_apply() {
 	log 'apply: provisioning VPN after connect apply stop (reusing server cache when valid for selected country)'
 	nordvpn_easy_fetch_provision_prerequisites || return 1
@@ -422,7 +445,7 @@ nordvpn_easy_provision_vpn_connect_apply() {
 		return 1
 	fi
 
-	verify_public_country_selection || return 1
+	nordvpn_easy_start_public_verification_background || true
 	log 'apply: VPN provisioning completed'
 	return 0
 }

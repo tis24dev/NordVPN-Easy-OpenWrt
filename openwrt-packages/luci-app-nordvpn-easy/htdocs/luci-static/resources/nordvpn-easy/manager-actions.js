@@ -715,9 +715,7 @@ function commitLuCiPendingChangesFallback() {
 }
 
 function flushLuCiPendingChanges() {
-	return applyLuCiPendingChangesWithSession().catch(function(err) {
-		return commitLuCiPendingChangesFallback();
-	});
+	return commitLuCiPendingChangesFallback();
 }
 
 function notifyDebugBlock(title, lines) {

@@ -55,6 +55,7 @@ NORDVPN_EASY_RUN_DIR="${NORDVPN_EASY_RUN_DIR:-/tmp/run/nordvpn-easy}"
 NORDVPN_EASY_STATUS_CACHE="${NORDVPN_EASY_STATUS_CACHE:-$NORDVPN_EASY_RUN_DIR/status.json}"
 NORDVPN_EASY_PUBLIC_IP_CACHE="${NORDVPN_EASY_PUBLIC_IP_CACHE:-$NORDVPN_EASY_RUN_DIR/public_ip}"
 NORDVPN_EASY_PUBLIC_COUNTRY_CACHE="${NORDVPN_EASY_PUBLIC_COUNTRY_CACHE:-$NORDVPN_EASY_RUN_DIR/public_country}"
+NORDVPN_EASY_PUBLIC_VERIFICATION_CACHE="${NORDVPN_EASY_PUBLIC_VERIFICATION_CACHE:-$NORDVPN_EASY_RUN_DIR/public_verification}"
 NORDVPN_EASY_LAST_ERROR_CACHE="${NORDVPN_EASY_LAST_ERROR_CACHE:-$NORDVPN_EASY_RUN_DIR/last_error}"
 
 core_source_files() {
@@ -623,30 +624,41 @@ refresh_public_country_cache_for_current_ip () {
 }
 
 verify_public_country_selection () {
+  local expected_country=''
+
+  expected_country="$(printf '%s' "${RESOLVED_COUNTRY_CODE:-${VPN_COUNTRY:-}}" | tr '[:lower:]' '[:upper:]')"
+  nordvpn_easy_public_verification_write 'pending' "$expected_country" '' 'public IP check running' >/dev/null 2>&1 || true
+
   update_public_ip_cache || {
-    log 'WARNING: COULD NOT RETRIEVE PUBLIC IP FOR COUNTRY VERIFICATION'
+    log 'WARNING: COULD NOT RETRIEVE PUBLIC IP FOR COUNTRY CHECK'
+    nordvpn_easy_public_verification_write 'failed' "$expected_country" '' 'could not retrieve public IP' >/dev/null 2>&1 || true
     return 0
   }
 
   refresh_public_country_cache_for_current_ip || {
-    log "WARNING: COULD NOT GEOLOCATE PUBLIC IP $PUBLIC_IP"
+    log "WARNING: COULD NOT LOOK UP COUNTRY FOR PUBLIC IP $PUBLIC_IP"
+    nordvpn_easy_public_verification_write 'failed' "$expected_country" '' "could not geolocate public IP $PUBLIC_IP" >/dev/null 2>&1 || true
     return 0
   }
 
   if [ -z "$VPN_COUNTRY" ]; then
-    log "Public IP verification: $PUBLIC_IP geolocates to $PUBLIC_COUNTRY with automatic country selection"
+    log "Public country check: $PUBLIC_IP geolocates to $PUBLIC_COUNTRY with automatic country selection"
+    nordvpn_easy_public_verification_write 'ok' '' "$PUBLIC_COUNTRY" 'public country check passed' >/dev/null 2>&1 || true
     return 0
   fi
 
   resolve_country_filter || {
-    log "WARNING: COULD NOT RESOLVE SELECTED COUNTRY '$VPN_COUNTRY' FOR PUBLIC IP VERIFICATION"
+    log "WARNING: COULD NOT RESOLVE SELECTED COUNTRY '$VPN_COUNTRY' FOR PUBLIC COUNTRY CHECK"
+    nordvpn_easy_public_verification_write 'failed' "$expected_country" "$PUBLIC_COUNTRY" "could not resolve selected country $VPN_COUNTRY" >/dev/null 2>&1 || true
     return 0
   }
 
   if [ "$PUBLIC_COUNTRY" = "$RESOLVED_COUNTRY_CODE" ]; then
-    log "Public IP verification passed: $PUBLIC_IP geolocates to $PUBLIC_COUNTRY and matches selected country $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
+    log "Public country check passed: $PUBLIC_IP geolocates to $PUBLIC_COUNTRY and matches selected country $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
+    nordvpn_easy_public_verification_write 'ok' "$RESOLVED_COUNTRY_CODE" "$PUBLIC_COUNTRY" 'public country check passed' >/dev/null 2>&1 || true
   else
-    log "WARNING: Public IP verification mismatch: $PUBLIC_IP geolocates to $PUBLIC_COUNTRY while selected country is $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
+    log "WARNING: Public country mismatch: $PUBLIC_IP geolocates to $PUBLIC_COUNTRY while selected country is $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
+    nordvpn_easy_public_verification_write 'mismatch' "$RESOLVED_COUNTRY_CODE" "$PUBLIC_COUNTRY" "public IP country $PUBLIC_COUNTRY does not match selected country $RESOLVED_COUNTRY_CODE" >/dev/null 2>&1 || true
   fi
 }
 

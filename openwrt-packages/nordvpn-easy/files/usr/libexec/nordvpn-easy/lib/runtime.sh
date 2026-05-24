@@ -4,6 +4,7 @@ NORDVPN_EASY_RUN_DIR="${NORDVPN_EASY_RUN_DIR:-/tmp/run/nordvpn-easy}"
 NORDVPN_EASY_STATUS_CACHE="${NORDVPN_EASY_STATUS_CACHE:-$NORDVPN_EASY_RUN_DIR/status.json}"
 NORDVPN_EASY_PUBLIC_IP_CACHE="${NORDVPN_EASY_PUBLIC_IP_CACHE:-$NORDVPN_EASY_RUN_DIR/public_ip}"
 NORDVPN_EASY_PUBLIC_COUNTRY_CACHE="${NORDVPN_EASY_PUBLIC_COUNTRY_CACHE:-$NORDVPN_EASY_RUN_DIR/public_country}"
+NORDVPN_EASY_PUBLIC_VERIFICATION_CACHE="${NORDVPN_EASY_PUBLIC_VERIFICATION_CACHE:-$NORDVPN_EASY_RUN_DIR/public_verification}"
 NORDVPN_EASY_LAST_ERROR_CACHE="${NORDVPN_EASY_LAST_ERROR_CACHE:-$NORDVPN_EASY_RUN_DIR/last_error}"
 NORDVPN_EASY_ENTERPRISE_STATE_CACHE="${NORDVPN_EASY_ENTERPRISE_STATE_CACHE:-$NORDVPN_EASY_RUN_DIR/enterprise_state_last}"
 NORDVPN_EASY_DIAGNOSTICS_HISTORY="${NORDVPN_EASY_DIAGNOSTICS_HISTORY:-$NORDVPN_EASY_RUN_DIR/diagnostics_history.log}"
@@ -499,6 +500,8 @@ nordvpn_easy_emit_status_json() {
 	local public_ip_detected_at_iso=''
 	local public_ip_source=''
 	local public_country_cached=''
+	local public_verification_status='unknown'
+	local public_verification_checked_at='0'
 	local last_error=''
 	local connect_apply_pending='false'
 	local connect_apply_finished='false'
@@ -569,6 +572,22 @@ nordvpn_easy_emit_status_json() {
 			;;
 	esac
 	[ -r "$NORDVPN_EASY_PUBLIC_COUNTRY_CACHE" ] && public_country_cached="$(sed -n '1p' "$NORDVPN_EASY_PUBLIC_COUNTRY_CACHE" 2>/dev/null)"
+	if [ -r "$NORDVPN_EASY_PUBLIC_VERIFICATION_CACHE" ]; then
+		public_verification_status="$(sed -n 's/^status=//p' "$NORDVPN_EASY_PUBLIC_VERIFICATION_CACHE" 2>/dev/null | sed -n '1p')"
+		public_verification_checked_at="$(sed -n 's/^checked_at=//p' "$NORDVPN_EASY_PUBLIC_VERIFICATION_CACHE" 2>/dev/null | sed -n '1p')"
+	fi
+	case "$public_verification_status" in
+		ok|pending|failed|mismatch|unknown)
+			;;
+		*)
+			public_verification_status='unknown'
+			;;
+	esac
+	case "$public_verification_checked_at" in
+		''|*[!0-9]*)
+			public_verification_checked_at='0'
+			;;
+	esac
 	[ -r "$NORDVPN_EASY_LAST_ERROR_CACHE" ] && last_error="$(sed -n '1p' "$NORDVPN_EASY_LAST_ERROR_CACHE" 2>/dev/null)"
 
 	case "$wireguard_keepalive" in
@@ -663,6 +682,8 @@ nordvpn_easy_emit_status_json() {
   "public_ip_detected_at_iso": "$(nordvpn_easy_json_escape "$public_ip_detected_at_iso")",
   "public_ip_source": "$(nordvpn_easy_json_escape "$public_ip_source")",
   "public_country_cached": "$(nordvpn_easy_json_escape "$public_country_cached")",
+  "public_verification_status": "$(nordvpn_easy_json_escape "$public_verification_status")",
+  "public_verification_checked_at": $public_verification_checked_at,
   "last_error": "$(nordvpn_easy_json_escape "$last_error")",
   "current_server_hostname": "$(nordvpn_easy_json_escape "$current_hostname")",
   "current_server_station": "$(nordvpn_easy_json_escape "$current_station")",

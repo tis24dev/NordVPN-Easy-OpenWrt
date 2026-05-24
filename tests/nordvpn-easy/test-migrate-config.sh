@@ -177,6 +177,7 @@ config nordvpn_easy 'main'
 	option server_cache_ttl 'not-a-number'
 	option wireguard_mtu '1420'
 	option kill_switch_enabled 'on'
+	option post_restart_delay '60'
 EOF
 set_store_value '__section__' 'nordvpn_easy'
 set_store_value 'enabled' 'yes'
@@ -190,6 +191,7 @@ set_store_value 'wan_if' 'wan6'
 set_store_value 'server_cache_ttl' 'not-a-number'
 set_store_value 'wireguard_mtu' '1420'
 set_store_value 'kill_switch_enabled' 'on'
+set_store_value 'post_restart_delay' '60'
 printf '%s\n' 'stale legacy conffile' > "$FAKE_LEGACY_CONFIG_FILE"
 
 run_migrator
@@ -204,6 +206,7 @@ assert_file_has_line "	option wan_if 'wan6'" "$FAKE_UCI_CONFIG_FILE" 'upgrade pr
 assert_file_has_line "	option server_cache_ttl '86400'" "$FAKE_UCI_CONFIG_FILE" 'upgrade normalizes invalid numeric values'
 assert_file_has_line "	option wireguard_mtu '1420'" "$FAKE_UCI_CONFIG_FILE" 'upgrade preserves valid WireGuard MTU'
 assert_file_has_line "	option kill_switch_enabled '1'" "$FAKE_UCI_CONFIG_FILE" 'upgrade normalizes kill switch flag'
+assert_file_has_line "	option post_restart_delay '30'" "$FAKE_UCI_CONFIG_FILE" 'upgrade migrates legacy post restart delay from 60 to 30'
 assert_file_has_line "	option fallback_server_station ''" "$FAKE_UCI_CONFIG_FILE" 'upgrade adds new fallback option from template/schema'
 assert_file_has_line "	option config_schema_version '$NORDVPN_EASY_SCHEMA_VERSION'" "$FAKE_UCI_CONFIG_FILE" 'upgrade writes current schema version'
 assert_file_missing_line "	option nordvpn_basic_token 'legacy-token'" "$FAKE_UCI_CONFIG_FILE" 'upgrade removes legacy basic token option'
@@ -212,6 +215,18 @@ assert_file_missing_line "	option nordvpn_basic_token 'legacy-token'" "$FAKE_UCI
 	printf '%s\n' 'FAIL: migrator did not remove stale nordvpn_easy-opkg file' >&2
 	exit 1
 }
+
+reset_fake_uci
+cat > "$FAKE_UCI_CONFIG_FILE" <<'EOF'
+config nordvpn_easy 'main'
+	option post_restart_delay '45'
+EOF
+set_store_value '__section__' 'nordvpn_easy'
+set_store_value 'post_restart_delay' '45'
+
+run_migrator
+
+assert_file_has_line "	option post_restart_delay '45'" "$FAKE_UCI_CONFIG_FILE" 'upgrade preserves custom post restart delay values'
 
 reset_fake_uci
 cat > "$FAKE_LEGACY_CONFIG_FILE" <<'EOF'

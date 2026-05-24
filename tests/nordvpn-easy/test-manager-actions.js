@@ -1625,6 +1625,8 @@ async function testHandleSaveApplyAutoModeClearsManualSelectionAndReconnects() {
 	);
 	assert.equal(harness.calls.handleSave, 1, 'manual-to-auto changes save the form once');
 	assert.equal(harness.calls.apply, 0, 'manual-to-auto changes do not use the legacy LuCI apply path');
+	assert.equal(harness.calls.applyEndpoint, 0, 'manual-to-auto changes do not call the global LuCI apply endpoint');
+	assert.equal(harness.calls.commit, 1, 'manual-to-auto changes commit nordvpn_easy directly');
 	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn' ], [ 'start_connect' ] ], 'manual-to-auto changes run stop then connect');
 	assert.equal(harness.viewState.initialMode, 'auto', 'view state tracks saved automatic mode');
 	assert.equal(harness.viewState.initialPreferredStation, '', 'view state clears saved preferred station');

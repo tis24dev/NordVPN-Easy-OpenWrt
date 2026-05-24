@@ -130,6 +130,7 @@ assert_eq 'wireguard' "$(uci get network.wg0.proto)" 'uci fixture exposes curren
 
 NORDVPN_EASY_PUBLIC_IP_CACHE="$TMP_DIR/public_ip"
 NORDVPN_EASY_PUBLIC_COUNTRY_CACHE="$TMP_DIR/public_country"
+NORDVPN_EASY_PUBLIC_VERIFICATION_CACHE="$TMP_DIR/public_verification"
 {
 	printf '%s\n' 'ip=198.51.100.10'
 	printf '%s\n' 'detected_at=1770000000'
@@ -137,6 +138,12 @@ NORDVPN_EASY_PUBLIC_COUNTRY_CACHE="$TMP_DIR/public_country"
 	printf '%s\n' 'source=https://ifconfig.me/ip'
 } > "$NORDVPN_EASY_PUBLIC_IP_CACHE"
 printf '%s\n' 'ES' > "$NORDVPN_EASY_PUBLIC_COUNTRY_CACHE"
+{
+	printf '%s\n' 'status=ok'
+	printf '%s\n' 'checked_at=1770000002'
+	printf '%s\n' 'expected_country=ES'
+	printf '%s\n' 'actual_country=ES'
+} > "$NORDVPN_EASY_PUBLIC_VERIFICATION_CACHE"
 
 STATUS_JSON="$(nordvpn_easy_emit_status_json)"
 
@@ -156,6 +163,8 @@ assert_eq '198.51.100.10' "$(printf '%s' "$STATUS_JSON" | jq -r '.public_ip_cach
 assert_eq '1770000000' "$(printf '%s' "$STATUS_JSON" | jq -r '.public_ip_detected_at')" 'status json exposes public IP detection timestamp'
 assert_eq '2026-02-01T00:00:00Z' "$(printf '%s' "$STATUS_JSON" | jq -r '.public_ip_detected_at_iso')" 'status json exposes public IP detection time'
 assert_eq 'https://ifconfig.me/ip' "$(printf '%s' "$STATUS_JSON" | jq -r '.public_ip_source')" 'status json exposes public IP lookup source'
+assert_eq 'ok' "$(printf '%s' "$STATUS_JSON" | jq -r '.public_verification_status')" 'status json exposes public verification status'
+assert_eq '1770000002' "$(printf '%s' "$STATUS_JSON" | jq -r '.public_verification_checked_at')" 'status json exposes public verification timestamp'
 assert_eq '0' "$(nordvpn_easy_wg_runtime_non_negative_int 'not-a-number')" 'non-numeric epoch sanitizes to zero'
 assert_eq '1770000000' "$(nordvpn_easy_wg_runtime_non_negative_int '1770000000')" 'numeric epoch is preserved'
 {
