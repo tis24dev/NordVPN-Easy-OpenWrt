@@ -145,10 +145,14 @@ nordvpn_easy_clear_provision_caches() {
 	rm -f "${SERVER_CATALOG_FILE:-/tmp/nordvpn-easy-servers.json}" \
 		"${SERVER_CATALOG_TS_FILE:-/tmp/nordvpn-easy-servers.timestamp}" 2>/dev/null || true
 
+	nordvpn_easy_clear_connect_apply_caches
+	return 0
+}
+
+nordvpn_easy_clear_connect_apply_caches() {
 	rm -f "${NORDVPN_EASY_PUBLIC_IP_CACHE:-}" \
 		"${NORDVPN_EASY_PUBLIC_COUNTRY_CACHE:-}" \
 		"${NORDVPN_EASY_LAST_ERROR_CACHE:-}" 2>/dev/null || true
-
 	return 0
 }
 
@@ -383,11 +387,7 @@ nordvpn_easy_configure_vpn_interface() {
 		return 1
 	}
 
-	log "apply: restarting network to bring up $VPN_IF"
-	/etc/init.d/network restart || {
-		log 'ERROR: NETWORK RESTART FAILED'
-		return 1
-	}
+	nordvpn_easy_bring_up_vpn_interface "$VPN_IF" || return 1
 
 	log "apply: $VPN_IF created successfully"
 	nordvpn_easy_log_vpn_interface_state 'after-create'
@@ -398,6 +398,32 @@ nordvpn_easy_stop_vpn_for_server_change() {
 	nordvpn_easy_immediate_vpn_shutdown || return 1
 	nordvpn_easy_clear_provision_caches || return 1
 	nordvpn_easy_teardown_vpn || return 1
+	return 0
+}
+
+nordvpn_easy_stop_vpn_for_connect_apply() {
+	log 'apply: stopping VPN for connect apply (preserving reusable server recommendation cache)'
+	nordvpn_easy_immediate_vpn_shutdown || return 1
+	nordvpn_easy_clear_connect_apply_caches || return 1
+	rm -f "${NORDVPN_EASY_CONNECT_APPLY_RESULT:-/tmp/run/nordvpn-easy/connect-apply-result}" 2>/dev/null || true
+	nordvpn_easy_teardown_vpn || return 1
+	return 0
+}
+
+nordvpn_easy_provision_vpn_connect_apply() {
+	log 'apply: provisioning VPN after connect apply stop (reusing server cache when valid for selected country)'
+	nordvpn_easy_fetch_provision_prerequisites || return 1
+	NORDVPN_EASY_PROVISION_FETCH_DONE=1
+	nordvpn_easy_configure_vpn_interface || return 1
+	unset NORDVPN_EASY_PROVISION_FETCH_DONE
+
+	if ! nordvpn_easy_wait_for_vpn_connectivity "$VPN_IF" "$POST_RESTART_DELAY" "provisioning $VPN_IF"; then
+		log 'apply: VPN connection is not OK after provisioning'
+		return 1
+	fi
+
+	verify_public_country_selection || return 1
+	log 'apply: VPN provisioning completed'
 	return 0
 }
 
@@ -451,6 +477,11 @@ nordvpn_easy_provision_vpn() {
 
 	if [ "$mode" = 'connect_fresh' ]; then
 		nordvpn_easy_provision_vpn_connect_fresh
+		return $?
+	fi
+
+	if [ "$mode" = 'connect_apply' ]; then
+		nordvpn_easy_provision_vpn_connect_apply
 		return $?
 	fi
 

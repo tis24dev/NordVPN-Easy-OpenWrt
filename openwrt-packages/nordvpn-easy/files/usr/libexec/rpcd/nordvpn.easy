@@ -147,6 +147,52 @@ rpc_connect() {
 	rpc_command_result 'connect' "$INIT_SCRIPT" connect
 }
 
+rpc_start_connect() {
+	local async_log_dir async_log
+	local holder_pid='' holder_action='' holder_age_seconds='0'
+	local reason='' message='Connect started in background; poll status for completion.'
+
+	async_log_dir='/tmp/run/nordvpn-easy'
+	async_log="${async_log_dir}/start-connect.log"
+	mkdir -p "$async_log_dir" 2>/dev/null || true
+	nordvpn_easy_connect_apply_result_begin "${NORDVPN_EASY_CONNECT_APPLY_RESULT:-/tmp/run/nordvpn-easy/connect-apply-result}" 2>/dev/null || true
+
+	nordvpn_easy_load_lock_metadata "$LOCK_DIR"
+	case "$OPERATION_LOCK_STATE" in
+		held|stale_recovered)
+			holder_pid="${OPERATION_LOCK_PID:-}"
+			holder_action="${OPERATION_LOCK_ACTION:-}"
+			holder_age_seconds="${OPERATION_LOCK_AGE_SECONDS:-0}"
+			reason='operation_busy'
+			printf '{"action":%s,"code":%s,"success":false,"async":false,"busy":true,"skipped":true,"reason":%s,"holder_pid":%s,"holder_action":%s,"holder_age_seconds":%s,"stdout":"","stderr":%s,"message":%s}\n' \
+				"$(rpc_json_string 'start_connect')" \
+				"$NORDVPN_EASY_RC_BUSY" \
+				"$(rpc_json_string "$reason")" \
+				"$(rpc_json_string "$holder_pid")" \
+				"$(rpc_json_string "$holder_action")" \
+				"${holder_age_seconds:-0}" \
+				"$(rpc_json_string "operation busy: another NordVPN Easy operation is running (holder_action=${holder_action:-unknown}, holder_pid=${holder_pid:-unknown}, holder_age_seconds=${holder_age_seconds:-0})")" \
+				"$(rpc_json_string "operation busy: another NordVPN Easy operation is running (holder_action=${holder_action:-unknown}, holder_pid=${holder_pid:-unknown}, holder_age_seconds=${holder_age_seconds:-0})")"
+			return 0
+			;;
+	esac
+
+	(
+		printf '%s nordvpn-easy: start_connect background job begin (pid=%s)\n' \
+			"$(date '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || date)" \
+			"$$" >> "$async_log" 2>/dev/null
+		"$INIT_SCRIPT" connect >> "$async_log" 2>&1
+		rc=$?
+		printf '%s nordvpn-easy: start_connect background job finished rc=%s\n' \
+			"$(date '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || date)" \
+			"$rc" >> "$async_log" 2>/dev/null
+	) &
+
+	printf '{"action":%s,"code":0,"success":true,"async":true,"busy":false,"skipped":false,"reason":"","holder_pid":"","holder_action":"","holder_age_seconds":0,"stdout":"","stderr":"","message":%s}\n' \
+		"$(rpc_json_string 'start_connect')" \
+		"$(rpc_json_string "$message")"
+}
+
 rpc_disconnect() {
 	rpc_command_result 'disconnect' "$INIT_SCRIPT" disconnect
 }
@@ -276,6 +322,9 @@ rpc_call() {
 		connect)
 			rpc_connect
 			;;
+		start_connect)
+			rpc_start_connect
+			;;
 		disconnect)
 			rpc_disconnect
 			;;
@@ -333,6 +382,7 @@ case "$1" in
 {
   "status": {},
   "connect": {},
+  "start_connect": {},
   "disconnect": {},
   "reconnect": {},
   "stop_vpn": {},

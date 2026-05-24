@@ -302,4 +302,57 @@ if ! nordvpn_easy_runtime_needs_provision wg0; then
 	exit 1
 fi
 
+IFUP_COUNT=0
+NETWORK_RESTART_COUNT=0
+ifup() {
+	IFUP_COUNT=$((IFUP_COUNT + 1))
+	return 0
+}
+cat > "$TMP_DIR/mock-bin/etc/init.d/network" <<EOF
+#!/bin/sh
+case "\$1" in
+	reload)
+		count="\$(cat "$NETWORK_RELOAD_COUNT_FILE" 2>/dev/null || printf '%s' '0')"
+		printf '%s\n' "\$((count + 1))" > "$NETWORK_RELOAD_COUNT_FILE"
+		exit 0
+		;;
+	restart)
+		printf '%s\n' '1' > "$TMP_DIR/network-restart-count"
+		exit 0
+		;;
+esac
+exit 1
+EOF
+chmod +x "$TMP_DIR/mock-bin/etc/init.d/network"
+printf '%s\n' '0' > "$NETWORK_RELOAD_COUNT_FILE"
+printf '%s\n' '0' > "$TMP_DIR/network-restart-count"
+
+nordvpn_easy_bring_up_vpn_interface wg0
+
+assert_eq '1' "$(cat "$NETWORK_RELOAD_COUNT_FILE")" 'bring-up reloads network once'
+assert_eq '1' "$IFUP_COUNT" 'bring-up prefers ifup over full restart'
+assert_eq '0' "$(cat "$TMP_DIR/network-restart-count")" 'bring-up does not restart network when ifup succeeds'
+
+IFUP_COUNT=0
+ifup() { IFUP_COUNT=$((IFUP_COUNT + 1)); return 1; }
+nordvpn_easy_bring_up_vpn_interface wg0 || true
+assert_eq '1' "$(cat "$TMP_DIR/network-restart-count")" 'bring-up falls back to network restart when ifup fails'
+
+printf '%s\n' '300' > "$FAKE_NOW_FILE"
+HANDSHAKE_EPOCH='295'
+wg() {
+	case "$1 $2 $3" in
+		'show wg0 latest-handshakes')
+			printf '%s\n' "peerpub $HANDSHAKE_EPOCH"
+			;;
+		*) return 1 ;;
+	esac
+}
+SLEEP_CALLS=''
+nordvpn_easy_wait_for_vpn_handshake wg0 10 'handshake-test' || {
+	printf '%s\n' 'FAIL: recent handshake should validate quickly' >&2
+	exit 1
+}
+assert_eq '' "$SLEEP_CALLS" 'handshake wait returns without sleeping when handshake is already fresh'
+
 printf '%s\n' 'test-wireguard.sh: ok'

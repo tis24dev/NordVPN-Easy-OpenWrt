@@ -42,6 +42,7 @@
 			"ubus": {
 				"nordvpn.easy": [
 					"connect",
+					"start_connect",
 					"disconnect",
 					"stop_vpn",
 					"reconnect",

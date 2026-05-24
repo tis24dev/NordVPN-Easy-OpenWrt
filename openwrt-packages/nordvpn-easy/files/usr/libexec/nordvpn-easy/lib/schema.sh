@@ -167,7 +167,7 @@ nordvpn_easy_default() {
 		kill_switch_enabled) printf '%s\n' '0' ;;
 		failure_retry_delay) printf '%s\n' '6' ;;
 		interface_restart_delay) printf '%s\n' '10' ;;
-		post_restart_delay) printf '%s\n' '60' ;;
+		post_restart_delay) printf '%s\n' '30' ;;
 		config_schema_version) printf '%s\n' "$NORDVPN_EASY_SCHEMA_VERSION" ;;
 		*)
 			return 1

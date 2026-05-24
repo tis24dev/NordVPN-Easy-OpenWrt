@@ -41,6 +41,9 @@ extract_function() {
 }
 
 eval "$(extract_function run_core_action)"
+eval "$(extract_function connect_apply_guard_begin)"
+eval "$(extract_function connect_apply_guard_end)"
+eval "$(extract_function prepare_connect_setup_config_cache)"
 eval "$(extract_function connect)"
 eval "$(extract_function disconnect)"
 eval "$(extract_function stop_vpn)"
@@ -95,6 +98,15 @@ SETUP_COUNT=0
 SETUP_RC=0
 INSTALL_HOOKS_COUNT=0
 DISABLE_RUNTIME_COUNT=0
+RUN_STATE_DIR="$TMP_DIR/run-state"
+CONNECT_SETUP_CONFIG_CACHE="${RUN_STATE_DIR}/connect-setup.conf"
+CONNECT_APPLY_GUARD="${RUN_STATE_DIR}/connect-apply-guard"
+CONNECT_APPLY_RESULT="${RUN_STATE_DIR}/connect-apply-result"
+RUNTIME_LOCK_DIR="$TMP_DIR/runtime-lock"
+nordvpn_easy_connect_apply_result_begin() { :; }
+nordvpn_easy_connect_apply_result_finish() { :; }
+nordvpn_easy_clear_stale_runtime_lock() { :; }
+connect_apply_result_finish() { :; }
 UCI_CONFIG='nordvpn_easy'
 UCI_SECTION='main'
 uci() {
@@ -137,6 +149,10 @@ install_hooks() {
 	INSTALL_HOOKS_COUNT=$((INSTALL_HOOKS_COUNT + 1))
 	return 0
 }
+install_hooks_if_needed() {
+	INSTALL_HOOKS_COUNT=$((INSTALL_HOOKS_COUNT + 1))
+	return 0
+}
 disable_vpn_runtime() {
 	DISABLE_RUNTIME_COUNT=$((DISABLE_RUNTIME_COUNT + 1))
 	return 0
@@ -167,17 +183,25 @@ RC=0
 connect || RC=$?
 assert_eq '0' "$RC" 'connect succeeds when setup and hook installation succeed'
 assert_eq '1' "$SETUP_COUNT" 'successful connect runs setup once'
-assert_eq '1' "$INSTALL_HOOKS_COUNT" 'successful connect installs hooks once'
+assert_eq '1' "$INSTALL_HOOKS_COUNT" 'successful connect installs hooks via install_hooks_if_needed once'
+[ ! -f "$CONNECT_APPLY_GUARD" ] || {
+	printf '%s\n' 'FAIL: connect should clear apply guard on success' >&2
+	exit 1
+}
+[ ! -f "$CONNECT_SETUP_CONFIG_CACHE" ] || {
+	printf '%s\n' 'FAIL: connect should remove setup config cache after setup' >&2
+	exit 1
+}
 
 cfg_enabled=1
-cat > "$TMP_DIR/core.sh" <<EOF
+CORE_SCRIPT="$TMP_DIR/core.sh"
+CORE_EXIT_RC='1'
+cat > "$CORE_SCRIPT" <<EOF
 #!/bin/sh
 printf '%s\n' "\$*" >> "$CORE_CAPTURE"
 exit "\${CORE_EXIT_RC:-0}"
 EOF
-chmod +x "$TMP_DIR/core.sh"
-CORE_SCRIPT="$TMP_DIR/core.sh"
-CORE_EXIT_RC='1'
+chmod +x "$CORE_SCRIPT"
 INSTALL_HOOKS_COUNT=0
 SETUP_COUNT=0
 REMOVE_HOOKS_COUNT=0
@@ -193,6 +217,12 @@ assert_eq '0' "$SETUP_COUNT" 'reconnect does not run connect when stop_vpn fails
 assert_eq '0' "$INSTALL_HOOKS_COUNT" 'reconnect does not install hooks when stop_vpn fails'
 
 CORE_EXIT_RC='0'
+cat > "$CORE_SCRIPT" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$CORE_CAPTURE"
+exit "\${CORE_EXIT_RC:-0}"
+EOF
+chmod +x "$CORE_SCRIPT"
 INSTALL_HOOKS_COUNT=0
 SETUP_COUNT=0
 REMOVE_HOOKS_COUNT=0
@@ -329,6 +359,28 @@ case "$CORE_ARGS" in
 esac
 [ -s "$INFO_CAPTURE" ] || {
 	printf '%s\n' 'FAIL: setup core action should emit info logs on success' >&2
+	exit 1
+}
+
+mkdir -p "$RUN_STATE_DIR"
+nordvpn_easy_render_runtime_config "$CONNECT_SETUP_CONFIG_CACHE" 'cfg_' _written_options
+export NORDVPN_EASY_SETUP_CONFIG_CACHE="$CONNECT_SETUP_CONFIG_CACHE"
+rm -f "$CORE_CAPTURE"
+: > "$INFO_CAPTURE"
+run_core_action setup
+unset NORDVPN_EASY_SETUP_CONFIG_CACHE
+
+CORE_ARGS="$(cat "$CORE_CAPTURE")"
+case "$CORE_ARGS" in
+	"setup --config $CONNECT_SETUP_CONFIG_CACHE")
+		;;
+	*)
+		printf '%s\n' "FAIL: setup should reuse connect cache when present: $CORE_ARGS" >&2
+		exit 1
+		;;
+esac
+grep -q 'using cached setup config' "$INFO_CAPTURE" || {
+	printf '%s\n' 'FAIL: cached setup should be logged' >&2
 	exit 1
 }
 

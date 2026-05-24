@@ -7,6 +7,7 @@
 
 // stop_vpn/connect often exceed LuCI default (20s) and stock rpcd (30s).
 const RUNTIME_RPC_TIMEOUT = 120;
+const START_CONNECT_RPC_TIMEOUT = 15;
 const DIAGNOSTICS_RPC_TIMEOUT = 180;
 // OpenWrt 24 LuCI rpc.js ignores rpc.declare({ timeout }) and uses L.env.rpctimeout only.
 // Match rpcd/uhttpd minimums in 99-nordvpn-easy-rpcd-timeout (180s).
@@ -38,6 +39,12 @@ const callConnect = rpc.declare({
 	object: 'nordvpn.easy',
 	method: 'connect',
 	timeout: RUNTIME_RPC_TIMEOUT
+});
+
+const callStartConnect = rpc.declare({
+	object: 'nordvpn.easy',
+	method: 'start_connect',
+	timeout: START_CONNECT_RPC_TIMEOUT
 });
 
 const callStopVpn = rpc.declare({
@@ -212,6 +219,8 @@ function callSimpleAction(action) {
 	switch (action) {
 	case 'connect':
 		return callConnect();
+	case 'start_connect':
+		return callStartConnect();
 	case 'stop_vpn':
 		return callStopVpn();
 	case 'rotate':

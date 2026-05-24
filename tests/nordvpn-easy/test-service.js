@@ -189,6 +189,12 @@ Promise.resolve().then(async function() {
 	assert.equal(connectResult.code, 0, 'connect returns normalized success result');
 	assert.equal(connectCall.spec.method, 'connect', 'connect uses the dedicated ubus method');
 
+	const startConnectResult = await loaded.service.execService('start_connect');
+	const startConnectCall = loaded.calls[loaded.calls.length - 1];
+	assert.equal(startConnectResult.code, 0, 'start_connect returns normalized success result');
+	assert.equal(startConnectCall.spec.method, 'start_connect', 'start_connect uses the dedicated ubus method');
+	assert.equal(startConnectCall.spec.timeout, 15, 'start_connect uses a short rpc timeout');
+
 	await assert.rejects(
 		loaded.service.execService('reconcile'),
 		/Unsupported NordVPN Easy action: reconcile/,

@@ -148,11 +148,107 @@ nordvpn_easy_ping_interface() {
 	ping -q -c 1 -W 5 "$(pick_ping_ip)" -I "$1" >/dev/null 2>&1
 }
 
+nordvpn_easy_bring_up_vpn_interface() {
+	local vpn_if="${1:-$VPN_IF}"
+	local network_init="${NORDVPN_EASY_NETWORK_INIT:-/etc/init.d/network}"
+
+	[ -n "$vpn_if" ] || return 1
+
+	log "apply: reloading network and bringing up $vpn_if"
+	"$network_init" reload || {
+		log 'ERROR: NETWORK RELOAD FAILED'
+		return 1
+	}
+
+	if ifup "$vpn_if" >/dev/null 2>&1; then
+		return 0
+	fi
+
+	log "apply: ifup $vpn_if failed; falling back to full network restart"
+	"$network_init" restart || {
+		log 'ERROR: NETWORK RESTART FAILED'
+		return 1
+	}
+	return 0
+}
+
+nordvpn_easy_wait_for_vpn_handshake() {
+	local vpn_if="${1:-$VPN_IF}"
+	local wait_timeout="${2:-0}"
+	local wait_context="${3:-runtime validation}"
+	local start_ts='0'
+	local now_ts='0'
+	local deadline='0'
+	local elapsed='unknown'
+	local handshake_epoch='0'
+
+	case "$wait_timeout" in
+		''|*[!0-9]*)
+			return 1
+			;;
+	esac
+
+	[ "$wait_timeout" -gt 0 ] || return 1
+	command -v wg >/dev/null 2>&1 || return 1
+
+	start_ts="$(date +%s 2>/dev/null || printf '%s' '0')"
+	case "$start_ts" in
+		''|*[!0-9]*)
+			start_ts='0'
+			;;
+		*)
+			deadline=$((start_ts + wait_timeout))
+			;;
+	esac
+
+	log "apply: waiting up to ${wait_timeout}s for WireGuard handshake on $vpn_if after ${wait_context}"
+
+	while :; do
+		handshake_epoch="$(nordvpn_easy_wg_handshake_epoch "$vpn_if")"
+		if nordvpn_easy_handshake_epoch_indicates_connection "$handshake_epoch"; then
+			now_ts="$(date +%s 2>/dev/null || printf '%s' '0')"
+			case "$now_ts" in
+				''|*[!0-9]*)
+					elapsed='unknown'
+					;;
+				*)
+					if [ "$start_ts" -gt 0 ]; then
+						elapsed=$((now_ts - start_ts))
+						[ "$elapsed" -lt 0 ] && elapsed=0
+					fi
+					;;
+			esac
+			log "apply: WireGuard handshake validated on $vpn_if after ${elapsed}s"
+			return 0
+		fi
+
+		if [ "$deadline" -gt 0 ]; then
+			now_ts="$(date +%s 2>/dev/null || printf '%s' '0')"
+			case "$now_ts" in
+				''|*[!0-9]*)
+					break
+					;;
+				*)
+					[ "$now_ts" -ge "$deadline" ] && break
+					;;
+			esac
+		else
+			wait_timeout=$((wait_timeout - 1))
+			[ "$wait_timeout" -le 0 ] && break
+		fi
+
+		sleep 1
+	done
+
+	return 1
+}
+
 nordvpn_easy_wait_for_vpn_connectivity() {
 	local vpn_if="${1:-$VPN_IF}"
 	local wait_timeout="${2:-$POST_RESTART_DELAY}"
 	local wait_context="${3:-runtime validation}"
 	local wait_timeout_label=''
+	local handshake_wait_max=''
 	local start_ts='0'
 	local now_ts='0'
 	local elapsed='unknown'
@@ -180,6 +276,21 @@ nordvpn_easy_wait_for_vpn_connectivity() {
 
 	if [ "$start_ts" -gt 0 ]; then
 		deadline=$((start_ts + wait_timeout))
+	fi
+
+	handshake_wait_max="${NORDVPN_EASY_HANDSHAKE_WAIT_MAX:-25}"
+	case "$handshake_wait_max" in
+		''|*[!0-9]*)
+			handshake_wait_max='25'
+			;;
+	esac
+	if [ "$wait_timeout" -lt "$handshake_wait_max" ]; then
+		handshake_wait_max="$wait_timeout"
+	fi
+
+	if [ "$handshake_wait_max" -gt 0 ] &&
+		nordvpn_easy_wait_for_vpn_handshake "$vpn_if" "$handshake_wait_max" "$wait_context"; then
+		return 0
 	fi
 
 	log "apply: waiting up to ${wait_timeout}s for VPN connectivity on $vpn_if after ${wait_context}"

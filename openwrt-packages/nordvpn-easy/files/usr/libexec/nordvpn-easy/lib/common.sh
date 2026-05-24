@@ -42,6 +42,29 @@ nordvpn_easy_log_blocker() {
 	nordvpn_easy_log_phase "$phase" "BLOCKER: $message"
 }
 
+nordvpn_easy_handshake_epoch_indicates_connection() {
+	local epoch="$1"
+	local now diff
+
+	case "$epoch" in
+		''|*[!0-9]*)
+			return 1
+			;;
+	esac
+
+	[ "$epoch" -gt 0 ] || return 1
+	now="$(date +%s 2>/dev/null)"
+	case "$now" in
+		''|*[!0-9]*)
+			return 1
+			;;
+	esac
+
+	diff=$((now - epoch))
+	[ "$diff" -lt 0 ] && diff=0
+	[ "$diff" -le 7200 ]
+}
+
 nordvpn_easy_install_exit_trap() {
 	[ "${NORDVPN_EASY_EXIT_TRAP_INSTALLED:-0}" -eq 1 ] && return 0
 
@@ -286,6 +309,105 @@ nordvpn_easy_release_lock() {
 	rm -rf "${LOCK_DIR:-}"
 	LOCK_ACQUIRED=0
 	nordvpn_easy_log_phase 'runtime' "execution lock released at $LOCK_DIR"
+}
+
+nordvpn_easy_clear_stale_runtime_lock() {
+	local lock_dir="${1:-/tmp/nordvpn-easy.lock}"
+	local lock_pid_file="${lock_dir}/pid"
+	local lock_pid=''
+
+	[ -d "$lock_dir" ] || return 0
+
+	if [ ! -f "$lock_pid_file" ]; then
+		rm -rf "$lock_dir" 2>/dev/null || true
+		return 0
+	fi
+
+	lock_pid="$(cat "$lock_pid_file" 2>/dev/null)"
+	case "$lock_pid" in
+		''|*[!0-9]*)
+			rm -rf "$lock_dir" 2>/dev/null || true
+			return 0
+			;;
+	esac
+
+	if kill -0 "$lock_pid" 2>/dev/null; then
+		return 1
+	fi
+
+	rm -rf "$lock_dir" 2>/dev/null || true
+	return 0
+}
+
+_nordvpn_easy_connect_apply_result_get() {
+	local target="$1"
+	local key="$2"
+
+	[ -r "$target" ] || return 1
+	sed -n "s/^${key}=//p" "$target" 2>/dev/null | head -n1
+}
+
+nordvpn_easy_connect_apply_result_begin() {
+	local target="${1:-/tmp/run/nordvpn-easy/connect-apply-result}"
+	local target_dir now_ts
+
+	target_dir="$(dirname "$target")"
+	mkdir -p "$target_dir" 2>/dev/null || return 1
+	now_ts="$(date +%s 2>/dev/null || printf '%s' '0')"
+	cat > "$target" <<EOF
+state=pending
+rc=
+finished_at=
+country=
+started_at=$now_ts
+EOF
+}
+
+nordvpn_easy_connect_apply_result_finish() {
+	local target="${1:-/tmp/run/nordvpn-easy/connect-apply-result}"
+	local rc="${2:-1}"
+	local country="${3:-}"
+	local finished_at=''
+	local previous_started_at=''
+	local state='failed'
+
+	finished_at="$(date +%s 2>/dev/null || printf '%s' '0')"
+	[ "$rc" -eq 0 ] && state='success'
+	previous_started_at="$(_nordvpn_easy_connect_apply_result_get "$target" started_at 2>/dev/null)"
+
+	mkdir -p "$(dirname "$target")" 2>/dev/null || true
+	cat > "$target" <<EOF
+state=$state
+rc=$rc
+finished_at=$finished_at
+country=$(printf '%s' "$country" | tr '[:lower:]' '[:upper:]')
+started_at=${previous_started_at:-$finished_at}
+EOF
+
+	if command -v nordvpn_easy_write_status_cache >/dev/null 2>&1; then
+		nordvpn_easy_write_status_cache >/dev/null 2>&1 || true
+	fi
+}
+
+# Sets: CONNECT_APPLY_STATE CONNECT_APPLY_RC CONNECT_APPLY_FINISHED_AT CONNECT_APPLY_COUNTRY CONNECT_APPLY_STARTED_AT
+nordvpn_easy_connect_apply_result_read() {
+	local target="${1:-/tmp/run/nordvpn-easy/connect-apply-result}"
+
+	CONNECT_APPLY_STATE=''
+	CONNECT_APPLY_RC=''
+	CONNECT_APPLY_FINISHED_AT=''
+	CONNECT_APPLY_COUNTRY=''
+	CONNECT_APPLY_STARTED_AT=''
+
+	[ -r "$target" ] || return 1
+
+	CONNECT_APPLY_STATE="$(_nordvpn_easy_connect_apply_result_get "$target" state)"
+	CONNECT_APPLY_RC="$(_nordvpn_easy_connect_apply_result_get "$target" rc)"
+	CONNECT_APPLY_FINISHED_AT="$(_nordvpn_easy_connect_apply_result_get "$target" finished_at)"
+	CONNECT_APPLY_COUNTRY="$(_nordvpn_easy_connect_apply_result_get "$target" country)"
+	CONNECT_APPLY_STARTED_AT="$(_nordvpn_easy_connect_apply_result_get "$target" started_at)"
+	[ -n "$CONNECT_APPLY_STATE" ] || return 1
+	return 0
 }
 
 nordvpn_easy_write_lock_metadata() {

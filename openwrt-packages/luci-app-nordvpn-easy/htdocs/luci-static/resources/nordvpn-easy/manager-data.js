@@ -105,7 +105,14 @@ function parseLocalStatus(raw) {
 		current_server_country: normalizeCountryCode(status.current_server_country || ''),
 		current_server_load: String(status.current_server_load || ''),
 		preferred_server_hostname: String(status.preferred_server_hostname || ''),
-		preferred_server_station: String(status.preferred_server_station || '')
+		preferred_server_station: String(status.preferred_server_station || ''),
+		connect_apply_pending: !!status.connect_apply_pending,
+		connect_apply_finished: !!status.connect_apply_finished,
+		connect_apply_success: !!status.connect_apply_success,
+		connect_apply_rc: Number(status.connect_apply_rc || 0),
+		connect_apply_country: normalizeCountryCode(status.connect_apply_country || ''),
+		connect_apply_started_at: Number(status.connect_apply_started_at || 0),
+		connect_apply_finished_at: Number(status.connect_apply_finished_at || 0)
 	};
 }
 

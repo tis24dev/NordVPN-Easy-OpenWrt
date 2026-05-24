@@ -17,6 +17,11 @@ PUBLIC_IP_POLL_SCRIPT='/usr/libexec/nordvpn-easy/public-ip-poll.sh'
 CONFIG_CONTEXT_LIB='/usr/libexec/nordvpn-easy/lib/config-context.sh'
 CRON_PATH='/etc/cron.d/nordvpn-easy'
 HOTPLUG_PATH='/etc/hotplug.d/iface/95-nordvpn-easy'
+RUN_STATE_DIR='/tmp/run/nordvpn-easy'
+CONNECT_SETUP_CONFIG_CACHE="${RUN_STATE_DIR}/connect-setup.conf"
+CONNECT_APPLY_GUARD="${RUN_STATE_DIR}/connect-apply-guard"
+CONNECT_APPLY_RESULT="${RUN_STATE_DIR}/connect-apply-result"
+RUNTIME_LOCK_DIR='/tmp/nordvpn-easy.lock'
 SERVICE_BACKEND_PAYLOAD_SIGNATURE='render-contract-v3'
 NORDVPN_EASY_RC_BUSY="${NORDVPN_EASY_RC_BUSY:-75}"
 # OpenWrt rc.common consumes the command/help metadata.
@@ -122,6 +127,19 @@ run_core_action() {
 
 	if [ "$direct_uci_config" -eq 1 ]; then
 		load_config_context_library || return 1
+	elif [ "$action" = 'setup' ] && [ -f "${NORDVPN_EASY_SETUP_CONFIG_CACHE:-$CONNECT_SETUP_CONFIG_CACHE}" ]; then
+		load_service_config || return 1
+		action_config="${NORDVPN_EASY_SETUP_CONFIG_CACHE:-$CONNECT_SETUP_CONFIG_CACHE}"
+		if ! nordvpn_easy_validate_runtime_config "$action_config" 'cfg_'; then
+			log_service_info "apply: cached setup config at $action_config is stale; rendering a fresh config"
+			action_config=''
+		fi
+	fi
+
+	if [ "$direct_uci_config" -eq 1 ]; then
+		:
+	elif [ -n "$action_config" ]; then
+		log_service_info "apply: using cached setup config at $action_config ($(nordvpn_easy_runtime_file_debug_summary "$action_config"), $(nordvpn_easy_runtime_config_validation_summary), $(nordvpn_easy_service_backend_payload_summary))"
 	else
 		load_service_config || return 1
 		nordvpn_easy_mktemp_dir "core-${action}" action_temp_dir || {
@@ -155,10 +173,15 @@ run_core_action() {
 		log_service_info "apply: running core action '$action' (args=$(nordvpn_easy_debug_cli_args "$@"))"
 		if [ "$direct_uci_config" -eq 1 ]; then
 			log_service_info "apply: core action '$action' will load the current UCI runtime context directly"
+		elif [ -z "$action_temp_dir" ] && [ "$action" = 'setup' ]; then
+			log_service_info "apply: core action context for $action: $(nordvpn_easy_service_debug_summary 'cfg_')"
 		else
 			log_service_info "apply: core action context for $action: $(nordvpn_easy_service_debug_summary 'cfg_')"
 			log_service_info "apply: rendered temporary config for '$action' at $action_config (written_options=$written_options, $(nordvpn_easy_runtime_file_debug_summary "$action_config"), $(nordvpn_easy_runtime_config_validation_summary), $(nordvpn_easy_service_backend_payload_summary))"
 		fi
+	fi
+	if [ "$action" = 'setup' ] && [ -f "$CONNECT_APPLY_GUARD" ]; then
+		export NORDVPN_EASY_CONNECT_APPLY=1
 	fi
 	if [ "$direct_uci_config" -eq 1 ]; then
 		"$CORE_SCRIPT" "$action" "$@"
@@ -166,6 +189,7 @@ run_core_action() {
 		"$CORE_SCRIPT" "$action" --config "$action_config" "$@"
 	fi
 	rc=$?
+	unset NORDVPN_EASY_CONNECT_APPLY 2>/dev/null || true
 	[ -z "$action_temp_dir" ] || rm -rf -- "$action_temp_dir"
 	action_finished_at="$(date +%s 2>/dev/null || printf '%s' '0')"
 	case "$action_started_at" in
@@ -206,6 +230,64 @@ restart_cron_service() {
 	/etc/init.d/cron restart >/dev/null 2>&1 ||
 	/etc/init.d/cron reload >/dev/null 2>&1 ||
 	true
+}
+
+connect_apply_guard_begin() {
+	mkdir -p "$RUN_STATE_DIR" 2>/dev/null || true
+	: > "$CONNECT_APPLY_GUARD" 2>/dev/null || true
+	nordvpn_easy_connect_apply_result_begin "$CONNECT_APPLY_RESULT" 2>/dev/null || true
+}
+
+connect_apply_guard_end() {
+	rm -f "$CONNECT_APPLY_GUARD" 2>/dev/null || true
+}
+
+connect_apply_result_finish() {
+	local rc="${1:-1}"
+
+	load_service_config || return 1
+	nordvpn_easy_connect_apply_result_finish "$CONNECT_APPLY_RESULT" "$rc" "$cfg_vpn_country" 2>/dev/null || true
+	if [ "$rc" -eq 0 ]; then
+		nordvpn_easy_clear_stale_runtime_lock "$RUNTIME_LOCK_DIR" 2>/dev/null || true
+	fi
+}
+
+prepare_connect_setup_config_cache() {
+	local written_options=0
+
+	mkdir -p "$RUN_STATE_DIR" 2>/dev/null || true
+	nordvpn_easy_render_runtime_config "$CONNECT_SETUP_CONFIG_CACHE" 'cfg_' written_options || {
+		log_service_error "apply: failed to render cached setup config at $CONNECT_SETUP_CONFIG_CACHE"
+		return 1
+	}
+	nordvpn_easy_validate_runtime_config "$CONNECT_SETUP_CONFIG_CACHE" 'cfg_' || {
+		log_service_error "apply: cached setup config failed validation at $CONNECT_SETUP_CONFIG_CACHE ($(nordvpn_easy_runtime_file_debug_summary "$CONNECT_SETUP_CONFIG_CACHE"), $(nordvpn_easy_runtime_config_validation_summary), $(nordvpn_easy_service_backend_payload_summary))"
+		return 1
+	}
+	log_service_info "apply: cached setup config at $CONNECT_SETUP_CONFIG_CACHE (written_options=$written_options, $(nordvpn_easy_runtime_file_debug_summary "$CONNECT_SETUP_CONFIG_CACHE"), $(nordvpn_easy_runtime_config_validation_summary), $(nordvpn_easy_service_backend_payload_summary))"
+}
+
+write_desired_cron_hook_to() {
+	local target="$1"
+	local effective_cron_schedule=''
+	local config_ready="${2:-0}"
+
+	if [ "$config_ready" != '1' ]; then
+		load_service_config
+	fi
+
+	if [ "$cfg_enabled" -eq 1 ] && [ -n "$cfg_check_cron_schedule" ]; then
+		if ! validate_cron_schedule "$cfg_check_cron_schedule"; then
+			return 1
+		fi
+
+		effective_cron_schedule="$(normalize_cron_schedule "$cfg_check_cron_schedule")"
+		cat > "$target" <<EOF
+$effective_cron_schedule NORDVPN_EASY_BUSY_IS_OK=1 /etc/init.d/$SERVICE_NAME check 2>&1 | logger -t $SERVICE_NAME-cron
+EOF
+	else
+		: > "$target"
+	fi
 }
 
 log_service_error() {
@@ -332,40 +414,59 @@ normalize_cron_schedule() {
 }
 
 install_cron_hook() {
-	local effective_cron_schedule=''
 	local config_ready="${1:-0}"
+	local tmp_cron=''
+	local effective_cron_schedule=''
 
 	if [ "$config_ready" != '1' ]; then
 		load_service_config
 	fi
 	mkdir -p /etc/cron.d
 
-	if [ "$cfg_enabled" -eq 1 ] && [ -n "$cfg_check_cron_schedule" ]; then
-		if ! validate_cron_schedule "$cfg_check_cron_schedule"; then
-			rm -f "$CRON_PATH"
-			log_service_error "invalid cron schedule '$cfg_check_cron_schedule' (${CRON_VALIDATION_ERROR:-unknown error}); refusing to write $CRON_PATH"
-			return 1
-		fi
+	tmp_cron="$(mktemp /tmp/nordvpn-easy.cron.XXXXXX 2>/dev/null)" || {
+		log_service_error 'failed to create temporary cron hook file'
+		return 1
+	}
 
+	if ! write_desired_cron_hook_to "$tmp_cron" "$config_ready"; then
+		rm -f "$CRON_PATH"
+		rm -f -- "$tmp_cron"
+		log_service_error "invalid cron schedule '$cfg_check_cron_schedule' (${CRON_VALIDATION_ERROR:-unknown error}); refusing to write $CRON_PATH"
+		return 1
+	fi
+
+	if [ -f "$CRON_PATH" ] && cmp -s "$tmp_cron" "$CRON_PATH" 2>/dev/null; then
+		rm -f -- "$tmp_cron"
+		log_service_info "cron hook unchanged at $CRON_PATH"
+		return 0
+	fi
+
+	if [ -s "$tmp_cron" ]; then
 		effective_cron_schedule="$(normalize_cron_schedule "$cfg_check_cron_schedule")"
 		if [ "$effective_cron_schedule" != "$cfg_check_cron_schedule" ]; then
 			log_service_info "cron schedule '$cfg_check_cron_schedule' is faster than the 5-minute minimum; using '$effective_cron_schedule'"
 		fi
-
-		cat > "$CRON_PATH" <<EOF
-$effective_cron_schedule NORDVPN_EASY_BUSY_IS_OK=1 /etc/init.d/$SERVICE_NAME check 2>&1 | logger -t $SERVICE_NAME-cron
-EOF
+		mv "$tmp_cron" "$CRON_PATH" || {
+			rm -f -- "$tmp_cron"
+			return 1
+		}
 		log_service_info "installed cron hook at $CRON_PATH with schedule '$effective_cron_schedule'"
+		restart_cron_service
 	else
-		rm -f "$CRON_PATH"
-		log_service_info "removed cron hook from $CRON_PATH"
+		rm -f -- "$tmp_cron"
+		if [ -f "$CRON_PATH" ]; then
+			rm -f "$CRON_PATH"
+			log_service_info "removed cron hook from $CRON_PATH"
+			restart_cron_service
+		else
+			log_service_info "removed cron hook from $CRON_PATH"
+		fi
 	fi
-
-	restart_cron_service
 }
 
 install_hotplug_hook() {
 	local config_ready="${1:-0}"
+	local tmp_hotplug=''
 
 	if [ "$config_ready" != '1' ]; then
 		load_service_config
@@ -373,12 +474,21 @@ install_hotplug_hook() {
 	mkdir -p /etc/hotplug.d/iface
 
 	if [ "$cfg_enabled" -ne 1 ] || [ "$cfg_enable_hotplug" -ne 1 ]; then
-		rm -f "$HOTPLUG_PATH"
-		log_service_info "removed hotplug hook from $HOTPLUG_PATH"
+		if [ -f "$HOTPLUG_PATH" ]; then
+			rm -f "$HOTPLUG_PATH"
+			log_service_info "removed hotplug hook from $HOTPLUG_PATH"
+		else
+			log_service_info "removed hotplug hook from $HOTPLUG_PATH"
+		fi
 		return 0
 	fi
 
-cat > "$HOTPLUG_PATH" <<EOF
+	tmp_hotplug="$(mktemp /tmp/nordvpn-easy.hotplug.XXXXXX 2>/dev/null)" || {
+		log_service_error 'failed to create temporary hotplug hook file'
+		return 1
+	}
+
+	cat > "$tmp_hotplug" <<EOF
 #!/bin/sh
 WAN_IF='$(nordvpn_easy_shell_quote "$cfg_wan_if")'
 VPN_IF='$(nordvpn_easy_shell_quote "$cfg_vpn_if")'
@@ -416,6 +526,11 @@ fi
 
 printf '%s\n' "\$NOW_TS" > "\$STAMP_FILE" 2>/dev/null || true
 
+if [ -f "\$RUN_DIR/connect-apply-guard" ]; then
+	logger -t $SERVICE_NAME-hotplug "skipped \$ACTION for \$INTERFACE during connect apply"
+	exit 0
+fi
+
 if [ -r "\$LOCK_DIR/pid" ]; then
 	LOCK_PID="\$(cat "\$LOCK_DIR/pid" 2>/dev/null || true)"
 	case "\$LOCK_PID" in
@@ -444,17 +559,31 @@ fi
 NORDVPN_EASY_BUSY_IS_OK=1 /etc/init.d/$SERVICE_NAME check 2>&1 | logger -t $SERVICE_NAME-hotplug
 EOF
 
+	if [ -f "$HOTPLUG_PATH" ] && cmp -s "$tmp_hotplug" "$HOTPLUG_PATH" 2>/dev/null; then
+		rm -f -- "$tmp_hotplug"
+		log_service_info "hotplug hook unchanged at $HOTPLUG_PATH"
+		return 0
+	fi
+
+	mv "$tmp_hotplug" "$HOTPLUG_PATH" || {
+		rm -f -- "$tmp_hotplug"
+		return 1
+	}
 	chmod 755 "$HOTPLUG_PATH"
 	log_service_info "installed hotplug hook at $HOTPLUG_PATH for wan_if=$cfg_wan_if vpn_if=$cfg_vpn_if"
 }
 
-install_hooks() {
+install_hooks_if_needed() {
 	load_service_config || return 1
 	log_service_info "install_hooks requested with $(nordvpn_easy_service_debug_summary 'cfg_')"
 	log_service_info 'installing runtime hooks'
 	install_cron_hook 1 || return 1
 	install_hotplug_hook 1 || return 1
 	log_service_info 'runtime hooks installed'
+}
+
+install_hooks() {
+	install_hooks_if_needed
 }
 
 remove_hooks() {
@@ -533,6 +662,8 @@ reload() {
 }
 
 connect() {
+	local rc=0
+
 	load_service_config || return 1
 	log_service_info "connect requested; enabling runtime transactionally; $(nordvpn_easy_service_debug_summary 'cfg_')"
 	uci set "${UCI_CONFIG}.${UCI_SECTION}.enabled=1" || {
@@ -543,8 +674,33 @@ connect() {
 		log_service_error 'connect failed while committing enabled=1'
 		return 1
 	}
-	setup || return $?
-	install_hooks
+
+	connect_apply_guard_begin
+	prepare_connect_setup_config_cache || {
+		connect_apply_result_finish 1
+		connect_apply_guard_end
+		return 1
+	}
+
+	export NORDVPN_EASY_SETUP_CONFIG_CACHE="$CONNECT_SETUP_CONFIG_CACHE"
+	setup || rc=$?
+	unset NORDVPN_EASY_SETUP_CONFIG_CACHE
+	rm -f "$CONNECT_SETUP_CONFIG_CACHE" 2>/dev/null || true
+
+	if [ "$rc" -ne 0 ]; then
+		connect_apply_result_finish "$rc"
+		connect_apply_guard_end
+		return "$rc"
+	fi
+
+	install_hooks_if_needed || {
+		connect_apply_result_finish 1
+		connect_apply_guard_end
+		return 1
+	}
+
+	connect_apply_result_finish 0
+	connect_apply_guard_end
 }
 
 disconnect() {

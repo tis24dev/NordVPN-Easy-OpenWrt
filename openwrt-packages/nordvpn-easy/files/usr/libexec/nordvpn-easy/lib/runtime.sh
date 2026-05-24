@@ -80,29 +80,6 @@ nordvpn_easy_humanize_handshake_age() {
 	nordvpn_easy_format_relative_age "$diff"
 }
 
-nordvpn_easy_handshake_epoch_indicates_connection() {
-	local epoch="$1"
-	local now diff
-
-	case "$epoch" in
-		''|*[!0-9]*)
-			return 1
-			;;
-	esac
-
-	[ "$epoch" -gt 0 ] || return 1
-	now="$(date +%s 2>/dev/null)"
-	case "$now" in
-		''|*[!0-9]*)
-			return 1
-			;;
-	esac
-
-	diff=$((now - epoch))
-	[ "$diff" -lt 0 ] && diff=0
-	[ "$diff" -le 7200 ]
-}
-
 nordvpn_easy_format_human_bytes() {
 	local bytes="$1"
 
@@ -419,6 +396,7 @@ nordvpn_easy_vpn_status_value() {
 	local desired_enabled="${1:-${DESIRED_ENABLED:-0}}"
 	local vpn_if="${2:-$VPN_IF}"
 	local operation="${3:-}"
+	local handshake_epoch='0'
 
 	[ -n "$operation" ] || operation="$(nordvpn_easy_operation_status_value "${LOCK_DIR:-/tmp/nordvpn-easy.lock}")"
 
@@ -448,6 +426,13 @@ nordvpn_easy_vpn_status_value() {
 				printf '%s\n' 'inactive'
 				;;
 		esac
+		return 0
+	fi
+
+	handshake_epoch="$(nordvpn_easy_wg_handshake_epoch "$vpn_if")"
+	if nordvpn_easy_handshake_epoch_indicates_connection "$handshake_epoch" &&
+		ip link show dev "$vpn_if" >/dev/null 2>&1; then
+		printf '%s\n' 'active'
 		return 0
 	fi
 
@@ -515,6 +500,13 @@ nordvpn_easy_emit_status_json() {
 	local public_ip_source=''
 	local public_country_cached=''
 	local last_error=''
+	local connect_apply_pending='false'
+	local connect_apply_finished='false'
+	local connect_apply_success='false'
+	local connect_apply_rc='0'
+	local connect_apply_country=''
+	local connect_apply_started_at='0'
+	local connect_apply_finished_at='0'
 
 	nordvpn_easy_load_lock_metadata "${LOCK_DIR:-/tmp/nordvpn-easy.lock}"
 	operation="$(nordvpn_easy_operation_status_from_loaded_lock)"
@@ -590,6 +582,50 @@ nordvpn_easy_emit_status_json() {
 			;;
 	esac
 
+	if nordvpn_easy_connect_apply_result_read "${NORDVPN_EASY_CONNECT_APPLY_RESULT:-/tmp/run/nordvpn-easy/connect-apply-result}"; then
+		connect_apply_country="$(printf '%s' "${CONNECT_APPLY_COUNTRY:-}" | tr '[:lower:]' '[:upper:]')"
+		case "${CONNECT_APPLY_STARTED_AT:-}" in
+			''|*[!0-9]*)
+				connect_apply_started_at='0'
+				;;
+			*)
+				connect_apply_started_at="$CONNECT_APPLY_STARTED_AT"
+				;;
+		esac
+		case "${CONNECT_APPLY_FINISHED_AT:-}" in
+			''|*[!0-9]*)
+				connect_apply_finished_at='0'
+				;;
+			*)
+				connect_apply_finished_at="$CONNECT_APPLY_FINISHED_AT"
+				;;
+		esac
+		case "${CONNECT_APPLY_STATE:-}" in
+			pending)
+				connect_apply_pending='true'
+				;;
+			success)
+				connect_apply_pending='false'
+				connect_apply_finished='true'
+				connect_apply_success='true'
+				connect_apply_rc='0'
+				;;
+			failed)
+				connect_apply_pending='false'
+				connect_apply_finished='true'
+				connect_apply_success='false'
+				case "${CONNECT_APPLY_RC:-}" in
+					''|*[!0-9]*)
+						connect_apply_rc='1'
+						;;
+					*)
+						connect_apply_rc="$CONNECT_APPLY_RC"
+						;;
+				esac
+				;;
+		esac
+	fi
+
 	cat <<EOF
 {
   "updated_at": $updated_at,
@@ -634,7 +670,14 @@ nordvpn_easy_emit_status_json() {
   "current_server_country": "$(nordvpn_easy_json_escape "$current_country")",
   "current_server_load": "$(nordvpn_easy_json_escape "$current_load")",
   "preferred_server_hostname": "$(nordvpn_easy_json_escape "$preferred_hostname")",
-  "preferred_server_station": "$(nordvpn_easy_json_escape "$preferred_station")"
+  "preferred_server_station": "$(nordvpn_easy_json_escape "$preferred_station")",
+  "connect_apply_pending": $connect_apply_pending,
+  "connect_apply_finished": $connect_apply_finished,
+  "connect_apply_success": $connect_apply_success,
+  "connect_apply_rc": $connect_apply_rc,
+  "connect_apply_country": "$(nordvpn_easy_json_escape "$connect_apply_country")",
+  "connect_apply_started_at": $connect_apply_started_at,
+  "connect_apply_finished_at": $connect_apply_finished_at
 }
 EOF
 }

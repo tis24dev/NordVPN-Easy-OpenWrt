@@ -997,6 +997,11 @@ fi
 
 if [ "$ACTION" = 'status_json' ]; then
   LOG_PHASE='runtime'
+  if [ -f "${NORDVPN_EASY_CONNECT_APPLY_GUARD:-/tmp/run/nordvpn-easy/connect-apply-guard}" ]; then
+    nordvpn_easy_emit_status_json
+    nordvpn_easy_write_status_cache >/dev/null 2>&1 || true
+    exit 0
+  fi
   if nordvpn_easy_write_status_cache >/dev/null 2>&1; then
     nordvpn_easy_emit_cached_status_json
   else
@@ -1076,7 +1081,7 @@ case "$ACTION" in
     ;;
   stop_vpn)
     validate_stop_runtime &&
-    nordvpn_easy_stop_vpn_for_server_change
+    nordvpn_easy_stop_vpn_for_connect_apply
     ACTION_RC=$?
     ;;
   reconnect)
@@ -1087,9 +1092,14 @@ case "$ACTION" in
     ACTION_RC=$?
     ;;
   setup)
-    validate_setup_runtime &&
-    provision_vpn connect_fresh &&
-    log 'NordVPN configuration is ready'
+    validate_setup_runtime
+    if [ "${NORDVPN_EASY_CONNECT_APPLY:-0}" = '1' ]; then
+      provision_vpn connect_apply &&
+      log 'NordVPN configuration is ready (connect apply)'
+    else
+      provision_vpn connect_fresh &&
+      log 'NordVPN configuration is ready'
+    fi
     ACTION_RC=$?
     ;;
   rotate)

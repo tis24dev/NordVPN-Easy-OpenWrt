@@ -1,6 +1,9 @@
 # Local planning notes (not for the repository)
 plans/
 
+# Local diagnosis / timing analysis (lab only)
+diagnosi/
+
 # Local diagnostics exports
 nordvpn-easy-diagnostics-*.log
 problem.md
