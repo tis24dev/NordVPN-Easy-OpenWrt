@@ -183,6 +183,9 @@ rpc_public_ip() {
 		message_json="$stdout_json"
 	else
 		message_json="$stderr_json"
+		if [ "$stderr_json" = '""' ] || [ "$stderr_json" = 'null' ] || [ -z "$stderr_json" ]; then
+			message_json="$(printf 'public-ip poll script exited with code %s: %s' "$rc" "$PUBLIC_IP_POLL_SCRIPT" | jq -Rs .)"
+		fi
 	fi
 	rm -rf -- "$tmp_dir"
 

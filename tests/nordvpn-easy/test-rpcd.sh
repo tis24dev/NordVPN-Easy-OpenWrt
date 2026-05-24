@@ -132,6 +132,29 @@ printf '%s' "$LOOKUP_JSON" | jq -er '
 	.message == "public_ip failed (rc=1)\n"
 ' >/dev/null
 
+FAKE_POLL_SILENT="$TMP_DIR/public-ip-poll-silent"
+cat > "$FAKE_POLL_SILENT" <<'EOF'
+#!/bin/sh
+exit 2
+EOF
+chmod 755 "$FAKE_POLL_SILENT"
+
+SILENT_LOOKUP_JSON="$(
+	printf '{}' |
+		NORDVPN_EASY_LIB_DIR="$LIB_DIR" \
+		NORDVPN_EASY_PUBLIC_IP_POLL_SCRIPT="$FAKE_POLL_SILENT" \
+		sh "$RPCD_SCRIPT" call public_ip
+)"
+printf '%s' "$SILENT_LOOKUP_JSON" | jq -er \
+	--arg script "$FAKE_POLL_SILENT" \
+	'
+	.success == false and
+	.code == 2 and
+	.stdout == "" and
+	.stderr == "" and
+	.message == ("public-ip poll script exited with code 2: " + $script)
+' >/dev/null
+
 DIAG_JSON="$(
 	printf '{}' |
 		NORDVPN_EASY_LIB_DIR="$LIB_DIR" \
