@@ -34,8 +34,8 @@ function loadManagerPollingModule(overrides) {
 			runtimeOperationIsBusy() {
 				return false;
 			},
-			updateLocalStatus() {
-				calls.push('status');
+			updateLocalStatus(_state, options) {
+				calls.push(options && options.suppressAutoReconcile ? 'status:suppress' : 'status');
 				return Promise.resolve();
 			},
 			updatePublicIp() {
@@ -112,6 +112,18 @@ Promise.resolve().then(async function() {
 
 	await harness.pollers[0].fn();
 	assert.deepEqual(harness.calls, [ 'status' ], 'first poller refreshes local status');
+
+	state.pollingSuspended = true;
+	await harness.pollers[0].fn();
+	assert.deepEqual(harness.calls, [ 'status' ],
+		'local status poller skips while polling is suspended');
+
+	state.saveApplyInProgress = true;
+	await harness.pollers[0].fn();
+	assert.deepEqual(harness.calls, [ 'status', 'status:suppress' ],
+		'local status keeps refreshing during Save & Apply with auto reconcile suppressed');
+	state.saveApplyInProgress = false;
+	state.pollingSuspended = false;
 
 	harness.managerPolling.start(state);
 	assert.equal(harness.pollers.length, 3, 'start is idempotent');

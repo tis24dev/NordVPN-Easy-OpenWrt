@@ -202,7 +202,7 @@ function replaceStatusText(elementId, value) {
 function isDisableRequested(state) {
 	const enabledCheckbox = getEnabledCheckboxElement();
 
-	return !!(state && state.pendingOperationLabel && enabledCheckbox && !enabledCheckbox.checked);
+	return !!(state && state.saveApplyInProgress && enabledCheckbox && !enabledCheckbox.checked);
 }
 
 function currentServerSummaryFromStatus(status, state) {
@@ -249,18 +249,11 @@ function updateCountryMatchStatus(state) {
 		state.currentPublicCountry || ''
 	);
 
-	if (state.saveApplyInProgress || state.pendingOperationLabel ||
-		state.phase === 'saving' || state.phase === 'runtime_busy')
-		return setCountryMatchIndicator('checking', _('Applying'));
-
 	if (!state.appliedEnabled || state.currentLocalStatus.runtime_disabled || state.currentLocalStatus.interface_disabled || isDisableRequested(state))
 		return setCountryMatchIndicator('inactive', _('Inactive'));
 
 	if (state.currentOperationStatus.indexOf('busy:') === 0) {
 		busyAction = state.currentOperationStatus.substring(5);
-
-		if (busyAction === 'reconcile')
-			return setCountryMatchIndicator('checking', _('Syncing'));
 
 		if (busyAction !== 'refresh_countries' && busyAction !== 'server_catalog' && !actualCountry)
 			return setCountryMatchIndicator('checking', _('Checking'));
@@ -269,9 +262,6 @@ function updateCountryMatchStatus(state) {
 		if (!actualCountry)
 			return setCountryMatchIndicator('checking', _('Checking'));
 	}
-
-	if (state.pendingOperationLabel === 'reconcile')
-		return setCountryMatchIndicator('checking', _('Syncing'));
 
 	if (!expectedCountry)
 		return setCountryMatchIndicator('automatic', _('Automatic'));
@@ -362,7 +352,7 @@ function updateServerCatalogStatus(state) {
 function updateServerSelectionState(state) {
 	const mode = getSelectedMode();
 	const country = getSelectedCountry();
-	const busy = state.currentOperationStatus.indexOf('busy') === 0 || state.pendingOperationLabel !== '';
+	const busy = !!state.saveApplyInProgress || state.currentOperationStatus.indexOf('busy') === 0;
 	const selectEl = getSelectElement(ids.SERVER_FIELD_ID);
 	const refreshButton = getInputElement(ids.SERVER_REFRESH_BUTTON_ID, 'button');
 
@@ -373,37 +363,6 @@ function updateServerSelectionState(state) {
 
 	if (refreshButton)
 		refreshButton.disabled = busy || !country;
-}
-
-function showConfirmationModal(title, lines) {
-	return new Promise(function(resolve) {
-		const body = [
-			E('p', {}, lines[0])
-		];
-
-		if (lines[1])
-			body.push(E('p', {}, lines[1]));
-
-		body.push(E('div', { class: 'right' }, [
-			E('button', {
-				class: 'btn',
-				click: function() {
-					ui.hideModal();
-					resolve(false);
-				}
-			}, [ _('Cancel') ]),
-			' ',
-			E('button', {
-				class: 'btn cbi-button-apply',
-				click: function() {
-					ui.hideModal();
-					resolve(true);
-				}
-			}, [ _('Apply') ])
-		]));
-
-		ui.showModal(title, body);
-	});
 }
 
 function diagnosticsPageHref() {
@@ -551,7 +510,6 @@ return baseclass.extend({
 	setManagerControlsDisabled: setManagerControlsDisabled,
 	updateServerCatalogStatus: updateServerCatalogStatus,
 	updateServerSelectionState: updateServerSelectionState,
-	showConfirmationModal: showConfirmationModal,
 	renderDiagnosticsBanner: renderDiagnosticsBanner,
 	updateDiagnosticsBanner: updateDiagnosticsBanner,
 	renderStatusSection: renderStatusSection

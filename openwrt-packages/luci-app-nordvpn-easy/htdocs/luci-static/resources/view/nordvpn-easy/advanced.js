@@ -10,14 +10,6 @@
 
 const SERVER_CATALOG_CACHE_PATH = '/tmp/nordvpn-easy-servers.json';
 
-function statusIsBusy(statusPayload) {
-	const operationStatus = String((statusPayload && statusPayload.operation_status) || 'idle');
-
-	return operationStatus === 'busy' ||
-		operationStatus.indexOf('busy:') === 0 ||
-		String((statusPayload && statusPayload.operation_lock_state) || 'none') === 'held';
-}
-
 function runAction(action, runtimeBusy) {
 	if (runtimeBusy && [ 'setup', 'check', 'rotate', 'install_hooks' ].indexOf(action) !== -1) {
 		service.notifyInfo(_('NordVPN Easy is applying another runtime operation. This action was skipped.'));
@@ -85,7 +77,7 @@ return view.extend({
 		const cronInstalled = !!stats[0];
 		const hotplugInstalled = !!stats[1];
 		const statusPayload = service.parseExecJsonResponse(stats[2], null);
-		const runtimeBusy = statusIsBusy(statusPayload);
+		const runtimeBusy = managerData.runtimeStatusIsBusy(statusPayload);
 		const operationStatus = String((statusPayload && statusPayload.operation_status) || 'idle');
 		const configuredCountry = managerData.normalizeCountryCode(uci.get('nordvpn_easy', 'main', 'vpn_country') || '');
 		const preferredStation = String(uci.get('nordvpn_easy', 'main', 'preferred_server_station') || '');

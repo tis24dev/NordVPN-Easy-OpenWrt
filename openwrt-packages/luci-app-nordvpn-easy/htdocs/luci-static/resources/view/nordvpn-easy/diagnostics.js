@@ -1,23 +1,14 @@
 'use strict';
 /* global service, ui, view, E, _ */
+'require nordvpn-easy/manager-actions as managerActions';
 'require nordvpn-easy/manager-data as managerData';
+'require nordvpn-easy/manager-store as managerStore';
 'require nordvpn-easy/service as service';
 'require ui';
 'require view';
 
 const RUNTIME_IDLE_POLL_MS = 2000;
 const RUNTIME_IDLE_MAX_WAIT_MS = 90000;
-
-function runtimeStatusIsBusy(status) {
-	if (!status || typeof status !== 'object')
-		return false;
-
-	const operationStatus = String(status.operation_status || 'idle');
-
-	return operationStatus === 'busy' ||
-		operationStatus.indexOf('busy:') === 0 ||
-		String(status.operation_lock_state || 'none') === 'held';
-}
 
 function waitForRuntimeIdle() {
 	const deadline = Date.now() + RUNTIME_IDLE_MAX_WAIT_MS;
@@ -26,7 +17,7 @@ function waitForRuntimeIdle() {
 		return service.execService('status_json').then(function(res) {
 			const status = service.parseExecJsonResponse(res, null);
 
-			if (!runtimeStatusIsBusy(status))
+			if (!managerData.runtimeStatusIsBusy(status))
 				return true;
 
 			if (Date.now() >= deadline) {
@@ -53,7 +44,7 @@ function parseDiagnosticsLoadResult(summaryResult) {
 
 	if (summaryResult.code != null || summaryResult.stdout != null || summaryResult.message != null) {
 		if (summaryResult.stdout)
-			payload = service.parseJson(summaryResult.stdout, null);
+			payload = managerData.parseJson(summaryResult.stdout, null);
 
 		if (!payload)
 			payload = service.parseExecJsonResponse(summaryResult, null);
@@ -291,7 +282,14 @@ return view.extend({
 					button._nordvpnApplying = true;
 					button.disabled = true;
 
-					return service.runActions([ 'stop_vpn', 'connect' ]).then(function() {
+					const syncState = managerStore.createState();
+
+					return waitForRuntimeIdle().then(function() {
+						return managerActions.runApplyCycle(null, syncState, null, {
+							skipFormSave: true,
+							skipDriftRestart: true
+						});
+					}).then(function() {
 						service.notifyInfo(_('Server selection synchronized.'));
 						return view.poll().then(function(result) {
 							const container = document.querySelector('[data-nordvpn-easy-diagnostics]');

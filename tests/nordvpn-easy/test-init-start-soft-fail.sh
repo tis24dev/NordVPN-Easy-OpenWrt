@@ -38,7 +38,6 @@ eval "$(extract_function start)"
 cfg_enabled=1
 RUN_CORE_ACTION_FAILURE_LOG_MODE=''
 SOFT_FAIL_MODE_CAPTURE="$TMP_DIR/failure-mode.txt"
-CORE_ACTION_CAPTURE="$TMP_DIR/core-action.txt"
 START_OUTPUT_FILE="$TMP_DIR/start-output.txt"
 START_LOG_FILE="$TMP_DIR/start-log.txt"
 
@@ -46,15 +45,18 @@ load_service_config() { :; }
 disable_vpn_runtime() { :; }
 install_hooks() { :; }
 log_service_info() { printf '%s\n' "$1" >> "$START_LOG_FILE"; }
-run_core_action() {
-	printf '%s\n' "$1" > "$CORE_ACTION_CAPTURE"
+reconcile() {
 	printf '%s\n' "${RUN_CORE_ACTION_FAILURE_LOG_MODE:-unset}" > "$SOFT_FAIL_MODE_CAPTURE"
+	log_service_info 'reconcile requested; synchronizing runtime with saved config'
 	return 1
 }
 
 start >"$START_OUTPUT_FILE"
 
-assert_eq 'reconcile' "$(cat "$CORE_ACTION_CAPTURE")" 'start performs an initial runtime reconcile'
+grep -q 'reconcile requested; synchronizing runtime with saved config' "$START_LOG_FILE" || {
+	printf '%s\n' 'FAIL: start should run the reconcile command path at boot' >&2
+	exit 1
+}
 assert_eq 'info' "$(cat "$SOFT_FAIL_MODE_CAPTURE")" 'start downgrades initial reconcile failures to info logging'
 assert_eq '' "$(cat "$START_OUTPUT_FILE")" 'start does not emit retryable reconcile failure to stdout'
 assert_eq '' "${RUN_CORE_ACTION_FAILURE_LOG_MODE}" 'start restores previous failure log mode'

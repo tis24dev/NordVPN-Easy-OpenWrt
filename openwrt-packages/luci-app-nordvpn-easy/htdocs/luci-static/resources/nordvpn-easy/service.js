@@ -1,13 +1,15 @@
 'use strict';
-/* global baseclass, rpc, ui, document, window, Blob, E, _, L */
+/* global baseclass, managerData, rpc, ui, document, window, Blob, E, _, L */
 'require baseclass';
+'require nordvpn-easy/manager-data as managerData';
 'require rpc';
 'require ui';
 
-// reconnect/reconcile often exceed LuCI default (20s) and stock rpcd (30s).
+// stop_vpn/connect often exceed LuCI default (20s) and stock rpcd (30s).
 const RUNTIME_RPC_TIMEOUT = 120;
 const DIAGNOSTICS_RPC_TIMEOUT = 180;
 // OpenWrt 24 LuCI rpc.js ignores rpc.declare({ timeout }) and uses L.env.rpctimeout only.
+// Match rpcd/uhttpd minimums in 99-nordvpn-easy-rpcd-timeout (180s).
 const LUCI_RPC_TIMEOUT_SEC = 180;
 
 function ensureLuCiRpcTimeout(minSeconds) {
@@ -38,27 +40,9 @@ const callConnect = rpc.declare({
 	timeout: RUNTIME_RPC_TIMEOUT
 });
 
-const callDisconnect = rpc.declare({
-	object: 'nordvpn.easy',
-	method: 'disconnect',
-	timeout: RUNTIME_RPC_TIMEOUT
-});
-
-const callReconnect = rpc.declare({
-	object: 'nordvpn.easy',
-	method: 'reconnect',
-	timeout: RUNTIME_RPC_TIMEOUT
-});
-
 const callStopVpn = rpc.declare({
 	object: 'nordvpn.easy',
 	method: 'stop_vpn',
-	timeout: RUNTIME_RPC_TIMEOUT
-});
-
-const callReconcile = rpc.declare({
-	object: 'nordvpn.easy',
-	method: 'reconcile',
 	timeout: RUNTIME_RPC_TIMEOUT
 });
 
@@ -89,12 +73,6 @@ const callInstallHooks = rpc.declare({
 const callRemoveHooks = rpc.declare({
 	object: 'nordvpn.easy',
 	method: 'remove_hooks',
-	timeout: RUNTIME_RPC_TIMEOUT
-});
-
-const callDisableRuntime = rpc.declare({
-	object: 'nordvpn.easy',
-	method: 'disable_runtime',
 	timeout: RUNTIME_RPC_TIMEOUT
 });
 
@@ -130,13 +108,6 @@ const callServerCatalog = rpc.declare({
 	timeout: 90
 });
 
-const callRefreshServers = rpc.declare({
-	object: 'nordvpn.easy',
-	method: 'refresh_servers',
-	params: [ 'country', 'force' ],
-	timeout: 90
-});
-
 function rpcErrorMessage(err) {
 	return (err && err.message) ? String(err.message) : String(err);
 }
@@ -151,14 +122,6 @@ function normalizeRpcError(err) {
 	}
 
 	return err;
-}
-
-function parseJson(raw, fallback) {
-	try {
-		return JSON.parse(raw || '');
-	} catch (e) {
-		return fallback;
-	}
 }
 
 function responseMessage(res, fallback) {
@@ -249,14 +212,8 @@ function callSimpleAction(action) {
 	switch (action) {
 	case 'connect':
 		return callConnect();
-	case 'disconnect':
-		return callDisconnect();
-	case 'reconnect':
-		return callReconnect();
 	case 'stop_vpn':
 		return callStopVpn();
-	case 'reconcile':
-		return callReconcile();
 	case 'rotate':
 		return callRotate();
 	case 'setup':
@@ -267,8 +224,6 @@ function callSimpleAction(action) {
 		return callInstallHooks();
 	case 'remove_hooks':
 		return callRemoveHooks();
-	case 'disable_runtime':
-		return callDisableRuntime();
 	case 'public_ip':
 		return callPublicIp();
 	default:
@@ -289,9 +244,6 @@ function execService(action, extraArgs) {
 		break;
 	case 'refresh_countries_force':
 		request = callRefreshCountries(true);
-		break;
-	case 'refresh_servers':
-		request = callRefreshServers(args[0] || '', args[1] === '1' || args[1] === true);
 		break;
 	case 'server_catalog':
 		request = callServerCatalog(args[0] || '', args[1] === '1' || args[1] === true);
@@ -344,35 +296,11 @@ function runAction(action, extraArgs) {
 	});
 }
 
-function runActions(actions) {
-	const results = [];
-
-	return actions.reduce(function(chain, action) {
-		return chain.then(function() {
-			return runAction(action).then(function(result) {
-				results.push(result);
-
-				if (!result.success) {
-					const error = resultToError(result);
-
-					error.result = result;
-					error.results = results.slice();
-					throw error;
-				}
-
-				return result;
-			});
-		});
-	}, Promise.resolve()).then(function() {
-		return results;
-	});
-}
-
 function parseExecJsonResponse(res, fallback) {
 	if (!res || res.code !== 0)
 		return fallback;
 
-	return parseJson(res.stdout || '', fallback);
+	return managerData.parseJson(res.stdout || '', fallback);
 }
 
 function notifyInfo(message) {
@@ -403,13 +331,11 @@ function downloadTextFile(name, content) {
 return baseclass.extend({
 	LUCI_RPC_TIMEOUT_SEC: LUCI_RPC_TIMEOUT_SEC,
 	ensureLuCiRpcTimeout: ensureLuCiRpcTimeout,
-	parseJson: parseJson,
 	parseExecJsonResponse: parseExecJsonResponse,
 	responseMessage: responseMessage,
 	resultToError: resultToError,
 	execService: execService,
 	runAction: runAction,
-	runActions: runActions,
 	notifyInfo: notifyInfo,
 	notifyError: notifyError,
 	downloadTextFile: downloadTextFile

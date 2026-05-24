@@ -17,15 +17,6 @@ const COUNTRIES_CACHE_PATH = '/tmp/nordvpn-easy-countries.json';
 const TOKEN_MASK_DISPLAY = '********';
 const state = managerStore.createState();
 
-function statusPayloadIsBusy(payload) {
-	const status = managerData.parseLocalStatus(JSON.stringify(payload || {}));
-	const operationStatus = String(status.operation_status || 'idle');
-
-	return operationStatus === 'busy' ||
-		operationStatus.indexOf('busy:') === 0 ||
-		String(status.operation_lock_state || 'none') === 'held';
-}
-
 function refreshCountriesInBackground(selectEl, currentCountry) {
 	if (!selectEl)
 		return Promise.resolve();
@@ -54,7 +45,7 @@ const CountrySelectValue = form.ListValue.extend({
 		return L.resolveDefault(service.execService('status_json'), null).then(function(statusRes) {
 			const payload = service.parseExecJsonResponse(statusRes, null);
 
-			if (statusPayloadIsBusy(payload)) {
+			if (managerData.runtimeStatusIsBusy(payload)) {
 				service.notifyInfo(_('NordVPN Easy is applying another runtime operation. Country refresh was skipped.'));
 				return null;
 			}
@@ -332,19 +323,22 @@ const TokenValue = form.Value.extend({
 			const modeSelect = managerUI.getSelectElement(managerUI.ids.MODE_FIELD_ID);
 
 			managerUI.renderServerChoices(managerUI.getSelectElement(managerUI.ids.SERVER_FIELD_ID), state.currentServerCatalog, currentPreferredStation);
-			managerActions.renderLocalStatusSnapshot(state, state.currentLocalStatus);
+			if (state.currentLocalStatusFresh)
+				managerActions.renderLocalStatusSnapshot(state, state.currentLocalStatus);
+			else
+				managerActions.renderLocalStatusUnavailable(state);
 			managerActions.renderDiagnosticsSnapshot(
 				state,
 				state.currentDiagnosticsSummary,
 				state.currentDiagnosticsSummaryFresh
 			);
-			// Drift recovery runs from Save & Apply or background polling after cooldown.
-			if (!countries.length && !statusPayloadIsBusy(initialStatusPayload))
+			// Drift recovery runs from the unified apply cycle and background status polling.
+			if (!countries.length && !managerData.runtimeStatusIsBusy(initialStatusPayload))
 				refreshCountriesInBackground(countrySelect, currentCountry);
 
 			if (!state.currentServerCatalog.servers.length &&
 				managerStore.shouldLoadCatalog(currentMode, currentCountry) &&
-				!statusPayloadIsBusy(initialStatusPayload)) {
+				!managerData.runtimeStatusIsBusy(initialStatusPayload)) {
 				managerActions.loadServerCatalog(state, currentCountry, false).catch(function(err) {
 					service.notifyError(err);
 				});
@@ -380,7 +374,7 @@ const TokenValue = form.Value.extend({
 		}.bind(this));
 	},
 
-	handleSaveApply: function(ev, mode) {
-		return managerActions.handleSaveApply(this, state, ev, mode);
+	handleSaveApply: function(ev) {
+		return managerActions.handleSaveApply(this, state, ev);
 	}
 	});

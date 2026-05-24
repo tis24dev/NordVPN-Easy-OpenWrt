@@ -18,6 +18,18 @@ function parseEnabledFlag(value) {
 	}
 }
 
+function runtimeStatusIsBusy(status) {
+	if (!status || typeof status !== 'object')
+		return false;
+
+	const operationStatus = String(status.operation_status || 'idle');
+	const lockState = String(status.operation_lock_state || 'none');
+
+	return operationStatus === 'busy' ||
+		operationStatus.indexOf('busy:') === 0 ||
+		lockState === 'held';
+}
+
 function emptyServerCatalog() {
 	return {
 		country_id: '',
@@ -238,6 +250,7 @@ function buildServerCatalogIndex(catalog) {
 return baseclass.extend({
 	normalizeCountryCode: normalizeCountryCode,
 	parseEnabledFlag: parseEnabledFlag,
+	runtimeStatusIsBusy: runtimeStatusIsBusy,
 	emptyServerCatalog: emptyServerCatalog,
 	parseJson: parseJson,
 	parseCountries: parseCountries,

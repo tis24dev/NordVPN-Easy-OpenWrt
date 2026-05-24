@@ -19,6 +19,32 @@ const servicePath = path.join(
 	'nordvpn-easy',
 	'service.js'
 );
+const managerDataPath = path.join(
+	rootDir,
+	'openwrt-packages',
+	'luci-app-nordvpn-easy',
+	'htdocs',
+	'luci-static',
+	'resources',
+	'nordvpn-easy',
+	'manager-data.js'
+);
+
+function loadManagerDataModule() {
+	const source = fs.readFileSync(managerDataPath, 'utf8');
+
+	return vm.runInNewContext(`(function(){\n${source}\n})();`, {
+		baseclass: {
+			extend(api) {
+				return api;
+			}
+		}
+	}, {
+		filename: managerDataPath
+	});
+}
+
+const managerData = loadManagerDataModule();
 
 if (!String.prototype.format) {
 	Object.defineProperty(String.prototype, 'format', {
@@ -45,6 +71,7 @@ function buildServiceModule(initialRpctimeout) {
 				return api;
 			}
 		},
+		managerData: managerData,
 		rpc: {
 			declare(spec) {
 				return function() {
@@ -135,20 +162,38 @@ Promise.resolve().then(async function() {
 	assert.equal(highTimeout.getRpctimeout(), 240, 'ensureLuCiRpcTimeout keeps larger existing timeouts');
 
 	const loaded = loadServiceModule();
-	const result = await loaded.service.execService('refresh_servers', [ 'UY', '1' ]);
-	const call = loaded.calls[loaded.calls.length - 1];
-	const payload = JSON.parse(result.stdout);
+	const catalogResult = await loaded.service.execService('server_catalog', [ 'UY', '1' ]);
+	const catalogCall = loaded.calls[loaded.calls.length - 1];
+	const catalogPayload = JSON.parse(catalogResult.stdout);
 
-	assert.equal(result.code, 0, 'refresh_servers returns normalized success result');
-	assert.equal(call.spec.object, 'nordvpn.easy', 'refresh_servers uses nordvpn.easy ubus object');
-	assert.equal(call.spec.method, 'refresh_servers', 'refresh_servers uses the dedicated ubus method');
-	assert.deepEqual(call.args, [ 'UY', true ], 'refresh_servers forwards country and force args');
-	assert.deepEqual(payload.args, [ 'UY', true ], 'refresh_servers preserves rpc payload in stdout');
+	assert.equal(catalogResult.code, 0, 'server_catalog returns normalized success result');
+	assert.equal(catalogCall.spec.object, 'nordvpn.easy', 'server_catalog uses nordvpn.easy ubus object');
+	assert.equal(catalogCall.spec.method, 'server_catalog', 'server_catalog uses the dedicated ubus method');
+	assert.deepEqual(catalogCall.args, [ 'UY', true ], 'server_catalog forwards country and force args');
+	assert.deepEqual(catalogPayload.args, [ 'UY', true ], 'server_catalog preserves rpc payload in stdout');
 
-	const reconcileResult = await loaded.service.execService('reconcile');
-	const reconcileCall = loaded.calls[loaded.calls.length - 1];
-	assert.equal(reconcileResult.code, 0, 'reconcile returns normalized success result');
-	assert.equal(reconcileCall.spec.method, 'reconcile', 'reconcile uses the dedicated ubus method');
+	await assert.rejects(
+		loaded.service.execService('refresh_servers'),
+		/Unsupported NordVPN Easy action: refresh_servers/,
+		'legacy refresh_servers alias is not exposed from the LuCI service client'
+	);
+
+	await assert.rejects(
+		loaded.service.execService('disable_runtime'),
+		/Unsupported NordVPN Easy action: disable_runtime/,
+		'disable_runtime is not exposed from the LuCI service client'
+	);
+
+	const connectResult = await loaded.service.execService('connect');
+	const connectCall = loaded.calls[loaded.calls.length - 1];
+	assert.equal(connectResult.code, 0, 'connect returns normalized success result');
+	assert.equal(connectCall.spec.method, 'connect', 'connect uses the dedicated ubus method');
+
+	await assert.rejects(
+		loaded.service.execService('reconcile'),
+		/Unsupported NordVPN Easy action: reconcile/,
+		'legacy reconcile is not exposed from the LuCI service client'
+	);
 
 	const diagnosticsResult = await loaded.service.execService('diagnostics_summary');
 	const diagnosticsCall = loaded.calls[loaded.calls.length - 1];

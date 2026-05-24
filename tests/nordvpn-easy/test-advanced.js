@@ -21,7 +21,33 @@ const advancedPath = path.join(
 	'advanced.js'
 );
 
+const managerDataPath = path.join(
+	rootDir,
+	'openwrt-packages',
+	'luci-app-nordvpn-easy',
+	'htdocs',
+	'luci-static',
+	'resources',
+	'nordvpn-easy',
+	'manager-data.js'
+);
 const source = fs.readFileSync(advancedPath, 'utf8');
+
+function loadManagerDataModule() {
+	const managerDataSource = fs.readFileSync(managerDataPath, 'utf8');
+
+	return vm.runInNewContext(`(function(){\n${managerDataSource}\n})();`, {
+		baseclass: {
+			extend(api) {
+				return api;
+			}
+		}
+	}, {
+		filename: managerDataPath
+	});
+}
+
+const managerDataModule = loadManagerDataModule();
 
 if (!String.prototype.format) {
 	Object.defineProperty(String.prototype, 'format', {
@@ -289,7 +315,8 @@ function loadAdvancedView(options) {
 			normalizeCountryCode: normalizeCountryCode,
 			emptyServerCatalog: emptyServerCatalog,
 			parseServerCatalog: parseServerCatalog,
-			buildServerCatalogIndex: buildServerCatalogIndex
+			buildServerCatalogIndex: buildServerCatalogIndex,
+			runtimeStatusIsBusy: managerDataModule.runtimeStatusIsBusy
 		},
 		managerFormat: {
 			formatServerLabel(server) {
