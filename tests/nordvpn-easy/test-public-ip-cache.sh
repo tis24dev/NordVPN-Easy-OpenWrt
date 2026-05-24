@@ -63,6 +63,8 @@ EOF
 }
 
 assert_valid_ip '203.0.113.9' 'public IP validator accepts IPv4'
+assert_invalid_ip '256.0.0.1' 'public IP validator rejects IPv4 octet above 255'
+assert_invalid_ip '999.999.999.999' 'public IP validator rejects invalid IPv4 octets'
 assert_valid_ip '2001:db8:85a3:0:0:8a2e:370:7334' 'public IP validator accepts full IPv6'
 assert_valid_ip '2001:db8::1' 'public IP validator accepts compressed IPv6'
 assert_valid_ip '::1' 'public IP validator accepts loopback IPv6'
