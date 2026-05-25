@@ -251,12 +251,8 @@ nordvpn_easy_enterprise_state_value() {
 			return 0
 		fi
 
-		if nordvpn_easy_truthy "$runtime_configured"; then
-			printf '%s\n' 'degraded'
-			return 0
-		fi
-
-		printf '%s\n' 'idle'
+		# enabled=1 must never surface as idle while the tunnel is down
+		printf '%s\n' 'degraded'
 		return 0
 	fi
 
@@ -643,6 +639,10 @@ nordvpn_easy_emit_status_json() {
 				esac
 				;;
 		esac
+	fi
+
+	if [ -f "${NORDVPN_EASY_CONNECT_APPLY_GUARD:-/tmp/run/nordvpn-easy/connect-apply-guard}" ]; then
+		connect_apply_pending='true'
 	fi
 
 	cat <<EOF

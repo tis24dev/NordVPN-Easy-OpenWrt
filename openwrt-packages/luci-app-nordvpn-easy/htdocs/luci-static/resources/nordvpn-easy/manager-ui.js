@@ -244,7 +244,12 @@ function preferredServerSummaryFromStatus(status) {
 function updateCountryMatchStatus(state) {
 	let busyAction;
 	const runtimeStatus = state.currentLocalStatus || {};
-	const expectedCountry = managerData.normalizeCountryCode(state.appliedCountryCode);
+	const expectedCountry = managerData.normalizeCountryCode(
+		state.applyTargetCountryCode ||
+		getSelectedCountry() ||
+		state.appliedCountryCode ||
+		''
+	);
 	const actualCountry = managerData.normalizeCountryCode(
 		state.currentPublicCountry || ''
 	);

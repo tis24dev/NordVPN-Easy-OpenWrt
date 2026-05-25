@@ -264,6 +264,8 @@ assert_eq '2048' "$NORDVPN_EASY_WG_RT_TRANSFER_RX_BYTES" 'wireguard snapshot exp
 assert_eq '4096' "$NORDVPN_EASY_WG_RT_TRANSFER_TX_BYTES" 'wireguard snapshot exposes tx bytes'
 assert_eq 'none' "$NORDVPN_EASY_WG_RT_TRANSFER_ASYMMETRY" 'connected snapshot has no transfer asymmetry'
 assert_eq 'connected' "$(nordvpn_easy_enterprise_state_value 1 0 yes yes idle)" 'enterprise state helper treats connected idle runtime as connected'
+assert_eq 'degraded' "$(nordvpn_easy_enterprise_state_value 1 0 no no idle)" 'enabled idle runtime without configuration is degraded not idle'
+assert_eq 'degraded' "$(nordvpn_easy_enterprise_state_value 1 0 yes no idle)" 'enabled idle runtime without connection is degraded not idle'
 
 rm -rf "$LOCK_DIR"
 

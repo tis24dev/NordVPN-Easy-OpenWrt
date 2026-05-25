@@ -9,6 +9,7 @@ BASE="$REPO_ROOT/openwrt-packages"
 
 export VMID REPO_ROOT BASE
 exec python3 - "$@" <<'PY'
+import hashlib
 import json
 import os
 import subprocess
@@ -80,6 +81,11 @@ FILES = [
         "644",
     ),
     (
+        f"{BASE}/luci-app-nordvpn-easy/root/usr/share/luci/menu.d/luci-app-nordvpn-easy.json",
+        "/usr/share/luci/menu.d/luci-app-nordvpn-easy.json",
+        "644",
+    ),
+    (
         f"{BASE}/luci-app-nordvpn-easy/htdocs/luci-static/resources/nordvpn-easy/manager-actions.js",
         "/www/luci-static/resources/nordvpn-easy/manager-actions.js",
         "644",
@@ -90,8 +96,18 @@ FILES = [
         "644",
     ),
     (
+        f"{BASE}/luci-app-nordvpn-easy/htdocs/luci-static/resources/nordvpn-easy/manager-ui.js",
+        "/www/luci-static/resources/nordvpn-easy/manager-ui.js",
+        "644",
+    ),
+    (
         f"{BASE}/luci-app-nordvpn-easy/htdocs/luci-static/resources/nordvpn-easy/service.js",
         "/www/luci-static/resources/nordvpn-easy/service.js",
+        "644",
+    ),
+    (
+        f"{BASE}/luci-app-nordvpn-easy/htdocs/luci-static/resources/view/nordvpn-easy/config.js",
+        "/www/luci-static/resources/view/nordvpn-easy/config.js",
         "644",
     ),
 ]
@@ -111,9 +127,22 @@ def guest_sh(script, timeout=90):
         return r.returncode, r.stdout, r.stderr
 
 
+def remote_md5(path):
+    rc, out, err = guest_sh(
+        f"md5sum {path} 2>/dev/null || busybox md5sum {path} 2>/dev/null"
+    )
+    if rc != 0:
+        return None
+    line = out.strip().splitlines()
+    if not line:
+        return None
+    return line[0].split()[0]
+
+
 def deploy_binary(local_path, remote_path, chmod=None):
     with open(local_path, "rb") as f:
         data = f.read()
+    want_md5 = hashlib.md5(data).hexdigest()
     tmp = remote_path + ".new"
     guest_sh(f"rm -f {tmp}")
     for i in range(0, len(data), CHUNK):
@@ -132,12 +161,33 @@ def deploy_binary(local_path, remote_path, chmod=None):
     if size != len(data):
         print(f"size mismatch {remote_path}: {size} != {len(data)}", file=sys.stderr)
         return False
+    got_md5 = remote_md5(tmp)
+    if got_md5 != want_md5:
+        print(
+            f"md5 mismatch {remote_path}: {got_md5} != {want_md5}",
+            file=sys.stderr,
+        )
+        return False
     inst = f"cp {tmp} {remote_path}"
     if chmod:
         inst += f" && chmod {chmod} {remote_path}"
     rc, out, err = guest_sh(inst)
-    print(f"OK {remote_path} ({len(data)} bytes)")
-    return rc == 0
+    if rc != 0:
+        return False
+    final_md5 = remote_md5(remote_path)
+    if final_md5 != want_md5:
+        print(
+            f"md5 mismatch after install {remote_path}: {final_md5} != {want_md5}",
+            file=sys.stderr,
+        )
+        return False
+    if remote_path.endswith("nordvpn.easy"):
+        rc, out, err = guest_sh(f"sh -n {remote_path} 2>&1")
+        if rc != 0:
+            print(f"syntax check failed {remote_path}: {out}{err}", file=sys.stderr)
+            return False
+    print(f"OK {remote_path} ({len(data)} bytes, md5={want_md5})")
+    return True
 
 
 def main():

@@ -195,11 +195,22 @@ Promise.resolve().then(async function() {
 	assert.equal(startConnectCall.spec.method, 'start_connect', 'start_connect uses the dedicated ubus method');
 	assert.equal(startConnectCall.spec.timeout, 15, 'start_connect uses a short rpc timeout');
 
-	await assert.rejects(
-		loaded.service.execService('reconcile'),
-		/Unsupported NordVPN Easy action: reconcile/,
-		'legacy reconcile is not exposed from the LuCI service client'
-	);
+	const beginApplyResult = await loaded.service.execService('begin_connect_apply');
+	const beginApplyCall = loaded.calls[loaded.calls.length - 1];
+	assert.equal(beginApplyResult.code, 0, 'begin_connect_apply returns normalized success result');
+	assert.equal(beginApplyCall.spec.method, 'begin_connect_apply', 'begin_connect_apply uses the dedicated ubus method');
+	assert.equal(beginApplyCall.spec.timeout, 15, 'begin_connect_apply uses a short rpc timeout');
+
+	const abortApplyResult = await loaded.service.execService('abort_connect_apply');
+	const abortApplyCall = loaded.calls[loaded.calls.length - 1];
+	assert.equal(abortApplyResult.code, 0, 'abort_connect_apply returns normalized success result');
+	assert.equal(abortApplyCall.spec.method, 'abort_connect_apply', 'abort_connect_apply uses the dedicated ubus method');
+
+	const reconcileResult = await loaded.service.execService('reconcile');
+	const reconcileCall = loaded.calls[loaded.calls.length - 1];
+	assert.equal(reconcileResult.code, 0, 'reconcile returns normalized success result');
+	assert.equal(reconcileCall.spec.method, 'reconcile', 'reconcile uses the dedicated ubus method');
+	assert.equal(reconcileCall.spec.timeout, 120, 'reconcile uses the runtime rpc timeout');
 
 	const diagnosticsResult = await loaded.service.execService('diagnostics_summary');
 	const diagnosticsCall = loaded.calls[loaded.calls.length - 1];

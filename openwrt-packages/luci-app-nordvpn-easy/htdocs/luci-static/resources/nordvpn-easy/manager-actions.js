@@ -19,8 +19,43 @@ const RUNTIME_ACTION_RECOVERY_POLL_MS = 3000;
 const APPLY_CONVERGENCE_POLL_MS = 1000;
 const CONNECT_APPLY_DISPATCH_CLOCK_SLACK_MS = 120000;
 const RUNTIME_ACTION_COOLDOWN_MS = SAVE_APPLY_TIMEOUT_MS + 30000;
+const ENABLED_RUNTIME_RECOVERY_COOLDOWN_MS = 15000;
+const POST_APPLY_RECOVERY_GRACE_MS = 120000;
 let callUciCommit = null;
 let nextApplyAttemptId = 0;
+const AGENT_DEBUG_SESSION_ID = 'cf39b0';
+
+function agentDebugLog(location, message, data, hypothesisId) {
+	const payload = {
+		sessionId: AGENT_DEBUG_SESSION_ID,
+		runId: 'save-apply-flush',
+		hypothesisId: hypothesisId || '',
+		location: location,
+		message: message,
+		data: data || {},
+		timestamp: Date.now()
+	};
+
+	// #region agent log
+	if (typeof fetch === 'function') {
+		fetch('http://localhost:7842/ingest/c0328b70-db95-4d07-846a-9cbc9e708094', {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				'X-Debug-Session-Id': AGENT_DEBUG_SESSION_ID
+			},
+			body: JSON.stringify(payload)
+		}).catch(function() {});
+	}
+
+	if (typeof request !== 'undefined' && typeof request.post === 'function') {
+		request.post('/cgi-bin/nordvpn-easy-timing-log', payload, {
+			timeout: 5000,
+			credentials: true
+		}).catch(function() {});
+	}
+	// #endregion
+}
 
 function newApplyAttemptId() {
 	nextApplyAttemptId++;
@@ -388,15 +423,9 @@ function applyRuntimeCountryMatchesSaved(savedConfig, status) {
 	if (!savedCountry)
 		return true;
 
-	const publicCountry = managerData.normalizeCountryCode(runtimeStatus.public_country_cached || '');
-	const serverCountry = managerData.normalizeCountryCode(
-		runtimeStatus.current_server_country || runtimeStatus.selected_country || ''
-	);
-	const applyCountry = managerData.normalizeCountryCode(runtimeStatus.connect_apply_country || '');
+	const serverCountry = managerData.normalizeCountryCode(runtimeStatus.current_server_country || '');
 
-	return publicCountry === savedCountry ||
-		serverCountry === savedCountry ||
-		applyCountry === savedCountry;
+	return serverCountry === savedCountry;
 }
 
 function applyRuntimeLiveReady(savedConfig, status) {
@@ -424,13 +453,8 @@ function applyRuntimeLiveReady(savedConfig, status) {
 }
 
 function applyRuntimeConvergenceSucceeded(savedConfig, status, state) {
-	if (connectApplyJobSucceeded(state, savedConfig, status))
-		return true;
-
-	if (state && state.saveApplyInProgress &&
-		applyRuntimeLiveReady(savedConfig, status)) {
-		return true;
-	}
+	if (savedConfig && savedConfig.enabled)
+		return applyRuntimeLiveReady(savedConfig, status);
 
 	return runtimeActionRecoverySucceeded(savedConfig, status, state);
 }
@@ -503,6 +527,288 @@ function awaitRuntimeConvergenceAfterDispatch(state, savedConfig, applyAttemptId
 	});
 }
 
+
+function recoverEnabledRuntimeAfterApplyFailure() {
+	return service.runAction('abort_connect_apply').catch(function() {
+		return { success: true };
+	}).then(function() {
+		return service.runAction('start_connect');
+	});
+}
+
+function runtimeRecoveryRequested(submitted, state) {
+	const submittedEnabled = !!(submitted && submitted.enabled);
+	const status = (state && state.currentLocalStatus) || {};
+
+	return submittedEnabled || !!status.desired_enabled;
+}
+
+
+function shouldRecoverAfterApplyFailure(state, submitted) {
+	if (!runtimeRecoveryRequested(submitted, state))
+		return false;
+
+	if (state && state.connectApplyDispatchedAt)
+		return false;
+
+	return String((state && state.applyPhase) || '') === 'stop_vpn';
+}
+
+function runApplyCycleConfigurationPhase(viewState, state, ev, submitted, skipFormSave, applyAttemptId) {
+	if (!applyAttemptIsCurrent(state, applyAttemptId))
+		return rejectStaleApplyAttempt();
+
+	if (skipFormSave || !submitted)
+		return loadSavedRuntimeConfig();
+
+	state.applyPhase = 'configuration';
+
+	return Promise.resolve(viewState && viewState.handleSave ? viewState.handleSave(ev) : null).then(function() {
+		if (!applyAttemptIsCurrent(state, applyAttemptId))
+			return rejectStaleApplyAttempt();
+
+		syncPreferredServerFieldsToUci(submitted, state.serverCatalogIndex || {});
+		syncSubmittedRuntimeConfigToUci(submitted);
+
+		// #region agent log
+		agentDebugLog('manager-actions.js:runApplyCycleConfigurationPhase', 'sync after handleSave', {
+			submittedCountry: managerData.normalizeCountryCode((submitted && submitted.country) || ''),
+			uciCountry: managerData.normalizeCountryCode(uci.get('nordvpn_easy', 'main', 'vpn_country') || ''),
+			formCountry: managerUI.getSelectedCountry()
+		}, 'H4');
+		// #endregion
+
+		return flushLuCiPendingChanges();
+	}).then(function() {
+		if (!applyAttemptIsCurrent(state, applyAttemptId))
+			return rejectStaleApplyAttempt();
+
+		return loadSavedRuntimeConfig().then(function(savedConfig) {
+			const expectedCountry = managerData.normalizeCountryCode((submitted && submitted.country) || '');
+			const persistedCountry = managerData.normalizeCountryCode((savedConfig && savedConfig.country) || '');
+
+			// #region agent log
+			agentDebugLog('manager-actions.js:runApplyCycleConfigurationPhase', 'loaded saved runtime config', {
+				expectedCountry: expectedCountry,
+				persistedCountry: persistedCountry
+			}, 'H5');
+			// #endregion
+
+			if (expectedCountry && persistedCountry !== expectedCountry) {
+				return Promise.reject(new Error(
+					_('Server country %s was not persisted to UCI before VPN reconnect (found %s).')
+						.format(expectedCountry, persistedCountry || _('empty'))
+				));
+			}
+
+			return savedConfig;
+		});
+	});
+}
+
+function runApplyCycleStopWithConnectApplyGuard(state, applyAttemptId) {
+	return service.runAction('begin_connect_apply').then(function(beginResult) {
+		if (!applyAttemptIsCurrent(state, applyAttemptId))
+			return rejectStaleApplyAttempt();
+
+		if (!beginResult.success)
+			throw service.resultToError(beginResult);
+
+		state.applyPhase = 'stop_vpn';
+
+		return service.runAction('stop_vpn').then(function(stopResult) {
+			if (!applyAttemptIsCurrent(state, applyAttemptId))
+				return rejectStaleApplyAttempt();
+
+			if (!stopResult.success)
+				throw service.resultToError(stopResult);
+		});
+	});
+}
+
+function runApplyCycleDisabledStop(state, applyAttemptId) {
+	if (!applyAttemptIsCurrent(state, applyAttemptId))
+		return rejectStaleApplyAttempt();
+
+	state.applyPhase = 'stop_vpn';
+
+	return service.runAction('stop_vpn').then(function(stopResult) {
+		if (!applyAttemptIsCurrent(state, applyAttemptId))
+			return rejectStaleApplyAttempt();
+
+		if (!stopResult.success)
+			throw service.resultToError(stopResult);
+	});
+}
+
+function recentConnectApplySucceeded(status, maxAgeMs) {
+	const runtimeStatus = status || {};
+	const finishedAt = Number(runtimeStatus.connect_apply_finished_at || 0) * 1000;
+	const graceMs = Number(maxAgeMs) || POST_APPLY_RECOVERY_GRACE_MS;
+
+	if (!runtimeStatus.connect_apply_finished || !runtimeStatus.connect_apply_success || !finishedAt)
+		return false;
+
+	return (Date.now() - finishedAt) < graceMs;
+}
+
+function postApplyRecoveryGraceActive(state) {
+	const until = Number((state && state.postApplyRecoveryGraceUntil) || 0);
+
+	return until > 0 && Date.now() < until;
+}
+
+function runtimeNeedsEnabledRecovery(status, state) {
+	const runtimeStatus = status || {};
+
+	if (!runtimeStatus.desired_enabled && !runtimeStatus.enabled)
+		return false;
+
+	if (state && (state.saveApplyInProgress || managerUI.isDisableRequested(state)))
+		return false;
+
+	if (postApplyRecoveryGraceActive(state))
+		return false;
+
+	if (recentConnectApplySucceeded(runtimeStatus, POST_APPLY_RECOVERY_GRACE_MS))
+		return false;
+
+	if (runtimeStatus.connect_apply_pending)
+		return false;
+
+	if (runtimeOperationIsBusy(state, runtimeStatus))
+		return false;
+
+	if (runtimeStatus.runtime_configured === true || runtimeStatus.runtime_configured === 'true')
+		return false;
+
+	if (runtimeStatus.vpn_status === 'active' || runtimeStatus.connected)
+		return false;
+
+	if (runtimeStatus.vpn_status === 'error')
+		return false;
+
+	return true;
+}
+
+function maybeEnsureEnabledRuntime(state, status) {
+	const runtimeStatus = status || (state && state.currentLocalStatus) || {};
+
+	if (!state || !runtimeNeedsEnabledRecovery(runtimeStatus, state))
+		return Promise.resolve(false);
+
+	const now = Date.now();
+	const lastAttempt = Number(state.lastEnabledRuntimeRecoveryAt || 0);
+
+	if (state.enabledRuntimeRecoveryInFlight)
+		return Promise.resolve(false);
+
+	if (lastAttempt > 0 && (now - lastAttempt) < ENABLED_RUNTIME_RECOVERY_COOLDOWN_MS)
+		return Promise.resolve(false);
+
+	state.lastEnabledRuntimeRecoveryAt = now;
+	state.enabledRuntimeRecoveryInFlight = true;
+
+	return managerStore.runExclusive(state, 'enabledRecovery', function() {
+		return service.runAction('reconcile').then(function(result) {
+			if (!result.success && !result.busy)
+				state.lastEnabledRuntimeRecoveryFailureAt = Date.now();
+
+			return !!result.success;
+		}).catch(function() {
+			state.lastEnabledRuntimeRecoveryFailureAt = Date.now();
+			return false;
+		}).finally(function() {
+			state.enabledRuntimeRecoveryInFlight = false;
+		});
+	});
+}
+
+function maybeRecoverOrphanedRuntime(state) {
+	return maybeEnsureEnabledRuntime(state, state && state.currentLocalStatus);
+}
+
+function captureApplySelectionBaseline(state, viewState) {
+	const baseline = (state && state.applySelectionBaseline) || {};
+
+	if (baseline.captured)
+		return baseline;
+
+	baseline.captured = true;
+	baseline.country = managerData.normalizeCountryCode(
+		uci.get('nordvpn_easy', 'main', 'vpn_country') || ''
+	);
+	baseline.mode = normalizeSelectionMode(
+		uci.get('nordvpn_easy', 'main', 'server_selection_mode') || 'auto'
+	);
+	baseline.preferredStation = String(
+		uci.get('nordvpn_easy', 'main', 'preferred_server_station') || ''
+	);
+
+	if (state)
+		state.applySelectionBaseline = baseline;
+
+	return baseline;
+}
+
+function runtimeSelectionChanged(state, viewState, submitted) {
+	const baseline = captureApplySelectionBaseline(state, viewState);
+	const nextCountry = managerData.normalizeCountryCode((submitted && submitted.country) || '');
+	const nextMode = normalizeSelectionMode((submitted && submitted.mode) || 'auto');
+	const nextStation = String((submitted && submitted.preferredStation) || '');
+
+	return baseline.country !== nextCountry ||
+		baseline.mode !== nextMode ||
+		baseline.preferredStation !== nextStation;
+}
+
+function runApplyCycleStopPhase(viewState, state, submitted, applyAttemptId) {
+	if (!applyAttemptIsCurrent(state, applyAttemptId))
+		return rejectStaleApplyAttempt();
+
+	state.applyPhase = 'stop_vpn';
+
+	const selectionChanged = runtimeSelectionChanged(state, viewState, submitted);
+
+	// #region agent log
+	agentDebugLog('manager-actions.js:runApplyCycleStopPhase', 'stop phase branch', {
+		selectionChanged: selectionChanged,
+		baselineCountry: managerData.normalizeCountryCode(
+			((state && state.applySelectionBaseline) || {}).country || ''
+		),
+		submittedCountry: managerData.normalizeCountryCode((submitted && submitted.country) || ''),
+		uciCountry: managerData.normalizeCountryCode(uci.get('nordvpn_easy', 'main', 'vpn_country') || '')
+	}, 'H6');
+	// #endregion
+
+	if (!selectionChanged)
+		return runApplyCycleStopWithConnectApplyGuard(state, applyAttemptId);
+
+	return service.runAction('stop_vpn').then(function(stopResult) {
+		if (!applyAttemptIsCurrent(state, applyAttemptId))
+			return rejectStaleApplyAttempt();
+
+		if (!stopResult.success)
+			throw service.resultToError(stopResult);
+
+		return service.runAction('begin_connect_apply').then(function(beginResult) {
+			if (!applyAttemptIsCurrent(state, applyAttemptId))
+				return rejectStaleApplyAttempt();
+
+			if (!beginResult.success)
+				throw service.resultToError(beginResult);
+		});
+	});
+}
+
+function shouldHideDiagnosticsAlerts(state) {
+	if (!state)
+		return false;
+
+	return !!state.saveApplyInProgress ||
+		!!managerData.normalizeCountryCode(state.applyTargetCountryCode || '');
+}
+
 function runApplyCycleConnectPhase(state, savedConfig, applyAttemptId) {
 	const successMessage = APPLY_CYCLE_SUCCESS_CONNECTED;
 
@@ -526,39 +832,7 @@ function runApplyCycle(viewState, state, ev, options) {
 	if (opts.notifyDriftQueued && opts.driftContext)
 		notifyDebugBlock(_('Runtime sync queued'), autoReconcileDebugLines(opts.driftContext));
 
-	state.applyPhase = 'stop_vpn';
-
-	return service.runAction('stop_vpn').then(function(stopResult) {
-		if (!applyAttemptIsCurrent(state, applyAttemptId))
-			return rejectStaleApplyAttempt();
-
-		if (!stopResult.success)
-			throw service.resultToError(stopResult);
-
-		if (!skipFormSave && submitted) {
-			state.applyPhase = 'configuration';
-			syncPreferredServerFieldsToUci(submitted, state.serverCatalogIndex || {});
-			syncSubmittedRuntimeConfigToUci(submitted);
-			return Promise.resolve(viewState && viewState.handleSave ? viewState.handleSave(ev) : null);
-		}
-
-		return null;
-	}).then(function() {
-		if (!applyAttemptIsCurrent(state, applyAttemptId))
-			return rejectStaleApplyAttempt();
-
-		if (skipFormSave)
-			return null;
-
-		return flushLuCiPendingChanges().then(function(flushResult) {
-			return flushResult;
-		});
-	}).then(function() {
-		if (!applyAttemptIsCurrent(state, applyAttemptId))
-			return rejectStaleApplyAttempt();
-
-		return loadSavedRuntimeConfig();
-	}).then(function(savedConfig) {
+	return runApplyCycleConfigurationPhase(viewState, state, ev, submitted, skipFormSave, applyAttemptId).then(function(savedConfig) {
 		if (!applyAttemptIsCurrent(state, applyAttemptId))
 			return rejectStaleApplyAttempt();
 
@@ -581,14 +855,18 @@ function runApplyCycle(viewState, state, ev, options) {
 		}
 
 		if (!savedConfig.enabled) {
-			service.notifyInfo(APPLY_CYCLE_SUCCESS_DISABLED);
-			return finishApplyCycle(state, {
-				suppressAutoReconcile: true,
-				applyAttemptId: applyAttemptId
+			return runApplyCycleDisabledStop(state, applyAttemptId).then(function() {
+				service.notifyInfo(APPLY_CYCLE_SUCCESS_DISABLED);
+				return finishApplyCycle(state, {
+					suppressAutoReconcile: true,
+					applyAttemptId: applyAttemptId
+				});
 			});
 		}
 
-		return runApplyCycleConnectPhase(state, savedConfig, applyAttemptId);
+		return runApplyCycleStopPhase(viewState, state, submitted, applyAttemptId).then(function() {
+			return runApplyCycleConnectPhase(state, savedConfig, applyAttemptId);
+		});
 	}).then(function(refreshResult) {
 		if (!applyAttemptIsCurrent(state, applyAttemptId))
 			return rejectStaleApplyAttempt();
@@ -693,6 +971,13 @@ function applyLuCiPendingChangesWithSession() {
 }
 
 function commitLuCiPendingChangesFallback() {
+	// #region agent log
+	agentDebugLog('manager-actions.js:commitLuCiPendingChangesFallback', 'uci.commit fallback begin', {
+		hasRpc: typeof rpc !== 'undefined',
+		hasUciSave: !!(typeof uci !== 'undefined' && typeof uci.save === 'function')
+	}, 'H1');
+	// #endregion
+
 	if (!callUciCommit && typeof rpc !== 'undefined') {
 		callUciCommit = rpc.declare({
 			object: 'uci',
@@ -706,16 +991,62 @@ function commitLuCiPendingChangesFallback() {
 		return Promise.reject(new Error(_('Could not commit UCI changes: LuCI RPC is unavailable.')));
 
 	return callUciCommit('nordvpn_easy').then(function() {
+		// #region agent log
+		agentDebugLog('manager-actions.js:commitLuCiPendingChangesFallback', 'uci.commit fallback ok', {}, 'H1');
+		// #endregion
 		return refreshLuCiChangeTracker();
 	}).catch(function(err) {
 		const message = (err && err.message) ? err.message : String(err);
+
+		// #region agent log
+		agentDebugLog('manager-actions.js:commitLuCiPendingChangesFallback', 'uci.commit fallback failed', {
+			error: message
+		}, 'H1');
+		// #endregion
 
 		return Promise.reject(new Error(_('Could not commit UCI changes: ') + message));
 	});
 }
 
 function flushLuCiPendingChanges() {
-	return commitLuCiPendingChangesFallback();
+	const pendingPromise = (typeof uci !== 'undefined' && typeof uci.changes === 'function')
+		? uci.changes().catch(function() { return {}; })
+		: Promise.resolve({});
+
+	return pendingPromise.then(function(pendingChanges) {
+		const pendingCount = countLuCiChanges(pendingChanges);
+
+		// #region agent log
+		agentDebugLog('manager-actions.js:flushLuCiPendingChanges', 'flush begin', {
+			pendingCount: pendingCount,
+			pendingConfigs: Object.keys(pendingChanges || {}),
+			hasUciSave: !!(typeof uci !== 'undefined' && typeof uci.save === 'function')
+		}, 'H2');
+		// #endregion
+
+		if (typeof uci !== 'undefined' && typeof uci.save === 'function') {
+			return uci.save().then(function() {
+				// #region agent log
+				agentDebugLog('manager-actions.js:flushLuCiPendingChanges', 'uci.save ok', {
+					pendingCount: pendingCount
+				}, 'H2');
+				// #endregion
+				return commitLuCiPendingChangesFallback();
+			}).catch(function(err) {
+				const message = (err && err.message) ? err.message : String(err);
+
+				// #region agent log
+				agentDebugLog('manager-actions.js:flushLuCiPendingChanges', 'uci.save failed; trying commit fallback', {
+					error: message
+				}, 'H3');
+				// #endregion
+
+				return commitLuCiPendingChangesFallback();
+			});
+		}
+
+		return commitLuCiPendingChangesFallback();
+	});
 }
 
 function notifyDebugBlock(title, lines) {
@@ -812,7 +1143,6 @@ function effectiveOperationStatus(runtimeStatus, state) {
 
 		operation = phase ? ('busy:' + phase) : 'busy:configuration';
 	}
-
 	if (state && state.saveApplyInProgress &&
 		operation === 'busy:stop_vpn' &&
 		String(status.vpn_status || '') === 'inactive') {
@@ -822,11 +1152,8 @@ function effectiveOperationStatus(runtimeStatus, state) {
 	if (state && state.saveApplyInProgress) {
 		const applySaved = savedConfigForApplyState(state);
 
-		if (applyRuntimeLiveReady(applySaved, status) ||
-			(status.connect_apply_finished && status.connect_apply_success &&
-				applyRuntimeCountryMatchesSaved(applySaved, status))) {
+		if (applyRuntimeConvergenceSucceeded(applySaved, status, state))
 			return 'busy:finishing';
-		}
 	}
 
 	return operation;
@@ -1071,7 +1398,8 @@ function recoverAbortedRuntimeAction(state, savedConfig, originalError, successM
 }
 
 function suppressDriftUi(state) {
-	managerUI.updateDiagnosticsBanner(managerData.emptyDiagnosticsSummary());
+	if (shouldHideDiagnosticsAlerts(state))
+		managerUI.updateDiagnosticsBanner(managerData.emptyDiagnosticsSummary());
 }
 
 function publicLookupsAllowed(state, status) {
@@ -1237,12 +1565,17 @@ function renderLocalStatusSnapshot(state, status) {
 	else
 		managerStore.syncPhase(state);
 
+	const enterpriseState = String(runtimeStatus.state || '');
+
 	if (!desiredEnabled || runtimeStatus.runtime_disabled || runtimeStatus.interface_disabled || managerUI.isDisableRequested(state))
 		managerUI.setVpnStatusIndicator('inactive', _('Disabled'));
-	else if (runtimeStatus.vpn_status === 'active' || runtimeStatus.connected)
+	else if (enterpriseState === 'connected' || runtimeStatus.vpn_status === 'active' || runtimeStatus.connected)
 		managerUI.setVpnStatusIndicator('active', _('Connected'));
-	else if (runtimeStatus.vpn_status === 'starting')
-		managerUI.setVpnStatusIndicator('starting', _('Starting'));
+	else if (state.saveApplyInProgress ||
+		enterpriseState === 'connecting' || enterpriseState === 'recovering' ||
+		enterpriseState === 'degraded' || runtimeStatus.connect_apply_pending ||
+		runtimeStatus.vpn_status === 'starting' || state.enabledRuntimeRecoveryInFlight)
+		managerUI.setVpnStatusIndicator('starting', _('Connecting'));
 	else if (runtimeStatus.vpn_status === 'stopping')
 		managerUI.setVpnStatusIndicator('stopping', _('Stopping'));
 	else if (runtimeStatus.vpn_status === 'error')
@@ -1327,6 +1660,11 @@ function updatePublicIp(state, options) {
 }
 
 function renderDiagnosticsSnapshot(state, summary, fresh) {
+	if (shouldHideDiagnosticsAlerts(state)) {
+		summary = managerData.emptyDiagnosticsSummary();
+		fresh = false;
+	}
+
 	state.currentDiagnosticsSummary = summary;
 	state.currentDiagnosticsSummaryFresh = !!fresh;
 
@@ -1387,7 +1725,19 @@ function updateLocalStatus(state, options) {
 			state.currentOperationStatus = effectiveOperationStatus(status, state);
 
 			state.appliedEnabled = desiredEnabled;
-			state.appliedCountryCode = managerData.normalizeCountryCode(status.selected_country || state.appliedCountryCode);
+			const targetCountry = managerData.normalizeCountryCode(state.applyTargetCountryCode || '');
+			const runtimeCountry = managerData.normalizeCountryCode(
+				status.current_server_country || status.selected_country || ''
+			);
+
+			if (!targetCountry || targetCountry === runtimeCountry) {
+				state.appliedCountryCode = managerData.normalizeCountryCode(
+					status.selected_country || state.appliedCountryCode
+				);
+				if (targetCountry && targetCountry === runtimeCountry)
+					state.applyTargetCountryCode = '';
+			}
+
 			renderLocalStatusSnapshot(state, status);
 
 			if (state.saveApplyInProgress && state.currentApplyAttempt &&
@@ -1399,8 +1749,6 @@ function updateLocalStatus(state, options) {
 				void finishApplyCycle(state, {
 					suppressAutoReconcile: true,
 					applyAttemptId: state.currentApplyAttempt
-				}).then(function() {
-					service.notifyInfo(APPLY_CYCLE_SUCCESS_CONNECTED);
 				});
 			}
 
@@ -1414,6 +1762,9 @@ function updateLocalStatus(state, options) {
 
 			if (!opts.suppressAutoReconcile && desiredEnabled && driftEvaluationAllowed(state))
 				void maybeAutoReconcileSelectionDrift(state, status);
+
+			if (desiredEnabled && driftEvaluationAllowed(state))
+				void maybeEnsureEnabledRuntime(state, status);
 
 			return status;
 		}).catch(function(err) {
@@ -1560,6 +1911,8 @@ function finishApplyCycle(state, options) {
 	state.pendingOperationLabel = '';
 	state.applyPhase = '';
 	state.saveApplyInProgress = false;
+	state.postApplyRecoveryGraceUntil = Date.now() + POST_APPLY_RECOVERY_GRACE_MS;
+	state.applySelectionBaseline = { captured: false };
 	managerStore.clearInFlight(state, 'status');
 	managerStore.resumePolling(state);
 	managerStore.setPhase(state, managerStore.PHASES.IDLE);
@@ -1595,12 +1948,15 @@ function handleSaveApply(viewState, state, ev) {
 	const applyAttemptId = newApplyAttemptId();
 
 	notifyDebugBlock(_('Save & Apply requested'), debugLines.concat([
-		_('Runtime flow: stop VPN, save configuration, connect when enabled.')
+		_('Runtime flow: save configuration, stop VPN when needed, connect when enabled.')
 	]));
 
 	state.currentApplyAttempt = applyAttemptId;
 	managerStore.clearError(state);
 	state.saveApplyInProgress = true;
+	state.applySelectionBaseline = { captured: false };
+	captureApplySelectionBaseline(state, viewState);
+	state.applyTargetCountryCode = managerData.normalizeCountryCode(submittedRuntimeConfig.country || '');
 	state.connectApplyDispatchedAt = 0;
 	state.pendingOperationLabel = '';
 	state.applyPhase = 'configuration';
@@ -1648,21 +2004,26 @@ function handleSaveApply(viewState, state, ev) {
 		timeoutId = setTimeout(function() {
 			const timeoutError = new Error(_('Configuration apply timed out.'));
 			const timeoutApplyAttemptId = applyAttemptId + ':timeout';
+			const recoveryPromise = shouldRecoverAfterApplyFailure(state, submittedRuntimeConfig)
+				? recoverEnabledRuntimeAfterApplyFailure()
+				: Promise.resolve();
 
 			if (!applyAttemptIsCurrent(state, applyAttemptId))
 				return;
 
 			managerStore.setError(state, timeoutError);
 			state.currentApplyAttempt = timeoutApplyAttemptId;
-			finishApplyCycle(state, {
-				suppressAutoReconcile: true,
-				applyAttemptId: timeoutApplyAttemptId
-			}).finally(function() {
-				if (!applyAttemptIsCurrent(state, timeoutApplyAttemptId))
-					return;
+			recoveryPromise.finally(function() {
+				finishApplyCycle(state, {
+					suppressAutoReconcile: true,
+					applyAttemptId: timeoutApplyAttemptId
+				}).finally(function() {
+					if (!applyAttemptIsCurrent(state, timeoutApplyAttemptId))
+						return;
 
-				state.currentApplyAttempt = applyAttemptId;
-				finishReject(timeoutError);
+					state.currentApplyAttempt = applyAttemptId;
+					finishReject(timeoutError);
+				});
 			});
 		}, SAVE_APPLY_TIMEOUT_MS);
 
@@ -1675,14 +2036,19 @@ function handleSaveApply(viewState, state, ev) {
 			finishResolve();
 		}).catch(function(err) {
 			const message = (err && err.message) ? err.message : String(err);
+			const recoveryPromise = shouldRecoverAfterApplyFailure(state, submittedRuntimeConfig)
+				? recoverEnabledRuntimeAfterApplyFailure()
+				: Promise.resolve();
 
 			if (!applyAttemptIsCurrent(state, applyAttemptId))
 				return;
 
 			managerStore.setError(state, err);
-			return finishApplyCycle(state, {
-				suppressAutoReconcile: true,
-				applyAttemptId: applyAttemptId
+			return recoveryPromise.then(function() {
+				return finishApplyCycle(state, {
+					suppressAutoReconcile: true,
+					applyAttemptId: applyAttemptId
+				});
 			}).then(function() {
 				if (!applyAttemptIsCurrent(state, applyAttemptId))
 					return;
@@ -1696,6 +2062,8 @@ function handleSaveApply(viewState, state, ev) {
 
 return baseclass.extend({
 	runApplyCycle: runApplyCycle,
+	maybeRecoverOrphanedRuntime: maybeRecoverOrphanedRuntime,
+	maybeEnsureEnabledRuntime: maybeEnsureEnabledRuntime,
 	maybeAutoReconcileSelectionDrift: maybeAutoReconcileSelectionDrift,
 	runtimeOperationIsBusy: runtimeOperationIsBusy,
 	loadServerCatalog: loadServerCatalog,

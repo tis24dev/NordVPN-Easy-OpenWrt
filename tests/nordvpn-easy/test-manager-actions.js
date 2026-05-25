@@ -983,9 +983,13 @@ function buildHandleSaveApplyHarness(options) {
 	};
 	const uciValues = Object.assign({
 		enabled: (opts.savedEnabled != null) ? opts.savedEnabled : '1',
-		vpn_country: (opts.savedCountry != null) ? opts.savedCountry : 'UY',
-		server_selection_mode: opts.savedMode || 'auto',
-		preferred_server_station: opts.savedPreferredStation || '',
+		vpn_country: (opts.previousCountry != null && opts.previousCountry !== '')
+			? opts.previousCountry
+			: ((opts.savedCountry != null) ? opts.savedCountry : 'UY'),
+		server_selection_mode: opts.previousMode || opts.savedMode || 'auto',
+		preferred_server_station: (opts.previousPreferredStation != null && opts.previousPreferredStation !== '')
+			? opts.previousPreferredStation
+			: ((opts.savedPreferredStation != null) ? opts.savedPreferredStation : ''),
 		nordvpn_token: opts.savedToken || 'saved-token'
 	}, opts.uciValues || {});
 	const uciSets = [];
@@ -1029,7 +1033,9 @@ function buildHandleSaveApplyHarness(options) {
 			preferred_server_station: uciValues.preferred_server_station || '',
 			current_server_country: targetCountry,
 			connected: true,
-			vpn_status: 'active'
+			vpn_status: 'active',
+			state: 'connected',
+			handshake_age_seconds: 5
 		};
 	}
 
@@ -1060,6 +1066,8 @@ function buildHandleSaveApplyHarness(options) {
 			current_server_country: targetCountry,
 			connected: true,
 			vpn_status: 'active',
+			state: 'connected',
+			handshake_age_seconds: 5,
 			last_error: ''
 		});
 	}
@@ -1460,7 +1468,7 @@ async function testHandleSaveApplyFallsBackToAutomaticWhenManualSelectionIncompl
 			nordvpn_token: 'token',
 			enabled: '1',
 			vpn_country: '',
-			server_selection_mode: 'auto',
+			server_selection_mode: 'manual',
 			preferred_server_hostname: '',
 			preferred_server_station: ''
 		}
@@ -1478,7 +1486,7 @@ async function testHandleSaveApplyFallsBackToAutomaticWhenManualSelectionIncompl
 		[{ option: 'server_selection_mode', value: 'auto' }],
 		'incomplete manual selection stores automatic server selection mode'
 	);
-	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn' ], [ 'start_connect' ] ], 'incomplete manual selection still runs the unified apply cycle');
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn' ], [ 'begin_connect_apply' ], [ 'start_connect' ] ], 'incomplete manual selection still runs the unified apply cycle');
 }
 
 async function testHandleSaveApplyStopsAfterStopWhenDisabled() {
@@ -1528,7 +1536,7 @@ async function testHandleSaveApplyTimesOutWhenPostSaveSyncNeverFinishes() {
 	assert.equal(harness.calls.handleSave, 1, 'enable flow saves the form once');
 	assert.equal(harness.calls.apply, 0, 'save flow does not use the legacy LuCI apply path');
 	assert.equal(rejected && rejected.message, 'uci reload failed', 'post-save sync failure rejects with the original error');
-	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn' ] ], 'post-save sync failure keeps the initial cleanup stop');
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [], 'post-save sync failure does not stop VPN before configuration is saved');
 	assert.equal(harness.state.pendingOperationLabel, '', 'post-save sync failure clears pending state');
 	assert.equal(harness.pollingTransitions[harness.pollingTransitions.length - 1], 'resume', 'post-save sync failure resumes polling');
 }
@@ -1581,16 +1589,16 @@ async function testHandleSaveApplyIgnoresLateApplyCycleAfterTimeout() {
 	await applyPromise;
 
 	assert.equal(rejected && rejected.message, 'Configuration apply timed out.', 'Save & Apply rejects with timeout');
-	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn' ] ],
-		'timed-out apply cycle does not connect before delayed load resolves');
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [],
+		'timed-out apply cycle does not stop or connect before delayed load resolves');
 	assert.equal(harness.state.currentApplyAttempt, null, 'timeout clears the active apply attempt token');
 
 	releaseLoad();
 	await Promise.resolve();
 	await Promise.resolve();
 
-	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn' ] ],
-		'late apply cycle resolution does not reconnect after timeout');
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [],
+		'late apply cycle resolution does not stop or reconnect after timeout');
 	assert.equal(harness.notifications.filter(function(entry) {
 		return entry.type === 'info' && /connected/.test(entry.message);
 	}).length, 0, 'late apply cycle resolution does not show a success notification');
@@ -1627,7 +1635,7 @@ async function testHandleSaveApplyAutoModeClearsManualSelectionAndReconnects() {
 	assert.equal(harness.calls.apply, 0, 'manual-to-auto changes do not use the legacy LuCI apply path');
 	assert.equal(harness.calls.applyEndpoint, 0, 'manual-to-auto changes do not call the global LuCI apply endpoint');
 	assert.equal(harness.calls.commit, 1, 'manual-to-auto changes commit nordvpn_easy directly');
-	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn' ], [ 'start_connect' ] ], 'manual-to-auto changes run stop then connect');
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn' ], [ 'begin_connect_apply' ], [ 'start_connect' ] ], 'manual-to-auto changes clear caches before connect apply');
 	assert.equal(harness.viewState.initialMode, 'auto', 'view state tracks saved automatic mode');
 	assert.equal(harness.viewState.initialPreferredStation, '', 'view state clears saved preferred station');
 	assert.equal(harness.state.pendingOperationLabel, '', 'runtime action completion clears pending operation label');
@@ -1661,7 +1669,7 @@ async function testHandleSaveApplyReconcilesDisabledRuntimeAfterSave() {
 	await Promise.resolve();
 	await Promise.resolve();
 
-	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn' ], [ 'start_connect' ] ], 'unchanged enabled config runs stop then connect after Save & Apply');
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'begin_connect_apply' ], [ 'stop_vpn' ], [ 'start_connect' ] ], 'unchanged enabled config runs stop then connect after Save & Apply');
 	assert.equal(harness.state.pendingOperationLabel, '', 'apply cycle completion clears pending operation label');
 	assert.ok(harness.serviceCalls.indexOf('status_json') !== -1, 'apply cycle refreshes status after runtime actions');
 }
@@ -1693,7 +1701,7 @@ async function testHandleSaveApplyQueuesReconnectWhenSavedCountryDriftsFromPeer(
 
 	assert.deepEqual(
 		normalizeValue(harness.runtimeActions),
-		[ [ 'stop_vpn' ], [ 'start_connect' ] ],
+		[ [ 'begin_connect_apply' ], [ 'stop_vpn' ], [ 'start_connect' ] ],
 		'Save & Apply runs a single stop/start_connect cycle; post-apply drift is left to background reconcile'
 	);
 }
@@ -1712,14 +1720,14 @@ async function testHandleSaveApplyConvergesWhenConnectApplyResultReportsSuccess(
 			runtime_disabled: false,
 			interface_disabled: false,
 			runtime_configured: true,
-			operation_status: 'busy:setup',
-			operation_lock_state: 'held',
-			operation_lock_action: 'setup',
+			operation_status: 'idle',
+			operation_lock_state: 'none',
 			selected_country: 'RO',
 			current_server_country: 'RO',
 			connected: true,
-			vpn_status: 'inactive',
-			state: 'idle',
+			vpn_status: 'active',
+			state: 'connected',
+			handshake_age_seconds: 12,
 			connect_apply_pending: false,
 			connect_apply_finished: true,
 			connect_apply_success: true,
@@ -1734,12 +1742,12 @@ async function testHandleSaveApplyConvergesWhenConnectApplyResultReportsSuccess(
 	await Promise.resolve();
 	await Promise.resolve();
 
-	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn' ], [ 'start_connect' ] ],
-		'apply still dispatches start_connect before polling');
-	assert.equal(harness.state.saveApplyInProgress, false, 'connect_apply_success ends apply without waiting for vpn_status active');
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn' ], [ 'begin_connect_apply' ], [ 'start_connect' ] ],
+		'country change clears server caches before connect apply');
+	assert.equal(harness.state.saveApplyInProgress, false, 'apply ends only after the live tunnel is ready');
 	assert.ok(harness.notifications.some(function(entry) {
 		return entry.type === 'info' && /applied your configuration and connected/.test(entry.message);
-	}), 'connect_apply_success reports unified success');
+	}), 'live tunnel readiness reports unified success');
 }
 
 async function testHandleSaveApplyConvergesViaStartConnectAndStatusPolling() {
@@ -1762,7 +1770,9 @@ async function testHandleSaveApplyConvergesViaStartConnectAndStatusPolling() {
 			current_server_country: 'UY',
 			current_server_station: 'uy123',
 			connected: true,
-			vpn_status: 'active'
+			vpn_status: 'active',
+			state: 'connected',
+			handshake_age_seconds: 8
 		}
 	});
 
@@ -1770,7 +1780,7 @@ async function testHandleSaveApplyConvergesViaStartConnectAndStatusPolling() {
 	await Promise.resolve();
 	await Promise.resolve();
 
-	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn' ], [ 'start_connect' ] ],
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn' ], [ 'begin_connect_apply' ], [ 'start_connect' ] ],
 		'Save & Apply dispatches start_connect then polls status');
 	assert.equal(harness.state.pendingOperationLabel, '', 'status convergence clears pending operation label');
 	assert.equal(harness.pollingTransitions[harness.pollingTransitions.length - 1], 'resume', 'status convergence resumes polling');
@@ -1814,7 +1824,7 @@ async function testHandleSaveApplyStartConnectBusyFailsImmediately() {
 
 	assert.ok(rejected, 'busy start_connect rejects apply');
 	assert.match(String(rejected.message), /already running|busy|setup/i, 'busy start_connect reports holder context');
-	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn' ], [ 'start_connect' ] ],
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn' ], [ 'begin_connect_apply' ], [ 'start_connect' ] ],
 		'busy start_connect is attempted after stop_vpn');
 }
 
@@ -1852,7 +1862,7 @@ async function testHandleSaveApplyStartConnectRuntimeErrorFromStatus() {
 
 	assert.ok(rejected, 'runtime error status rejects apply');
 	assert.match(String(rejected.message), /backend failed/, 'runtime error status surfaces backend message');
-	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn' ], [ 'start_connect' ] ],
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn' ], [ 'begin_connect_apply' ], [ 'start_connect' ] ],
 		'runtime error still attempted stop then start_connect');
 	assert.ok(harness.notifications.some(function(entry) {
 		return entry.type === 'error' && /backend failed/.test(entry.message);
@@ -1887,7 +1897,7 @@ async function testHandleSaveApplyRecoversAbortedRuntimeActionWhenStatusConverge
 	await Promise.resolve();
 	await Promise.resolve();
 
-	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn' ], [ 'start_connect' ] ],
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn' ], [ 'begin_connect_apply' ], [ 'start_connect' ] ],
 		'legacy recovery test name kept for start_connect apply cycle');
 	assert.equal(harness.state.pendingOperationLabel, '', 'aborted runtime recovery clears pending operation label');
 	assert.equal(harness.pollingTransitions[harness.pollingTransitions.length - 1], 'resume', 'aborted runtime recovery resumes polling');
@@ -1941,7 +1951,7 @@ async function testHandleSaveApplyDoesNotRecoverNonAbortRuntimeActionFailure() {
 
 	assert.ok(rejected, 'non-success start_connect rejects apply');
 	assert.match(String(rejected.message), /backend failed/, 'non-success start_connect reports backend failure');
-	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn' ], [ 'start_connect' ] ],
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn' ], [ 'begin_connect_apply' ], [ 'start_connect' ] ],
 		'non-success start_connect still attempted stop then start_connect');
 	assert.ok(harness.notifications.some(function(entry) {
 		return entry.type === 'error' && /backend failed/.test(entry.message);
@@ -1984,8 +1994,9 @@ async function testAutoReconcileRunsForCountryDrift() {
 	await harness.actions.maybeAutoReconcileSelectionDrift(harness.state, harness.state.currentLocalStatus);
 
 	assert.ok(harness.runtimeActions.length >= 2, 'country drift runs at least stop then start_connect');
-	assert.equal(harness.runtimeActions[0][0], 'stop_vpn', 'country drift starts with stop_vpn');
-	assert.equal(harness.runtimeActions[1][0], 'start_connect', 'country drift follows with start_connect');
+	assert.equal(harness.runtimeActions[0][0], 'stop_vpn', 'country drift clears stale server caches before connect apply');
+	assert.equal(harness.runtimeActions[1][0], 'begin_connect_apply', 'country drift marks connect apply pending after cache clear');
+	assert.equal(harness.runtimeActions[2][0], 'start_connect', 'country drift follows with start_connect');
 	assert.equal(harness.state.pendingOperationLabel, '', 'auto reconcile clears the pending label after completion');
 	assert.ok(harness.serviceCalls.indexOf('status_json') !== -1, 'auto reconcile refreshes status after completion');
 }
@@ -2072,9 +2083,9 @@ async function testAutoReconcileThrottlesSuccessfulNoChange() {
 	await harness.actions.maybeAutoReconcileSelectionDrift(harness.state, driftStatus);
 	await harness.actions.maybeAutoReconcileSelectionDrift(harness.state, harness.state.currentLocalStatus);
 
-	assert.ok(harness.runtimeActions.length >= 2, 'drift reconcile runs stop then start_connect once');
+	assert.ok(harness.runtimeActions.length >= 3, 'drift reconcile runs begin_connect_apply, stop_vpn, then start_connect once');
 	assert.equal(harness.state.lastAutoReconcileFailureKey, '', 'status convergence clears the drift failure key');
-	assert.equal(harness.runtimeActions.length, 2, 'second auto reconcile is skipped once drift is cleared');
+	assert.equal(harness.runtimeActions.length, 3, 'second auto reconcile is skipped once drift is cleared');
 }
 
 async function testAutoReconcileSkipsNonDriftCases() {

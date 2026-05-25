@@ -201,6 +201,14 @@ rpc_reconnect() {
 	rpc_command_result 'reconnect' "$INIT_SCRIPT" reconnect
 }
 
+rpc_begin_connect_apply() {
+	rpc_command_result 'begin_connect_apply' "$INIT_SCRIPT" begin_connect_apply
+}
+
+rpc_abort_connect_apply() {
+	rpc_command_result 'abort_connect_apply' "$INIT_SCRIPT" abort_connect_apply
+}
+
 rpc_stop_vpn() {
 	rpc_command_result 'stop_vpn' "$INIT_SCRIPT" stop_vpn
 }
@@ -331,6 +339,12 @@ rpc_call() {
 		reconnect)
 			rpc_reconnect
 			;;
+		begin_connect_apply)
+			rpc_begin_connect_apply
+			;;
+		abort_connect_apply)
+			rpc_abort_connect_apply
+			;;
 		stop_vpn)
 			rpc_stop_vpn
 			;;
@@ -385,6 +399,8 @@ case "$1" in
   "start_connect": {},
   "disconnect": {},
   "reconnect": {},
+  "begin_connect_apply": {},
+  "abort_connect_apply": {},
   "stop_vpn": {},
   "reconcile": {},
   "rotate": {},

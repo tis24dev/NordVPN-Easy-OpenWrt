@@ -1092,8 +1092,13 @@ case "$ACTION" in
     ACTION_RC=$?
     ;;
   stop_vpn)
-    validate_stop_runtime &&
-    nordvpn_easy_stop_vpn_for_connect_apply
+    validate_stop_runtime
+    if [ -f "${NORDVPN_EASY_CONNECT_APPLY_GUARD:-/tmp/run/nordvpn-easy/connect-apply-guard}" ] ||
+      [ "${NORDVPN_EASY_CONNECT_APPLY:-0}" = '1' ]; then
+      nordvpn_easy_stop_vpn_for_connect_apply
+    else
+      nordvpn_easy_stop_vpn_for_server_change
+    fi
     ACTION_RC=$?
     ;;
   reconnect)

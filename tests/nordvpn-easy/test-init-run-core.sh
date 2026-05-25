@@ -44,6 +44,8 @@ eval "$(extract_function run_core_action)"
 eval "$(extract_function connect_apply_guard_begin)"
 eval "$(extract_function connect_apply_guard_end)"
 eval "$(extract_function prepare_connect_setup_config_cache)"
+eval "$(extract_function begin_connect_apply)"
+eval "$(extract_function abort_connect_apply)"
 eval "$(extract_function connect)"
 eval "$(extract_function disconnect)"
 eval "$(extract_function stop_vpn)"
@@ -103,7 +105,10 @@ CONNECT_SETUP_CONFIG_CACHE="${RUN_STATE_DIR}/connect-setup.conf"
 CONNECT_APPLY_GUARD="${RUN_STATE_DIR}/connect-apply-guard"
 CONNECT_APPLY_RESULT="${RUN_STATE_DIR}/connect-apply-result"
 RUNTIME_LOCK_DIR="$TMP_DIR/runtime-lock"
-nordvpn_easy_connect_apply_result_begin() { :; }
+nordvpn_easy_connect_apply_result_begin() {
+	mkdir -p "$(dirname "$CONNECT_APPLY_RESULT")" 2>/dev/null || true
+	printf 'state=pending\nrc=\nfinished_at=\ncountry=\nstarted_at=1\n' > "$CONNECT_APPLY_RESULT"
+}
 nordvpn_easy_connect_apply_result_finish() { :; }
 nordvpn_easy_clear_stale_runtime_lock() { :; }
 connect_apply_result_finish() { :; }
@@ -416,6 +421,34 @@ run_core_action status_json || RC=$?
 assert_eq '1' "$RC" 'run_core_action fails when rendered config validation fails'
 [ ! -f "$CORE_CAPTURE" ] || {
 	printf '%s\n' 'FAIL: core action should not run when validation fails' >&2
+	exit 1
+}
+
+
+mkdir -p "$RUN_STATE_DIR"
+rm -f "$CONNECT_APPLY_GUARD" "$CONNECT_APPLY_RESULT"
+RC=0
+begin_connect_apply || RC=$?
+assert_eq '0' "$RC" 'begin_connect_apply succeeds'
+[ -f "$CONNECT_APPLY_GUARD" ] || {
+	printf '%s
+' 'FAIL: begin_connect_apply should create connect apply guard' >&2
+	exit 1
+}
+case "$(sed -n 's/^state=//p' "$CONNECT_APPLY_RESULT" 2>/dev/null | head -n1)" in
+	pending) ;;
+	*)
+		printf '%s
+' 'FAIL: begin_connect_apply should leave connect apply result pending' >&2
+		exit 1
+		;;
+esac
+RC=0
+abort_connect_apply || RC=$?
+assert_eq '0' "$RC" 'abort_connect_apply succeeds'
+[ ! -f "$CONNECT_APPLY_GUARD" ] || {
+	printf '%s
+' 'FAIL: abort_connect_apply should remove connect apply guard' >&2
 	exit 1
 }
 

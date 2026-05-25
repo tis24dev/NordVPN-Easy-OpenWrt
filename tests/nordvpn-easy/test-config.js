@@ -358,6 +358,9 @@ function loadConfigView(options) {
 				});
 				return Promise.resolve();
 			},
+			maybeRecoverOrphanedRuntime() {
+				return Promise.resolve(false);
+			},
 			maybeAutoReconcileSelectionDrift(renderState, status) {
 				calls.maybeAutoReconcileSelectionDrift.push({
 					state: renderState,

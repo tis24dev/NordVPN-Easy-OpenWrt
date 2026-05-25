@@ -39,6 +39,10 @@ jq -er '
 ' "$ACL_FILE" >/dev/null
 
 jq -er '
+	."luci-app-nordvpn-easy".write.ubus.uci | index("commit")
+' "$ACL_FILE" >/dev/null
+
+jq -er '
 	."luci-app-nordvpn-easy".read.ubus."nordvpn.easy" | index("diagnostics_summary")
 ' "$ACL_FILE" >/dev/null
 

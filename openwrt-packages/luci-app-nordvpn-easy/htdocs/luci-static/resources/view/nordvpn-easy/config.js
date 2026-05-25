@@ -243,6 +243,8 @@ const TokenValue = form.Value.extend({
 		state.currentDiagnosticsSummaryFresh = initialDiagnosticsFresh;
 		state.serverCatalogIndex = managerData.buildServerCatalogIndex(state.currentServerCatalog);
 
+		managerActions.maybeRecoverOrphanedRuntime(state);
+
 		m = new form.Map('nordvpn_easy', _('NordVPN Easy'),
 			_('Manage NordVPN Easy connection, manual server selection and runtime status.'));
 

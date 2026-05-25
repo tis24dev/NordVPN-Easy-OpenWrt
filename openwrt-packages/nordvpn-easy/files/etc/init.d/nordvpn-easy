@@ -26,11 +26,13 @@ SERVICE_BACKEND_PAYLOAD_SIGNATURE='render-contract-v3'
 NORDVPN_EASY_RC_BUSY="${NORDVPN_EASY_RC_BUSY:-75}"
 # OpenWrt rc.common consumes the command/help metadata.
 # shellcheck disable=SC2034
-EXTRA_COMMANDS='connect disconnect stop_vpn reconnect reconcile setup check rotate refresh_countries refresh_countries_force server_catalog public_ip operation_status vpn_status status_json diagnostics_log diagnostics_summary install_hooks remove_hooks disable_runtime render_runtime_config'
+EXTRA_COMMANDS='connect disconnect stop_vpn begin_connect_apply abort_connect_apply reconnect reconcile setup check rotate refresh_countries refresh_countries_force server_catalog public_ip operation_status vpn_status status_json diagnostics_log diagnostics_summary install_hooks remove_hooks disable_runtime render_runtime_config'
 # shellcheck disable=SC2034
 EXTRA_HELP='  connect               Enable, run setup, then install hooks transactionally
   disconnect            Disable runtime and remove hooks
-  stop_vpn              Stop VPN, clear caches, and remove WireGuard runtime config
+  stop_vpn              Stop VPN interface (connect-apply teardown when apply guard is active)
+  begin_connect_apply   Mark connect apply pending before stop_vpn during Save & Apply
+  abort_connect_apply   Finish a failed connect apply and clear the apply guard
   reconnect             Compatibility alias for stop_vpn then connect
   reconcile             Synchronize runtime state with the saved UCI config
   setup                 Run setup immediately
@@ -180,7 +182,7 @@ run_core_action() {
 			log_service_info "apply: rendered temporary config for '$action' at $action_config (written_options=$written_options, $(nordvpn_easy_runtime_file_debug_summary "$action_config"), $(nordvpn_easy_runtime_config_validation_summary), $(nordvpn_easy_service_backend_payload_summary))"
 		fi
 	fi
-	if [ "$action" = 'setup' ] && [ -f "$CONNECT_APPLY_GUARD" ]; then
+	if [ -f "$CONNECT_APPLY_GUARD" ] && { [ "$action" = 'setup' ] || [ "$action" = 'stop_vpn' ]; }; then
 		export NORDVPN_EASY_CONNECT_APPLY=1
 	fi
 	if [ "$direct_uci_config" -eq 1 ]; then
@@ -256,6 +258,7 @@ prepare_connect_setup_config_cache() {
 	local written_options=0
 
 	mkdir -p "$RUN_STATE_DIR" 2>/dev/null || true
+	rm -f "$CONNECT_SETUP_CONFIG_CACHE" 2>/dev/null || true
 	nordvpn_easy_render_runtime_config "$CONNECT_SETUP_CONFIG_CACHE" 'cfg_' written_options || {
 		log_service_error "apply: failed to render cached setup config at $CONNECT_SETUP_CONFIG_CACHE"
 		return 1
@@ -264,7 +267,7 @@ prepare_connect_setup_config_cache() {
 		log_service_error "apply: cached setup config failed validation at $CONNECT_SETUP_CONFIG_CACHE ($(nordvpn_easy_runtime_file_debug_summary "$CONNECT_SETUP_CONFIG_CACHE"), $(nordvpn_easy_runtime_config_validation_summary), $(nordvpn_easy_service_backend_payload_summary))"
 		return 1
 	}
-	log_service_info "apply: cached setup config at $CONNECT_SETUP_CONFIG_CACHE (written_options=$written_options, $(nordvpn_easy_runtime_file_debug_summary "$CONNECT_SETUP_CONFIG_CACHE"), $(nordvpn_easy_runtime_config_validation_summary), $(nordvpn_easy_service_backend_payload_summary))"
+	log_service_info "apply: cached setup config at $CONNECT_SETUP_CONFIG_CACHE (written_options=$written_options, vpn_country=${cfg_vpn_country:-automatic}, $(nordvpn_easy_runtime_file_debug_summary "$CONNECT_SETUP_CONFIG_CACHE"), $(nordvpn_easy_runtime_config_validation_summary), $(nordvpn_easy_service_backend_payload_summary))"
 }
 
 write_desired_cron_hook_to() {
@@ -573,12 +576,21 @@ EOF
 	log_service_info "installed hotplug hook at $HOTPLUG_PATH for wan_if=$cfg_wan_if vpn_if=$cfg_vpn_if"
 }
 
+enable_service_at_boot() {
+	if [ -x /etc/rc.common ]; then
+		/etc/init.d/"$SERVICE_NAME" enable >/dev/null 2>&1 || true
+	fi
+}
+
 install_hooks_if_needed() {
 	load_service_config || return 1
 	log_service_info "install_hooks requested with $(nordvpn_easy_service_debug_summary 'cfg_')"
 	log_service_info 'installing runtime hooks'
 	install_cron_hook 1 || return 1
 	install_hotplug_hook 1 || return 1
+	if [ "$cfg_enabled" -eq 1 ]; then
+		enable_service_at_boot
+	fi
 	log_service_info 'runtime hooks installed'
 }
 
@@ -676,6 +688,7 @@ connect() {
 	}
 
 	connect_apply_guard_begin
+	log_service_info "connect: preparing setup cache from UCI vpn_country=${cfg_vpn_country:-automatic}"
 	prepare_connect_setup_config_cache || {
 		connect_apply_result_finish 1
 		connect_apply_guard_end
@@ -717,8 +730,21 @@ disconnect() {
 	disable_vpn_runtime
 }
 
+begin_connect_apply() {
+	load_service_config || return 1
+	log_service_info 'begin_connect_apply requested; marking connect apply pending'
+	connect_apply_guard_begin
+}
+
+abort_connect_apply() {
+	load_service_config || return 1
+	log_service_info 'abort_connect_apply requested; finishing connect apply as failed'
+	connect_apply_result_finish 1
+	connect_apply_guard_end
+}
+
 stop_vpn() {
-	log_service_info 'stop_vpn requested; stopping VPN runtime and clearing server caches'
+	log_service_info 'stop_vpn requested; stopping VPN interface'
 	run_core_action stop_vpn || return $?
 }
 

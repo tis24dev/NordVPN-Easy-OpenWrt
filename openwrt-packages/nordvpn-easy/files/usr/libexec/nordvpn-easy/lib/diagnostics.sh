@@ -66,6 +66,7 @@ DIAG_LAST_ERROR=''
 DIAG_OPERATION_LOCK_STATE='none'
 DIAG_OPERATION_LOCK_ACTION=''
 DIAG_CONNECT_APPLY_PENDING='no'
+DIAG_RUNTIME_CONFIGURED='unknown'
 DIAG_PUBLIC_VERIFICATION_STATUS='unknown'
 DIAG_PUBLIC_VERIFICATION_CHECKED_AT='0'
 DIAG_PUBLIC_VERIFICATION_MESSAGE=''
@@ -133,6 +134,7 @@ nordvpn_easy_diagnostics_reset_state() {
 	DIAG_OPERATION_LOCK_STATE='none'
 	DIAG_OPERATION_LOCK_ACTION=''
 	DIAG_CONNECT_APPLY_PENDING='no'
+	DIAG_RUNTIME_CONFIGURED='unknown'
 	DIAG_PUBLIC_VERIFICATION_STATUS='unknown'
 	DIAG_PUBLIC_VERIFICATION_CHECKED_AT='0'
 	DIAG_PUBLIC_VERIFICATION_MESSAGE=''
@@ -261,6 +263,7 @@ nordvpn_easy_diagnostics_finding_priority() {
 		connectivity.dns_failure) printf '%s\n' '30' ;;
 		operational.kill_switch_active) printf '%s\n' '40' ;;
 		runtime.endpoint_unreachable) printf '%s\n' '50' ;;
+		operational.apply_incomplete) printf '%s\n' '55' ;;
 		runtime.link_down) printf '%s\n' '60' ;;
 		runtime.no_peers) printf '%s\n' '70' ;;
 		runtime.no_handshake) printf '%s\n' '80' ;;
@@ -398,6 +401,7 @@ nordvpn_easy_diagnostics_build_findings_json() {
 				elif $c == "connectivity.dns_failure" then 30
 				elif $c == "operational.kill_switch_active" then 40
 				elif $c == "runtime.endpoint_unreachable" then 50
+				elif $c == "operational.apply_incomplete" then 55
 				elif $c == "runtime.link_down" then 60
 				elif $c == "runtime.no_peers" then 70
 				elif $c == "runtime.no_handshake" then 80
@@ -729,6 +733,8 @@ nordvpn_easy_diagnostics_collect_runtime() {
 		runtime_configured='yes'
 	fi
 
+	DIAG_RUNTIME_CONFIGURED="$runtime_configured"
+
 	if command -v nordvpn_easy_load_lock_metadata >/dev/null 2>&1; then
 		nordvpn_easy_load_lock_metadata "${LOCK_DIR:-/tmp/nordvpn-easy.lock}"
 		operation="$(nordvpn_easy_operation_status_from_loaded_lock 2>/dev/null || printf '%s' 'idle')"
@@ -814,7 +820,7 @@ nordvpn_easy_diagnostics_runtime_transition_active() {
 	[ "$DIAG_CONNECT_APPLY_PENDING" = 'yes' ] && return 0
 
 	case "${DIAG_OPERATION_LOCK_STATE:-none}:${DIAG_OPERATION_LOCK_ACTION:-}" in
-		held:setup|held:stop_vpn|stale_recovered:setup|stale_recovered:stop_vpn)
+		held:setup|held:stop_vpn|held:start_connect|stale_recovered:setup|stale_recovered:stop_vpn|stale_recovered:start_connect)
 			return 0
 			;;
 	esac
@@ -904,21 +910,22 @@ nordvpn_easy_diagnostics_compute_findings() {
 	DIAG_PRIMARY_FINDING_ACTION=''
 	DIAG_FINDINGS_CODES='none'
 
-	if [ -n "$DIAG_MISSING_INTERFACE" ]; then
+	if [ -n "$DIAG_MISSING_INTERFACE" ] && ! nordvpn_easy_diagnostics_runtime_transition_active; then
 		nordvpn_easy_diagnostics_add_finding \
 			'config.interface_incomplete' \
 			"wireguard interface is incomplete (${DIAG_MISSING_INTERFACE})" \
 			'Complete the WireGuard interface keys in Network settings, then run Connect'
 	fi
 
-	if [ "$DIAG_PEER_SECTION_FOUND" != 'yes' ]; then
+	if [ "$DIAG_PEER_SECTION_FOUND" != 'yes' ] && ! nordvpn_easy_diagnostics_runtime_transition_active; then
 		nordvpn_easy_diagnostics_add_finding \
 			'config.peer_missing' \
 			'wireguard interface exists but peer section is missing' \
 			'Run Connect or Setup to create the WireGuard peer section'
 	fi
 
-	if [ -n "$DIAG_MISSING_REQUIRED" ] && [ "$DIAG_MISSING_REQUIRED" != 'peer_section' ]; then
+	if [ -n "$DIAG_MISSING_REQUIRED" ] && [ "$DIAG_MISSING_REQUIRED" != 'peer_section' ] &&
+		! nordvpn_easy_diagnostics_runtime_transition_active; then
 		nordvpn_easy_diagnostics_add_finding \
 			'config.peer_incomplete' \
 			"wireguard peer section is incomplete (${DIAG_MISSING_REQUIRED})" \
@@ -1028,7 +1035,13 @@ nordvpn_easy_diagnostics_compute_findings() {
 			'Try Refresh Public IP, reconnect, or choose another server'
 	fi
 
-	if [ "$DIAG_LINK_PRESENT" = 'no' ] && [ "$DIAG_DESIRED_ENABLED" = '1' ] &&
+	if [ "$DIAG_DESIRED_ENABLED" = '1' ] && [ "$DIAG_RUNTIME_CONFIGURED" = 'no' ] &&
+		[ "$DIAG_LINK_PRESENT" = 'no' ] && ! nordvpn_easy_diagnostics_runtime_transition_active; then
+		nordvpn_easy_diagnostics_add_finding \
+			'operational.apply_incomplete' \
+			'VPN is enabled but runtime was not configured after the last apply' \
+			'Run Save & Apply again or wait for automatic recovery'
+	elif [ "$DIAG_LINK_PRESENT" = 'no' ] && [ "$DIAG_DESIRED_ENABLED" = '1' ] &&
 		! nordvpn_easy_diagnostics_runtime_transition_active; then
 		nordvpn_easy_diagnostics_add_finding \
 			'runtime.link_down' \
@@ -1036,7 +1049,8 @@ nordvpn_easy_diagnostics_compute_findings() {
 			'Run Connect or check network.wg0.disabled in UCI'
 	fi
 
-	if [ "$DIAG_VPN_PROTO" != 'wireguard' ] && [ "$DIAG_DESIRED_ENABLED" = '1' ]; then
+	if [ "$DIAG_VPN_PROTO" != 'wireguard' ] && [ "$DIAG_DESIRED_ENABLED" = '1' ] &&
+		! nordvpn_easy_diagnostics_runtime_transition_active; then
 		nordvpn_easy_diagnostics_add_finding \
 			'config.not_wireguard' \
 			'VPN interface is not configured as WireGuard' \

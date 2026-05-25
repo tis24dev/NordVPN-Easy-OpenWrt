@@ -40,9 +40,14 @@
 				"nordvpn_easy"
 			],
 			"ubus": {
+				"uci": [
+					"commit"
+				],
 				"nordvpn.easy": [
 					"connect",
 					"start_connect",
+					"begin_connect_apply",
+					"abort_connect_apply",
 					"disconnect",
 					"stop_vpn",
 					"reconnect",

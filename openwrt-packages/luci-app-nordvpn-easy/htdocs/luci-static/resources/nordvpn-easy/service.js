@@ -47,6 +47,18 @@ const callStartConnect = rpc.declare({
 	timeout: START_CONNECT_RPC_TIMEOUT
 });
 
+const callBeginConnectApply = rpc.declare({
+	object: 'nordvpn.easy',
+	method: 'begin_connect_apply',
+	timeout: START_CONNECT_RPC_TIMEOUT
+});
+
+const callAbortConnectApply = rpc.declare({
+	object: 'nordvpn.easy',
+	method: 'abort_connect_apply',
+	timeout: START_CONNECT_RPC_TIMEOUT
+});
+
 const callStopVpn = rpc.declare({
 	object: 'nordvpn.easy',
 	method: 'stop_vpn',
@@ -68,6 +80,12 @@ const callSetup = rpc.declare({
 const callCheck = rpc.declare({
 	object: 'nordvpn.easy',
 	method: 'check',
+	timeout: RUNTIME_RPC_TIMEOUT
+});
+
+const callReconcile = rpc.declare({
+	object: 'nordvpn.easy',
+	method: 'reconcile',
 	timeout: RUNTIME_RPC_TIMEOUT
 });
 
@@ -221,6 +239,10 @@ function callSimpleAction(action) {
 		return callConnect();
 	case 'start_connect':
 		return callStartConnect();
+	case 'begin_connect_apply':
+		return callBeginConnectApply();
+	case 'abort_connect_apply':
+		return callAbortConnectApply();
 	case 'stop_vpn':
 		return callStopVpn();
 	case 'rotate':
@@ -229,6 +251,8 @@ function callSimpleAction(action) {
 		return callSetup();
 	case 'check':
 		return callCheck();
+	case 'reconcile':
+		return callReconcile();
 	case 'install_hooks':
 		return callInstallHooks();
 	case 'remove_hooks':

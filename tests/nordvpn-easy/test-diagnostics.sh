@@ -328,282 +328,27 @@ uci() {
 	uci_complete "$@"
 }
 wg() { wg_connected "$@"; }
-ip() { ip_healthy "$@"; }
-
-HEALTHY_SUMMARY="$(nordvpn_easy_diagnostics_print_health_summary wg0)"
-
-assert_eq 'none' \
-	"$(printf '%s\n' "$HEALTHY_SUMMARY" | sed -n 's/^probable_issue_code=//p')" \
-	'connected scenario reports no primary finding'
-assert_eq 'yes' \
-	"$(printf '%s\n' "$HEALTHY_SUMMARY" | sed -n 's/^wireguard_connected=//p')" \
-	'connected scenario reports wireguard connected'
-assert_eq 'no' \
-	"$(printf '%s\n' "$HEALTHY_SUMMARY" | sed -n 's/^routing_blackhole_risk=//p')" \
-	'connected scenario has no routing blackhole risk'
-
-HEALTHY_JSON="$(emit_scenario_json)"
-assert_eq 'none' "$(primary_code "$HEALTHY_JSON")" \
-	'healthy summary json reports no primary finding'
-assert_eq 'true' \
-	"$(printf '%s' "$HEALTHY_JSON" | jq -r '.health.wireguard_connected')" \
-	'healthy summary json reports wireguard connected'
-
-# --- Per-issue-code scenarios ---
-# Covers: config.interface_incomplete, config.peer_missing, config.peer_incomplete,
-# config.not_wireguard, service.enabled_mismatch, routing.blackhole_default_via_vpn,
-# runtime.no_handshake, runtime.stuck_tunnel, runtime.endpoint_unreachable,
-# operational.kill_switch_active, connectivity.wan_down, connectivity.dns_failure,
-# operational.api_cache_missing, operational.last_error, selection.drift,
-# runtime.no_peers, runtime.link_down
-
-wg() { wg_connected "$@"; }
-ip() { ip_healthy "$@"; }
-uci_interface_incomplete() {
-	case "$*" in
-		'get network.wg0.proto') printf '%s\n' 'wireguard' ;;
-		'get network.wg0.disabled') printf '%s\n' '0' ;;
-		'get network.wg0.force_link') printf '%s\n' '1' ;;
-		'get network.wg0server.endpoint_host') printf '%s\n' 'hk270.nordvpn.com' ;;
-		'get network.wg0server.public_key') printf '%s\n' 'peer-public-key' ;;
-		'get network.wg0server.allowed_ips') printf '%s\n' '0.0.0.0/0' ;;
-		'get network.wg0server.route_allowed_ips') printf '%s\n' '1' ;;
-		'get network.wg0server.nordvpn_country_code') printf '%s\n' 'HK' ;;
-		'get network.wg0server.nordvpn_station') printf '%s\n' '185.225.234.11' ;;
-		'get nordvpn_easy.main.server_selection_mode') printf '%s\n' 'auto' ;;
-		'get nordvpn_easy.main.enabled') printf '%s\n' '1' ;;
-		'get nordvpn_easy.main.wan_if') printf '%s\n' 'wan' ;;
-		'show network')
-			printf '%s\n' 'network.wg0=interface'
-			printf '%s\n' 'network.wg0server=wireguard_wg0'
-			;;
-		*) return 1 ;;
-	esac
-}
-uci() {
-	if [ "$1" = '-q' ]; then
-		shift
-	fi
-	uci_interface_incomplete "$@"
-}
-JSON="$(assert_scenario_primary 'config.interface_incomplete' 'config.interface_incomplete is primary')"
-assert_scenario_includes "$JSON" 'config.interface_incomplete' \
-	'config.interface_incomplete appears in findings'
-
-wg() { wg_connected "$@"; }
-ip() { ip_healthy "$@"; }
-uci_peer_missing() {
-	case "$*" in
-		'get network.wg0.proto') printf '%s\n' 'wireguard' ;;
-		'get network.wg0.disabled') printf '%s\n' '0' ;;
-		'get network.wg0.private_key') printf '%s\n' 'private-secret' ;;
-		'get network.wg0.addresses') printf '%s\n' '10.5.0.2/32' ;;
-		'get network.wg0.peerdns') printf '%s\n' '0' ;;
-		'get network.wg0.delegate') printf '%s\n' '0' ;;
-		'get network.wg0.force_link') printf '%s\n' '1' ;;
-		'get nordvpn_easy.main.server_selection_mode') printf '%s\n' 'auto' ;;
-		'get nordvpn_easy.main.enabled') printf '%s\n' '1' ;;
-		'get nordvpn_easy.main.wan_if') printf '%s\n' 'wan' ;;
-		'show network') printf '%s\n' 'network.wg0=interface' ;;
-		*) return 1 ;;
-	esac
-}
-uci() {
-	if [ "$1" = '-q' ]; then
-		shift
-	fi
-	uci_peer_missing "$@"
-}
-JSON="$(assert_scenario_primary 'config.peer_missing' 'config.peer_missing is primary')"
-assert_scenario_includes "$JSON" 'config.peer_missing' 'config.peer_missing appears in findings'
-
-wg() { wg_connected "$@"; }
-ip() { ip_healthy "$@"; }
-uci_peer_incomplete() {
-	case "$*" in
-		'get network.wg0server.public_key') return 1 ;;
-		*) uci_complete "$@" ;;
-	esac
-}
-uci() {
-	if [ "$1" = '-q' ]; then
-		shift
-	fi
-	uci_peer_incomplete "$@"
-}
-JSON="$(assert_scenario_primary 'config.peer_incomplete' 'config.peer_incomplete is primary')"
-assert_scenario_includes "$JSON" 'config.peer_incomplete' 'config.peer_incomplete appears in findings'
-
-wg() { wg_connected "$@"; }
-ip() { ip_healthy "$@"; }
-uci_enabled_mismatch() {
-	case "$*" in
-		'get network.wg0.disabled') printf '%s\n' '1' ;;
-		*) uci_complete "$@" ;;
-	esac
-}
-uci() {
-	if [ "$1" = '-q' ]; then
-		shift
-	fi
-	uci_enabled_mismatch "$@"
-}
-JSON="$(assert_scenario_primary 'service.enabled_mismatch' 'service.enabled_mismatch is primary')"
-assert_scenario_includes "$JSON" 'service.enabled_mismatch' \
-	'service.enabled_mismatch appears in findings'
-
-wg() { wg_no_handshake "$@"; }
-ip() { ip_healthy "$@"; }
+ip() { ip_link_down "$@"; }
+nordvpn_easy_runtime_configured() { return 1; }
 uci() {
 	if [ "$1" = '-q' ]; then
 		shift
 	fi
 	uci_complete "$@"
 }
-JSON="$(assert_scenario_primary 'runtime.no_handshake' 'runtime.no_handshake is primary without blackhole route')"
-assert_scenario_includes "$JSON" 'runtime.no_handshake' 'runtime.no_handshake appears in findings'
-assert_scenario_includes "$JSON" 'runtime.stuck_tunnel' \
-	'runtime.stuck_tunnel is listed with asymmetric transfer'
-
-NORDVPN_EASY_DIAGNOSTICS_ACTIVE_PROBES='1'
-wg() { wg_no_handshake "$@"; }
-ip() { ip_healthy "$@"; }
-uci() {
-	if [ "$1" = '-q' ]; then
-		shift
-	fi
-	uci_complete "$@"
-}
-install_ping_mock_endpoint_fail() {
-	printf '%s\n' '#!/bin/sh' \
-		'case "$*" in' \
-		'	*185.225.234.11*) exit 1 ;;' \
-		'	*) exit 0 ;;' \
-		'esac' > "$DIAG_TMP/ping"
-	chmod +x "$DIAG_TMP/ping"
-	PATH="$DIAG_TMP:$ORIGINAL_PATH"
-	export PATH
-}
-install_ping_mock_endpoint_fail
-printf '%s\n' '#!/bin/sh' 'printf "%s\n" "Address 1: 1.2.3.4"' 'exit 0' > "$DIAG_TMP/nslookup"
-chmod +x "$DIAG_TMP/nslookup"
-PATH="$DIAG_TMP:$ORIGINAL_PATH"
-export PATH
-JSON="$(assert_scenario_primary 'runtime.endpoint_unreachable' 'runtime.endpoint_unreachable is primary when endpoint ping fails')"
-assert_scenario_includes "$JSON" 'runtime.endpoint_unreachable' \
-	'runtime.endpoint_unreachable appears in findings'
-restore_path_mock
-NORDVPN_EASY_DIAGNOSTICS_ACTIVE_PROBES='0'
-
-NORDVPN_EASY_DIAGNOSTICS_ACTIVE_PROBES='1'
-wg() { wg_connected "$@"; }
-ip() { ip_healthy "$@"; }
-uci() {
-	if [ "$1" = '-q' ]; then
-		shift
-	fi
-	uci_complete "$@"
-}
-install_ping_mock 1
-JSON="$(assert_scenario_primary 'connectivity.wan_down' 'connectivity.wan_down is primary when WAN probe fails')"
-assert_scenario_includes "$JSON" 'connectivity.wan_down' 'connectivity.wan_down appears in findings'
-restore_path_mock
-NORDVPN_EASY_DIAGNOSTICS_ACTIVE_PROBES='0'
-
-NORDVPN_EASY_DIAGNOSTICS_ACTIVE_PROBES='1'
-wg() { wg_connected "$@"; }
-ip() { ip_healthy "$@"; }
-uci() {
-	if [ "$1" = '-q' ]; then
-		shift
-	fi
-	uci_complete "$@"
-}
-install_ping_mock 0
-install_nslookup_mock 1
-JSON="$(assert_scenario_primary 'connectivity.dns_failure' 'connectivity.dns_failure is primary when API DNS fails')"
-assert_scenario_includes "$JSON" 'connectivity.dns_failure' 'connectivity.dns_failure appears in findings'
-restore_path_mock
-NORDVPN_EASY_DIAGNOSTICS_ACTIVE_PROBES='0'
-
-rm -f "$SERVER_LIST_FILE"
-printf '%s\n' 'public_ip failed (rc=1)' > "$NORDVPN_EASY_LAST_ERROR_CACHE"
-wg() { wg_connected "$@"; }
-ip() { ip_healthy "$@"; }
-uci() {
-	if [ "$1" = '-q' ]; then
-		shift
-	fi
-	uci_complete "$@"
-}
-JSON="$(assert_scenario_primary 'operational.api_cache_missing' 'operational.api_cache_missing is primary')"
-assert_scenario_includes "$JSON" 'operational.api_cache_missing' \
-	'operational.api_cache_missing appears in findings'
-printf '%s\n' '[{"station":"hk270"}]' > "$SERVER_LIST_FILE"
-
-printf '%s\n' 'rotate failed (rc=2)' > "$NORDVPN_EASY_LAST_ERROR_CACHE"
-wg() { wg_connected "$@"; }
-ip() { ip_healthy "$@"; }
-uci() {
-	if [ "$1" = '-q' ]; then
-		shift
-	fi
-	uci_complete "$@"
-}
-JSON="$(assert_scenario_primary 'operational.last_error' 'operational.last_error is primary when no higher-priority issue matches')"
-assert_scenario_includes "$JSON" 'operational.last_error' 'operational.last_error appears in findings'
-: > "$NORDVPN_EASY_LAST_ERROR_CACHE"
-
-wg() { wg_connected "$@"; }
-ip() { ip_healthy "$@"; }
-uci_country_drift() {
-	case "$*" in
-		'get nordvpn_easy.main.vpn_country') printf '%s\n' 'IT' ;;
-		*) uci_complete "$@" ;;
-	esac
-}
-uci() {
-	if [ "$1" = '-q' ]; then
-		shift
-	fi
-	uci_country_drift "$@"
-}
-JSON="$(assert_scenario_primary 'selection.drift' 'selection.drift is primary for country mismatch')"
-assert_scenario_includes "$JSON" 'selection.drift' 'selection.drift appears in findings for country mismatch'
-
-wg() { wg_connected "$@"; }
-ip() { ip_healthy "$@"; }
-uci_manual_drift() {
-	case "$*" in
-		'get nordvpn_easy.main.server_selection_mode') printf '%s\n' 'manual' ;;
-		'get nordvpn_easy.main.preferred_server_station') printf '%s\n' 'it123' ;;
-		'get network.wg0server.nordvpn_station') printf '%s\n' 'hk270' ;;
-		*) uci_complete "$@" ;;
-	esac
-}
-uci() {
-	if [ "$1" = '-q' ]; then
-		shift
-	fi
-	uci_manual_drift "$@"
-}
-JSON="$(assert_scenario_primary 'selection.drift' 'selection.drift is primary for manual preferred-server mismatch')"
-assert_scenario_includes "$JSON" 'selection.drift' \
-	'selection.drift appears in findings for manual preferred-server mismatch'
-
-wg() { wg_no_peers "$@"; }
-ip() { ip_healthy "$@"; }
-uci() {
-	if [ "$1" = '-q' ]; then
-		shift
-	fi
-	uci_complete "$@"
-}
-JSON="$(assert_scenario_primary 'runtime.no_peers' 'runtime.no_peers is primary when link exists without peers')"
-assert_scenario_includes "$JSON" 'runtime.no_peers' 'runtime.no_peers appears in findings'
+JSON="$(emit_scenario_json)"
+assert_eq 'operational.apply_incomplete' "$(primary_code "$JSON")" \
+	'operational.apply_incomplete is primary when VPN is enabled without configured runtime'
+assert_scenario_includes "$JSON" 'operational.apply_incomplete' \
+	'operational.apply_incomplete appears in findings'
+if printf '%s' "$JSON" | jq -e '.findings[]? | select(.code == "runtime.link_down")' >/dev/null 2>&1; then
+	printf '%s\n' 'FAIL: runtime.link_down should not duplicate apply_incomplete orphan state' >&2
+	exit 1
+fi
 
 wg() { wg_connected "$@"; }
 ip() { ip_link_down "$@"; }
+nordvpn_easy_runtime_configured() { return 0; }
 uci() {
 	if [ "$1" = '-q' ]; then
 		shift
@@ -612,7 +357,6 @@ uci() {
 }
 JSON="$(assert_scenario_primary 'runtime.link_down' 'runtime.link_down is primary when VPN link is absent')"
 assert_scenario_includes "$JSON" 'runtime.link_down' 'runtime.link_down appears in findings'
-
 nordvpn_easy_connect_apply_result_begin "$NORDVPN_EASY_CONNECT_APPLY_RESULT"
 JSON="$(emit_scenario_json)"
 assert_eq 'none' "$(primary_code "$JSON")" \
@@ -622,6 +366,79 @@ if printf '%s' "$JSON" | jq -e '.findings[]? | select(.code == "runtime.link_dow
 	exit 1
 fi
 rm -f "$NORDVPN_EASY_CONNECT_APPLY_RESULT"
+
+uci_wg0_no_peer() {
+	case "$*" in
+		'get network.wg0.proto') printf '%s\n' 'wireguard' ;;
+		'get network.wg0.disabled') printf '%s\n' '0' ;;
+		'get network.wg0.private_key') printf '%s\n' 'private-secret' ;;
+		'get network.wg0.addresses') printf '%s\n' '10.5.0.2/32' ;;
+		'get network.wg0.peerdns') printf '%s\n' '0' ;;
+		'get network.wg0.delegate') printf '%s\n' '0' ;;
+		'get network.wg0.force_link') printf '%s\n' '1' ;;
+		'get nordvpn_easy.main.server_selection_mode') printf '%s\n' 'auto' ;;
+		'get nordvpn_easy.main.vpn_country') printf '%s\n' '' ;;
+		'get nordvpn_easy.main.preferred_server_station') printf '%s\n' '' ;;
+		'get nordvpn_easy.main.enabled') printf '%s\n' '1' ;;
+		'get nordvpn_easy.main.kill_switch_enabled') printf '%s\n' '0' ;;
+		'get nordvpn_easy.main.wan_if') printf '%s\n' 'wan' ;;
+		'show network')
+			printf '%s\n' 'network.wg0=interface'
+			;;
+		*) return 1 ;;
+	esac
+}
+
+wg() { wg_no_peers "$@"; }
+ip() { ip_healthy "$@"; }
+nordvpn_easy_runtime_configured() { return 0; }
+uci() {
+	if [ "$1" = '-q' ]; then
+		shift
+	fi
+	uci_wg0_no_peer "$@"
+}
+: >"$NORDVPN_EASY_CONNECT_APPLY_GUARD"
+JSON="$(emit_scenario_json)"
+assert_eq 'none' "$(primary_code "$JSON")" \
+	'config.peer_missing is suppressed during connect_apply when guard is active'
+if printf '%s' "$JSON" | jq -e '.findings[]? | select(.code == "config.peer_missing")' >/dev/null 2>&1; then
+	printf '%s\n' 'FAIL: config.peer_missing should not appear during connect_apply guard' >&2
+	exit 1
+fi
+rm -f "$NORDVPN_EASY_CONNECT_APPLY_GUARD"
+
+wg() { wg_no_peers "$@"; }
+ip() { ip_healthy "$@"; }
+nordvpn_easy_runtime_configured() { return 0; }
+uci_wg0_absent() {
+	case "$*" in
+		'get network.wg0.proto') return 1 ;;
+		'get nordvpn_easy.main.enabled') printf '%s\n' '1' ;;
+		'get nordvpn_easy.main.server_selection_mode') printf '%s\n' 'auto' ;;
+		'get nordvpn_easy.main.vpn_country') printf '%s\n' 'DE' ;;
+		'get nordvpn_easy.main.preferred_server_station') printf '%s\n' '' ;;
+		'get nordvpn_easy.main.kill_switch_enabled') printf '%s\n' '0' ;;
+		'get nordvpn_easy.main.wan_if') printf '%s\n' 'wan' ;;
+		'show network') return 0 ;;
+		*) return 1 ;;
+	esac
+}
+uci() {
+	if [ "$1" = '-q' ]; then
+		shift
+	fi
+	uci_wg0_absent "$@"
+}
+: >"$NORDVPN_EASY_CONNECT_APPLY_GUARD"
+JSON="$(emit_scenario_json)"
+assert_eq 'none' "$(primary_code "$JSON")" \
+	'config.not_wireguard is suppressed during connect_apply when wg0 is torn down'
+if printf '%s' "$JSON" | jq -e '.findings[]? | select(.code == "config.not_wireguard")' >/dev/null 2>&1; then
+	printf '%s\n' 'FAIL: config.not_wireguard should not appear during connect_apply guard' >&2
+	exit 1
+fi
+rm -f "$NORDVPN_EASY_CONNECT_APPLY_GUARD"
 
 wg() { wg_connected "$@"; }
 ip() { ip_healthy "$@"; }

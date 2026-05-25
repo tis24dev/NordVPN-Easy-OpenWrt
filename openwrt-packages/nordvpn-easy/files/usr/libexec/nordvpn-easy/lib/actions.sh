@@ -406,8 +406,12 @@ nordvpn_easy_stop_vpn_for_connect_apply() {
 	log 'apply: stopping VPN for connect apply (preserving reusable server recommendation cache)'
 	nordvpn_easy_immediate_vpn_shutdown || return 1
 	nordvpn_easy_clear_connect_apply_caches || return 1
-	rm -f "${NORDVPN_EASY_CONNECT_APPLY_RESULT:-/tmp/run/nordvpn-easy/connect-apply-result}" 2>/dev/null || true
 	nordvpn_easy_teardown_vpn || return 1
+	if [ -f "${NORDVPN_EASY_CONNECT_APPLY_GUARD:-/tmp/run/nordvpn-easy/connect-apply-guard}" ]; then
+		nordvpn_easy_connect_apply_result_begin "${NORDVPN_EASY_CONNECT_APPLY_RESULT:-/tmp/run/nordvpn-easy/connect-apply-result}" 2>/dev/null || true
+	else
+		rm -f "${NORDVPN_EASY_CONNECT_APPLY_RESULT:-/tmp/run/nordvpn-easy/connect-apply-result}" 2>/dev/null || true
+	fi
 	return 0
 }
 

@@ -16,6 +16,10 @@
 		"action": {
 			"type": "view",
 			"path": "nordvpn-easy/config"
+		},
+		"depends": {
+			"acl": [ "luci-app-nordvpn-easy" ],
+			"uci": { "nordvpn_easy": true }
 		}
 	},
 	"admin/services/nordvpn-easy/advanced": {
@@ -24,6 +28,10 @@
 		"action": {
 			"type": "view",
 			"path": "nordvpn-easy/advanced"
+		},
+		"depends": {
+			"acl": [ "luci-app-nordvpn-easy" ],
+			"uci": { "nordvpn_easy": true }
 		}
 	},
 	"admin/services/nordvpn-easy/diagnostics": {
@@ -32,6 +40,10 @@
 		"action": {
 			"type": "view",
 			"path": "nordvpn-easy/diagnostics"
+		},
+		"depends": {
+			"acl": [ "luci-app-nordvpn-easy" ],
+			"uci": { "nordvpn_easy": true }
 		}
 	}
 }
