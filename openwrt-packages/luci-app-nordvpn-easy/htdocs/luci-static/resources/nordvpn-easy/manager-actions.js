@@ -1024,7 +1024,10 @@ function loadServerCatalog(state, country, forceRefresh) {
 	if (forceRefresh)
 		extraArgs.push('1');
 
-	return managerStore.runExclusive(state, 'catalog', function() {
+	// Key the exclusive slot by country so a fast A->B country switch starts a
+	// fresh fetch for B instead of reusing A's in-flight promise (whose result
+	// the requestId guard would then discard, leaving the dropdown stale).
+	return managerStore.runExclusive(state, 'catalog:' + requestedCountry, function() {
 		return service.execService('server_catalog', extraArgs).then(function(res) {
 			let message;
 			let parsedCatalog;
