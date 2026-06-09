@@ -160,10 +160,24 @@ rpc_start_connect() {
 	local async_log_dir async_log
 	local holder_pid='' holder_action='' holder_age_seconds='0'
 	local reason='' message='Connect started in background; poll status for completion.'
+	local log_size=''
 
 	async_log_dir='/tmp/run/nordvpn-easy'
 	async_log="${async_log_dir}/start-connect.log"
 	mkdir -p "$async_log_dir" 2>/dev/null || true
+
+	# Cap the fire-and-forget background log so it cannot grow unbounded across
+	# repeated connects (rotate to .1 past 256 KiB).
+	if [ -f "$async_log" ]; then
+		log_size="$(wc -c < "$async_log" 2>/dev/null || printf '0')"
+		case "$log_size" in
+			''|*[!0-9]*) log_size=0 ;;
+		esac
+		if [ "$log_size" -gt 262144 ]; then
+			mv "$async_log" "${async_log}.1" 2>/dev/null || : > "$async_log"
+		fi
+	fi
+
 	nordvpn_easy_connect_apply_result_begin "${NORDVPN_EASY_CONNECT_APPLY_RESULT:-/tmp/run/nordvpn-easy/connect-apply-result}" 2>/dev/null || true
 
 	nordvpn_easy_load_lock_metadata "$LOCK_DIR"
