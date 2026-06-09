@@ -478,7 +478,26 @@ nordvpn_easy_acquire_lock() {
 	fi
 
 	nordvpn_easy_log_phase 'runtime' "recovering stale execution lock at $LOCK_DIR (reason: ${stale_reason})"
-	rm -rf "$LOCK_DIR" 2>/dev/null || return 1
+
+	# Atomically claim the stale dir by renaming it aside (mkdir/rename are the
+	# only atomic primitives here): only one recoverer wins the mv, and we never
+	# rm -rf a directory that a concurrent process may have just legitimately
+	# created. If the moved dir turns out to belong to a different, still-live
+	# PID, a real holder re-acquired during the window: restore it and yield.
+	local recover_dir="${LOCK_DIR}.recover.$$"
+	local moved_pid=''
+	rm -rf "$recover_dir" 2>/dev/null || true
+	if ! mv "$LOCK_DIR" "$recover_dir" 2>/dev/null; then
+		nordvpn_easy_log_blocker 'runtime' "lost race recovering stale lock at $LOCK_DIR"
+		return 2
+	fi
+	moved_pid="$(cat "${recover_dir}/pid" 2>/dev/null)"
+	if [ -n "$moved_pid" ] && [ "$moved_pid" != "$lock_pid" ] && kill -0 "$moved_pid" 2>/dev/null; then
+		mv "$recover_dir" "$LOCK_DIR" 2>/dev/null || rm -rf "$recover_dir" 2>/dev/null || true
+		nordvpn_easy_log_blocker 'runtime' "execution lock re-acquired by live PID $moved_pid during recovery; yielding"
+		return 2
+	fi
+	rm -rf "$recover_dir" 2>/dev/null || true
 
 	if ! mkdir "$LOCK_DIR" 2>/dev/null; then
 		if [ -d "$LOCK_DIR" ]; then
