@@ -300,4 +300,22 @@ assert_file_has_line "	option vpn_country 'CH'" "$FAKE_UCI_CONFIG_FILE" 'active 
 	exit 1
 }
 
+# Already at the current schema version: migration is a no-op and must not
+# re-run the one-time post_restart_delay 60 -> 30 rewrite.
+reset_fake_uci
+cat > "$FAKE_UCI_CONFIG_FILE" <<EOF
+config nordvpn_easy 'main'
+	option enabled '1'
+	option post_restart_delay '60'
+	option config_schema_version '$NORDVPN_EASY_SCHEMA_VERSION'
+EOF
+set_store_value '__section__' 'nordvpn_easy'
+set_store_value 'enabled' '1'
+set_store_value 'post_restart_delay' '60'
+set_store_value 'config_schema_version' "$NORDVPN_EASY_SCHEMA_VERSION"
+
+run_migrator
+
+assert_file_has_line "	option post_restart_delay '60'" "$FAKE_UCI_CONFIG_FILE" 'same-schema migration is a no-op and does not rewrite post_restart_delay'
+
 printf '%s\n' 'test-migrate-config.sh: ok'

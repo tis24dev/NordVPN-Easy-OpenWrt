@@ -150,6 +150,14 @@ apply_snapshot_to_uci() {
 	}
 }
 
+# Skip the migration entirely when the active config already carries the current
+# schema version: re-running it on every postinst would needlessly re-normalize
+# values and repeat one-time bumps (e.g. post_restart_delay 60 -> 30).
+if [ -r "$CONFIG_FILE" ] && active_option_exists 'config_schema_version' &&
+	[ "$(read_active_option 'config_schema_version')" = "$NORDVPN_EASY_SCHEMA_VERSION" ]; then
+	exit 0
+fi
+
 snapshot_existing_config
 install_template_config
 apply_snapshot_to_uci
