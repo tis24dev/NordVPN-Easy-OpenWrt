@@ -11,18 +11,33 @@
 const SERVER_CATALOG_CACHE_PATH = '/tmp/nordvpn-easy-servers.json';
 
 function runAction(action, runtimeBusy) {
-	if (runtimeBusy && [ 'setup', 'check', 'rotate', 'install_hooks' ].indexOf(action) !== -1) {
-		service.notifyInfo(_('NordVPN Easy is applying another runtime operation. This action was skipped.'));
-		return Promise.resolve();
-	}
+	const isMutating = [ 'setup', 'check', 'rotate', 'install_hooks' ].indexOf(action) !== -1;
 
-	return service.runAction(action).then(function(result) {
-		if (!result.success) {
-			service.notifyError(service.resultToError(result));
+	// Re-query the live runtime status at click time rather than trusting the
+	// render-time snapshot, so an action dispatched from a long-open page is
+	// gated on current state (the backend remains the final guard). Fall back to
+	// the render-time snapshot if the live query yields nothing.
+	const busyCheck = isMutating
+		? L.resolveDefault(service.execService('status_json'), null).then(function(res) {
+			const payload = service.parseExecJsonResponse(res, null);
+			return (payload == null) ? !!runtimeBusy : managerData.runtimeStatusIsBusy(payload);
+		})
+		: Promise.resolve(false);
+
+	return busyCheck.then(function(busy) {
+		if (busy) {
+			service.notifyInfo(_('NordVPN Easy is applying another runtime operation. This action was skipped.'));
 			return;
 		}
 
-		service.notifyInfo(result.message);
+		return service.runAction(action).then(function(result) {
+			if (!result.success) {
+				service.notifyError(service.resultToError(result));
+				return;
+			}
+
+			service.notifyInfo(result.message);
+		});
 	});
 }
 
