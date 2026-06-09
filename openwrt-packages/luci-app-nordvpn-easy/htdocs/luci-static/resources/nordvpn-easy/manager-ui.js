@@ -304,7 +304,12 @@ function setManagerControlsDisabled(disabled) {
 			inputEl.disabled = disabled;
 	});
 
-	document.querySelectorAll('.cbi-page-actions button, .cbi-page-actions input[type="button"], .cbi-page-actions input[type="submit"]').forEach(function(el) {
+	// Disable only the form's own Save / Save & Apply actions during an apply,
+	// not every footer button: leaving Reset (and any unrelated buttons) usable
+	// avoids stranding the page if a busy state lingers. Verified on OpenWrt
+	// 24.10: a single .cbi-page-actions footer carrying .cbi-button-save and
+	// .cbi-button-apply.
+	document.querySelectorAll('.cbi-page-actions .cbi-button-save, .cbi-page-actions .cbi-button-apply').forEach(function(el) {
 		el.disabled = disabled;
 	});
 }
