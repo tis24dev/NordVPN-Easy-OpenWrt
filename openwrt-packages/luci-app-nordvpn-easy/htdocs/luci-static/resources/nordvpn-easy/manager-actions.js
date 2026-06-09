@@ -1,5 +1,5 @@
 'use strict';
-/* global baseclass, managerData, managerFormat, managerStore, managerUI, service, ui, uci, rpc, request, L, document, Date, setTimeout, clearTimeout, E, _ */
+/* global baseclass, managerData, managerFormat, managerStore, managerUI, service, ui, uci, rpc, request, L, document, Date, localStorage, setTimeout, clearTimeout, E, _ */
 'require baseclass';
 'require nordvpn-easy/manager-data as managerData';
 'require nordvpn-easy/manager-format as managerFormat';
@@ -23,6 +23,39 @@ const ENABLED_RUNTIME_RECOVERY_COOLDOWN_MS = 15000;
 const POST_APPLY_RECOVERY_GRACE_MS = 120000;
 let callUciCommit = null;
 let nextApplyAttemptId = 0;
+
+// Opt-in, same-origin-only Save & Apply timing log (development / lab). It is
+// disabled unless localStorage['nordvpnEasyTimingLog'] === '1'. When enabled it
+// posts one record per milestone to the timing CGI on the same origin; it never
+// contacts any external endpoint. See docs/DIAGNOSTICS.md section 3.
+const TIMING_LOG_ENDPOINT = '/cgi-bin/nordvpn-easy-timing-log';
+const TIMING_LOG_FLAG = 'nordvpnEasyTimingLog';
+
+function timingLogEnabled() {
+	try {
+		return typeof localStorage !== 'undefined' && localStorage.getItem(TIMING_LOG_FLAG) === '1';
+	} catch (e) {
+		return false;
+	}
+}
+
+function timingLog(location, event, data) {
+	if (!timingLogEnabled())
+		return;
+
+	if (typeof request === 'undefined' || typeof request.post !== 'function')
+		return;
+
+	request.post(TIMING_LOG_ENDPOINT, {
+		location: location,
+		event: event,
+		data: data || {},
+		timestamp: Date.now()
+	}, {
+		timeout: 5000,
+		credentials: true
+	}).catch(function() {});
+}
 
 function newApplyAttemptId() {
 	nextApplyAttemptId++;
@@ -529,6 +562,9 @@ function runApplyCycleConfigurationPhase(viewState, state, ev, submitted, skipFo
 		return loadSavedRuntimeConfig();
 
 	state.applyPhase = 'configuration';
+	timingLog('runApplyCycleConfigurationPhase', 'configuration', {
+		country: (submitted && submitted.country) || ''
+	});
 
 	return Promise.resolve(viewState && viewState.handleSave ? viewState.handleSave(ev) : null).then(function() {
 		if (!applyAttemptIsCurrent(state, applyAttemptId))
@@ -721,6 +757,7 @@ function runApplyCycleStopPhase(viewState, state, submitted, applyAttemptId) {
 	state.applyPhase = 'stop_vpn';
 
 	const selectionChanged = runtimeSelectionChanged(state, viewState, submitted);
+	timingLog('runApplyCycleStopPhase', 'stop_phase', { selectionChanged: selectionChanged });
 
 	if (!selectionChanged)
 		return runApplyCycleStopWithConnectApplyGuard(state, applyAttemptId);
@@ -757,6 +794,7 @@ function runApplyCycleConnectPhase(state, savedConfig, applyAttemptId) {
 		return rejectStaleApplyAttempt();
 
 	state.applyPhase = 'connect';
+	timingLog('runApplyCycleConnectPhase', 'connect', {});
 
 	return awaitRuntimeConvergenceAfterDispatch(state, savedConfig, applyAttemptId, successMessage);
 }
@@ -1812,6 +1850,10 @@ function finishApplyCycle(state, options) {
 	managerStore.clearInFlight(state, 'status');
 	managerStore.resumePolling(state);
 	managerStore.setPhase(state, managerStore.PHASES.IDLE);
+
+	timingLog('finishApplyCycle', 'apply_finished', {
+		suppressAutoReconcile: !!opts.suppressAutoReconcile
+	});
 
 	return updateLocalStatus(state, {
 		force: true,

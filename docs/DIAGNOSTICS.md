@@ -92,9 +92,18 @@ cat /tmp/nordvpn-easy.lock/pid
 
 ## 3. LuCI timing log (development / lab)
 
-> **Status:** the earlier automatic instrumentation (`agentDebugLog` / `#region agent log`, which also posted to an external `http://localhost:7842` debug endpoint) has been removed from shipped code. The timing log is being reintroduced as a clean, opt-in, same-origin-only client; the sections below describe the lab tooling and are updated for the new opt-in once it lands.
+The timing log records **browser-side** milestones during **Save & Apply**. It complements syslog: syslog shows backend work; the timing log shows when LuCI entered each apply phase (`configuration` -> `stop_phase` -> `connect` -> `apply_finished`).
 
-The timing log records **browser-side** milestones during **Save & Apply**. It complements syslog: syslog shows backend work; the timing log shows when LuCI started/finished each RPC and how the **Operation Status** label changed.
+It is **opt-in and same-origin only**: nothing is posted unless you set a browser-local flag, and records go only to the timing CGI on the same origin as LuCI (`request.post('/cgi-bin/nordvpn-easy-timing-log', ...)`). It never contacts any external endpoint.
+
+Enable it from the browser devtools console on the NordVPN Easy page:
+
+```js
+localStorage.setItem('nordvpnEasyTimingLog', '1');   // enable
+localStorage.removeItem('nordvpnEasyTimingLog');      // disable
+```
+
+The flag is read per milestone, so toggling it takes effect on the next Save & Apply without reloading.
 
 ### 3.1 Components
 
@@ -102,7 +111,7 @@ The timing log records **browser-side** milestones during **Save & Apply**. It c
 |-----------|----------|
 | CGI append script (source) | `openwrt-packages/luci-app-nordvpn-easy/htdocs/luci-static/resources/nordvpn-easy/nordvpn-easy-timing-log.cgi` |
 | Installed on router | `/www/cgi-bin/nordvpn-easy-timing-log` (mode `755`) |
-| Instrumented LuCI JS | `manager-actions.js` (`__dbgTimingPost`, regions marked `agent log: connect-timing`) |
+| Instrumented LuCI JS | `manager-actions.js` (`timingLog()` milestones, opt-in via `localStorage['nordvpnEasyTimingLog']`) |
 | Log file on router | `/tmp/nordvpn-easy-luci-timing.ndjson` |
 
 Each line is one **NDJSON** object (one JSON object per line).
@@ -127,11 +136,12 @@ SRC=openwrt-packages/luci-app-nordvpn-easy/htdocs/luci-static/resources/nordvpn-
 scp "$SRC/nordvpn-easy-timing-log.cgi" root@"$ROUTER":/www/cgi-bin/nordvpn-easy-timing-log
 ssh root@"$ROUTER" 'chmod 755 /www/cgi-bin/nordvpn-easy-timing-log'
 
-# Instrumented manager-actions.js
-scp "$SRC/manager-actions.js" root@"$ROUTER":/www/luci-static/resources/nordvpn-easy/manager-actions.js
+# manager-actions.js already ships the (opt-in, disabled) instrumentation,
+# so no special build is needed; only the CGI must be deployed.
 ```
 
-Then hard-refresh LuCI (**Ctrl+F5**) on the NordVPN Easy page.
+Then open the NordVPN Easy page, enable the flag in the devtools console
+(`localStorage.setItem('nordvpnEasyTimingLog', '1')`), and run Save & Apply.
 
 **Proxmox guest exec** (when SSH is disabled on the VM):
 
@@ -175,34 +185,30 @@ curl -sS -X POST -H 'Content-Type: application/json' \
 
 ### 3.4 NDJSON fields
 
-Typical payload shape:
+Each record has the shape:
 
 ```json
 {
-  "sessionId": "cf39b0",
-  "runId": "connect-timing",
-  "hypothesisId": "H1",
-  "location": "manager-actions.js:runApplyCycleConnectPhase:enter",
-  "message": "connect RPC start",
-  "data": { "applyAttemptId": "..." },
+  "location": "runApplyCycleConnectPhase",
+  "event": "connect",
+  "data": { "selectionChanged": true },
   "timestamp": 1779627320000
 }
 ```
 
-| hypothesisId | Event |
-|--------------|-------|
-| `H0` | Save & Apply started |
-| `H3` | `stop_vpn` RPC start/end |
-| `H3` | `flushLuCiPendingChanges` start/end |
-| `H1` | `connect` RPC start/end (`data.durationMs` = browser-measured RPC time) |
-| `H2` | Effective Operation Status changed (`data.effective`, `data.lockAction`, `data.vpnStatus`, `data.applyPhase`) |
+| event | Emitted when |
+|-------|--------------|
+| `configuration` | Save & Apply entered the configuration phase (`data.country` = target country) |
+| `stop_phase` | Entered the stop phase (`data.selectionChanged` = whether the server/country changed) |
+| `connect` | Entered the connect phase (the `start_connect` RPC is dispatched next) |
+| `apply_finished` | The apply cycle settled and polling resumed (`data.suppressAutoReconcile`) |
 
-Compute deltas in milliseconds between `timestamp` fields on consecutive lines with the same `runId`.
+Compute deltas in milliseconds between consecutive `timestamp` fields to see where time goes (the `connect` -> `apply_finished` gap is the connect + convergence duration).
 
 Example (jq):
 
 ```sh
-jq -s 'sort_by(.timestamp) | .[] | "\(.timestamp) \(.hypothesisId) \(.message) \(.data.durationMs // "")"' luci-timing.ndjson
+jq -rs 'sort_by(.timestamp) | .[] | "\(.timestamp) \(.event) \(.location)"' luci-timing.ndjson
 ```
 
 ### 3.5 Correlate with syslog
@@ -217,21 +223,18 @@ Build a timeline:
 
 | Layer | Start signal | End signal |
 |-------|--------------|------------|
-| LuCI | `H0` Save & Apply START | `H1` connect RPC resolved |
+| LuCI | `configuration` event | `apply_finished` event |
 | Backend stop | `service: stop_vpn requested` | `core action 'stop_vpn' completed` |
-| LuCI save | `H3` flush enter | `H3` flush resolve |
 | Backend connect | `service: connect requested` | `core action 'setup' completed` + `install_hooks` |
-| UI label | `H2` transitions on `effective` | Last `busy:*` → idle |
 
 **Note:** `connect` in init.d runs `setup` then `install_hooks`. A separate `check` may appear in syslog from **hotplug** after `wg0` comes up; it is not always part of the `connect` RPC duration—use both logs to confirm.
 
 ### 3.6 Remove debug instrumentation
 
-For production routers, remove or avoid deploying:
+The instrumentation ships disabled (the `localStorage` flag is never set in production) and posts only to the same origin, so nothing is sent unless a lab operator opts in. For production routers, simply do not deploy the lab CGI; optionally clean up leftovers:
 
-- `/www/cgi-bin/nordvpn-easy-timing-log`
-- `__dbgTimingPost` / `#region agent log` blocks in `manager-actions.js`
-- `/tmp/nordvpn-easy-luci-timing.ndjson`
+- `/www/cgi-bin/nordvpn-easy-timing-log` (do not install on production)
+- `/tmp/nordvpn-easy-luci-timing.ndjson` (and the `.1` rotation)
 
 Restore `manager-actions.js` from the package build or backup (`manager-actions.js.bak.*` on lab VMs).
 
