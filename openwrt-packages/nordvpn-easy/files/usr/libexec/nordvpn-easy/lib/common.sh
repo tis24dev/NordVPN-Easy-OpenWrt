@@ -353,17 +353,32 @@ _nordvpn_easy_connect_apply_result_get() {
 
 nordvpn_easy_connect_apply_result_begin() {
 	local target="${1:-/tmp/run/nordvpn-easy/connect-apply-result}"
-	local target_dir now_ts
+	local target_dir now_ts started_at existing_state existing_started_at
 
 	target_dir="$(dirname "$target")"
 	mkdir -p "$target_dir" 2>/dev/null || return 1
 	now_ts="$(date +%s 2>/dev/null || printf '%s' '0')"
+
+	# Idempotent re-begin: the connect-apply lifecycle is begun by several owners
+	# (rpcd start_connect, init connect, core stop_vpn). If an apply is already
+	# pending, keep its original started_at so a second begin does not move the
+	# start time backwards/forwards and skew the client's convergence window.
+	started_at="$now_ts"
+	existing_state="$(_nordvpn_easy_connect_apply_result_get "$target" state 2>/dev/null || true)"
+	if [ "$existing_state" = 'pending' ]; then
+		existing_started_at="$(_nordvpn_easy_connect_apply_result_get "$target" started_at 2>/dev/null || true)"
+		case "$existing_started_at" in
+			''|*[!0-9]*) ;;
+			*) started_at="$existing_started_at" ;;
+		esac
+	fi
+
 	cat > "$target" <<EOF
 state=pending
 rc=
 finished_at=
 country=
-started_at=$now_ts
+started_at=$started_at
 EOF
 }
 
