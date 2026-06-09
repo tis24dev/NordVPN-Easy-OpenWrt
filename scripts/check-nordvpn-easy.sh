@@ -3,7 +3,10 @@
 set -euo pipefail
 
 ROOT_DIR="$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)"
-SHELLCHECK_EXCLUDES='SC1091,SC2034,SC2119,SC2120,SC2154,SC2317,SC2329,SC3043,SC2015,SC2129'
+# SC2018/SC2019: shellcheck suggests [:lower:]/[:upper:] over a-z/A-Z, but
+# OpenWrt's busybox tr does not support POSIX character classes, so ranges are
+# required.
+SHELLCHECK_EXCLUDES='SC1091,SC2034,SC2119,SC2120,SC2154,SC2317,SC2329,SC3043,SC2015,SC2129,SC2018,SC2019'
 
 JS_FILES=(
 	"$ROOT_DIR/openwrt-packages/luci-app-nordvpn-easy/htdocs/luci-static/resources/nordvpn-easy/service.js"
