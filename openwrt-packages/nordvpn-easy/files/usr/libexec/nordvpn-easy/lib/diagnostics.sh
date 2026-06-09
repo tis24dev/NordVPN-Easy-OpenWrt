@@ -838,15 +838,18 @@ nordvpn_easy_diagnostics_run_active_probes() {
 	fi
 
 	wan_ns="$(nordvpn_easy_diagnostics_resolve_wan_nameserver)"
-	if [ -n "$wan_ns" ] && command -v nslookup >/dev/null 2>&1; then
+	if ! command -v nslookup >/dev/null 2>&1; then
+		# A missing resolver tool is not a DNS failure; do not fabricate a
+		# critical connectivity.dns_failure finding on stripped images.
+		DIAG_DNS_API_NORDVPN_COM='skipped'
+	elif [ -n "$wan_ns" ]; then
 		dns_out="$(nslookup api.nordvpn.com "$wan_ns" 2>/dev/null | awk '/^Address [0-9]+: / { print $3; exit }')"
 		if [ -n "$dns_out" ]; then
 			DIAG_DNS_API_NORDVPN_COM='ok'
 		else
 			DIAG_DNS_API_NORDVPN_COM='failed'
 		fi
-	elif command -v nslookup >/dev/null 2>&1 &&
-		nslookup api.nordvpn.com 2>/dev/null | awk '/^Address [0-9]+: / { print $3; exit }' | grep -q '.'; then
+	elif nslookup api.nordvpn.com 2>/dev/null | awk '/^Address [0-9]+: / { print $3; exit }' | grep -q '.'; then
 		DIAG_DNS_API_NORDVPN_COM='ok'
 	else
 		DIAG_DNS_API_NORDVPN_COM='failed'
