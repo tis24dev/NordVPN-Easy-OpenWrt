@@ -533,8 +533,12 @@ nordvpn_easy_ensure_vpn_in_wan_zone() {
 		return 1
 	}
 
-	/etc/init.d/firewall restart || {
-		log 'ERROR: FIREWALL RESTART FAILED'
+	# Use reload, not restart: restart flushes nftables/conntrack and drops every
+	# forwarded session (including the admin's SSH/LuCI connection) on each
+	# provision. reload regenerates the ruleset and applies the zone membership
+	# change in place, which is what netifd itself triggers on interface changes.
+	"${NORDVPN_EASY_FIREWALL_INIT:-/etc/init.d/firewall}" reload || {
+		log 'ERROR: FIREWALL RELOAD FAILED'
 		return 1
 	}
 
