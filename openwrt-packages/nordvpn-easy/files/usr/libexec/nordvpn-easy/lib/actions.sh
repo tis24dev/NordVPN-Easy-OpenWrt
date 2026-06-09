@@ -470,7 +470,8 @@ nordvpn_easy_provision_vpn_connect_fresh() {
 		return 1
 	fi
 
-	verify_public_country_selection || return 1
+	verify_public_country_selection ||
+		log 'apply: public IP/country verification did not pass; leaving the tunnel up (status reflects the result)'
 	log 'apply: VPN provisioning completed'
 	return 0
 }
@@ -541,7 +542,8 @@ nordvpn_easy_provision_vpn() {
 		return 1
 	fi
 
-	verify_public_country_selection || return 1
+	verify_public_country_selection ||
+		log 'apply: public IP/country verification did not pass; leaving the tunnel up (status reflects the result)'
 	nordvpn_easy_commit_pending_server_preference
 	log 'apply: VPN provisioning completed'
 }
