@@ -920,6 +920,13 @@ provision_vpn () {
   nordvpn_easy_provision_vpn "$@"
 }
 
+# Atomic stop + fresh provision; used by the reconnect action and by the
+# reconcile reprovision fallback so both run within a single held lock.
+reprovision_vpn () {
+  nordvpn_easy_stop_vpn_for_server_change &&
+  provision_vpn connect_fresh
+}
+
 configure_vpn_interface () {
   nordvpn_easy_configure_vpn_interface "$@"
 }
@@ -1090,6 +1097,11 @@ case "$ACTION" in
     validate_setup_runtime &&
     reconcile_action
     ACTION_RC=$?
+    if [ "$ACTION_RC" -ne 0 ]; then
+      log 'reconcile: runtime did not validate; reprovisioning (stop_vpn + connect_fresh) under the held lock'
+      reprovision_vpn
+      ACTION_RC=$?
+    fi
     ;;
   stop_vpn)
     validate_stop_runtime
@@ -1103,8 +1115,7 @@ case "$ACTION" in
     ;;
   reconnect)
     validate_setup_runtime &&
-    nordvpn_easy_stop_vpn_for_server_change &&
-    provision_vpn connect_fresh &&
+    reprovision_vpn &&
     log 'NordVPN reconnect completed (stop_vpn + connect_fresh)'
     ACTION_RC=$?
     ;;

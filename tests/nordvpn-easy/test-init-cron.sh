@@ -97,4 +97,25 @@ case "$CRON_VALIDATION_ERROR" in
 		;;
 esac
 
+# The generated cron command must skip when a connect-apply transaction is in
+# progress (so cron 'check' cannot interleave the client-driven Save & Apply
+# window) and stay busy-tolerant otherwise.
+eval "$(extract_function write_desired_cron_hook_to)"
+SERVICE_NAME='nordvpn-easy'
+CONNECT_APPLY_GUARD='/tmp/run/nordvpn-easy/connect-apply-guard'
+cfg_enabled=1
+cfg_check_cron_schedule='*/10 * * * *'
+CRON_OUT="$(mktemp)"
+write_desired_cron_hook_to "$CRON_OUT" 1
+CRON_LINE="$(cat "$CRON_OUT")"
+rm -f "$CRON_OUT"
+case "$CRON_LINE" in
+	*"[ -f $CONNECT_APPLY_GUARD ] ||"*"NORDVPN_EASY_BUSY_IS_OK=1 /etc/init.d/$SERVICE_NAME check"*)
+		;;
+	*)
+		printf '%s\n' "FAIL: cron command should skip on the connect-apply guard and stay busy-tolerant: $CRON_LINE" >&2
+		exit 1
+		;;
+esac
+
 printf '%s\n' 'test-init-cron.sh: ok'

@@ -199,6 +199,8 @@ assert_eq '1' "$INSTALL_HOOKS_COUNT" 'successful connect installs hooks via inst
 }
 
 cfg_enabled=1
+cfg_nordvpn_token='token-secret'
+cfg_vpn_if='wg0'
 CORE_SCRIPT="$TMP_DIR/core.sh"
 CORE_EXIT_RC='1'
 cat > "$CORE_SCRIPT" <<EOF
@@ -213,13 +215,18 @@ REMOVE_HOOKS_COUNT=0
 rm -f "$CORE_CAPTURE"
 RC=0
 reconnect || RC=$?
-assert_eq '1' "$RC" 'reconnect propagates stop_vpn failure'
-grep -qx "stop_vpn" "$CORE_CAPTURE" || {
-	printf '%s\n' "FAIL: reconnect should run stop_vpn before connect: $(cat "$CORE_CAPTURE")" >&2
-	exit 1
-}
-assert_eq '0' "$SETUP_COUNT" 'reconnect does not run connect when stop_vpn fails'
-assert_eq '0' "$INSTALL_HOOKS_COUNT" 'reconnect does not install hooks when stop_vpn fails'
+assert_eq '1' "$RC" 'reconnect propagates the atomic core reconnect failure'
+CORE_ARGS="$(cat "$CORE_CAPTURE")"
+case "$CORE_ARGS" in
+	"reconnect --config $TMP_DIR"/action.*"/nordvpn-easy.reconnect.conf")
+		;;
+	*)
+		printf '%s\n' "FAIL: reconnect should run the single atomic core reconnect action: $CORE_ARGS" >&2
+		exit 1
+		;;
+esac
+assert_eq '0' "$SETUP_COUNT" 'reconnect does not orchestrate a separate setup step'
+assert_eq '0' "$INSTALL_HOOKS_COUNT" 'reconnect does not install hooks when the core transaction fails'
 
 CORE_EXIT_RC='0'
 cat > "$CORE_SCRIPT" <<EOF
@@ -234,12 +241,17 @@ REMOVE_HOOKS_COUNT=0
 rm -f "$CORE_CAPTURE"
 RC=0
 reconnect || RC=$?
-assert_eq '0' "$RC" 'reconnect succeeds when stop_vpn, connect, and hook installation succeed'
-grep -qx "stop_vpn" "$CORE_CAPTURE" || {
-	printf '%s\n' "FAIL: reconnect should run stop_vpn: $(cat "$CORE_CAPTURE")" >&2
-	exit 1
-}
-assert_eq '1' "$SETUP_COUNT" 'successful reconnect runs connect/setup after stop_vpn'
+assert_eq '0' "$RC" 'reconnect succeeds when the atomic core reconnect and hook installation succeed'
+CORE_ARGS="$(cat "$CORE_CAPTURE")"
+case "$CORE_ARGS" in
+	"reconnect --config $TMP_DIR"/action.*"/nordvpn-easy.reconnect.conf")
+		;;
+	*)
+		printf '%s\n' "FAIL: reconnect should run the single atomic core reconnect action: $CORE_ARGS" >&2
+		exit 1
+		;;
+esac
+assert_eq '0' "$SETUP_COUNT" 'reconnect does not orchestrate a separate setup step'
 assert_eq '1' "$INSTALL_HOOKS_COUNT" 'successful reconnect installs hooks once'
 assert_eq '0' "$REMOVE_HOOKS_COUNT" 'reconnect leaves hook lifecycle to connect/disconnect'
 

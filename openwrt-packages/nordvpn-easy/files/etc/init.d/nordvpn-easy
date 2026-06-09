@@ -286,7 +286,7 @@ write_desired_cron_hook_to() {
 
 		effective_cron_schedule="$(normalize_cron_schedule "$cfg_check_cron_schedule")"
 		cat > "$target" <<EOF
-$effective_cron_schedule NORDVPN_EASY_BUSY_IS_OK=1 /etc/init.d/$SERVICE_NAME check 2>&1 | logger -t $SERVICE_NAME-cron
+$effective_cron_schedule [ -f $CONNECT_APPLY_GUARD ] || NORDVPN_EASY_BUSY_IS_OK=1 /etc/init.d/$SERVICE_NAME check 2>&1 | logger -t $SERVICE_NAME-cron
 EOF
 	else
 		: > "$target"
@@ -755,13 +755,13 @@ stop_vpn() {
 
 reconnect() {
 	load_service_config || return 1
-	log_service_info "reconnect requested (compatibility: stop_vpn then connect); $(nordvpn_easy_service_debug_summary 'cfg_')"
+	log_service_info "reconnect requested (atomic stop_vpn + connect in one core.sh transaction); $(nordvpn_easy_service_debug_summary 'cfg_')"
 	if [ "$cfg_enabled" -ne 1 ]; then
 		log_service_error 'reconnect refused because enabled=0; use connect to enable the runtime'
 		return 1
 	fi
-	stop_vpn || return $?
-	connect
+	run_core_action reconnect || return $?
+	install_hooks
 }
 
 reconcile() {
@@ -804,9 +804,11 @@ reconcile() {
 		return "$rc"
 	fi
 
-	log_service_info 'reconcile: runtime reconciliation did not validate the runtime; running stop_vpn then connect'
-	stop_vpn || return $?
-	connect
+	# core.sh reconcile reprovisions (stop_vpn + connect_fresh) internally under
+	# the held lock when it cannot validate the runtime, so a non-busy failure
+	# here means even that reprovision failed.
+	log_service_error "reconcile failed to validate or reprovision the runtime (rc=$rc)"
+	return "$rc"
 }
 
 setup() {
