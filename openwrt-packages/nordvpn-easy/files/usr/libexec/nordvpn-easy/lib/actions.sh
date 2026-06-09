@@ -588,7 +588,21 @@ nordvpn_easy_check_once() {
 		return 0
 	fi
 
-	sleep "${FAILURE_RETRY_DELAY:-6}"
+	# Don't hold the execution lock idle through the retry wait: a user Save &
+	# Apply would be rejected RC_BUSY for the whole delay. When we actually hold
+	# the lock (run via core.sh), release it around the sleep and reacquire after;
+	# if another operation took over meanwhile, yield to it.
+	if [ "${LOCK_ACQUIRED:-0}" = '1' ]; then
+		nordvpn_easy_release_lock
+		sleep "${FAILURE_RETRY_DELAY:-6}"
+		if ! nordvpn_easy_acquire_lock; then
+			log 'healthcheck: another operation took over during the retry wait; yielding'
+			nordvpn_easy_check_once_finish
+			return 0
+		fi
+	else
+		sleep "${FAILURE_RETRY_DELAY:-6}"
+	fi
 
 	if nordvpn_easy_ping_interface "$VPN_IF"; then
 		log "healthcheck: VPN health-check passed on interface $VPN_IF after retry delay"
