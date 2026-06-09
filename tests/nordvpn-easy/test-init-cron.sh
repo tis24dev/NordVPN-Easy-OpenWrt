@@ -27,6 +27,7 @@ extract_function() {
 }
 
 eval "$(extract_function validate_cron_schedule)"
+eval "$(extract_function normalize_cron_minute_field)"
 eval "$(extract_function normalize_cron_schedule)"
 
 CRON_VALIDATION_ERROR=''
@@ -35,10 +36,18 @@ assert_eq '' "${CRON_VALIDATION_ERROR:-}" 'wildcard schedule accepted'
 assert_eq '*/5 * * * *' "$(normalize_cron_schedule '* * * * *')" 'wildcard schedule normalized to 5-minute minimum'
 assert_eq '*/5 * * * *' "$(normalize_cron_schedule '*/4 * * * *')" 'fast stepped schedule normalized to 5-minute minimum'
 assert_eq '*/10 * * * *' "$(normalize_cron_schedule '*/10 * * * *')" '10-minute schedule preserved'
+assert_eq '*/5 * * * *' "$(normalize_cron_schedule '0-4 * * * *')" 'dense minute range throttled to 5-minute floor'
+assert_eq '*/5 * * * *' "$(normalize_cron_schedule '0,1,2,3,4 * * * *')" 'dense minute list throttled to 5-minute floor'
+assert_eq '0,15,30,45 * * * *' "$(normalize_cron_schedule '0,15,30,45 * * * *')" 'sparse minute list preserved'
+assert_eq '*/10 5 * * 1' "$(normalize_cron_schedule '*/10 5 * * 1')" 'non-minute fields preserved'
 
 CRON_VALIDATION_ERROR=''
 validate_cron_schedule '1,2,5-7 * * * *'
 assert_eq '' "${CRON_VALIDATION_ERROR:-}" 'lists and ranges accepted'
+
+CRON_VALIDATION_ERROR=''
+validate_cron_schedule '0-30/5 * * * *'
+assert_eq '' "${CRON_VALIDATION_ERROR:-}" 'range with step accepted'
 
 CRON_VALIDATION_ERROR=''
 if validate_cron_schedule '50-10 * * * *'; then
