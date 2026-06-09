@@ -707,7 +707,10 @@ start() {
 }
 
 stop() {
-	log_service_info 'service stop requested'
+	# Deliberately leave the VPN tunnel up: removing the recovery hooks stops
+	# supervision, but a service stop/restart/reload must not disrupt traffic.
+	# Use 'disconnect' (or set enabled=0) to actually bring the tunnel down.
+	log_service_info 'service stop requested; removing recovery hooks (tunnel left up by design; use disconnect to bring it down)'
 	remove_hooks
 }
 
@@ -718,8 +721,11 @@ restart() {
 }
 
 reload() {
+	# Apply configuration changes in place rather than a disruptive stop+start:
+	# reconcile syncs the running tunnel with the saved config (reinstalling
+	# hooks) without tearing the tunnel down.
 	log_service_info 'service reload requested'
-	restart
+	reconcile
 }
 
 connect() {
