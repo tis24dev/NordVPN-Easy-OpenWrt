@@ -22,7 +22,6 @@ const RUNTIME_ACTION_COOLDOWN_MS = SAVE_APPLY_TIMEOUT_MS + 30000;
 const ENABLED_RUNTIME_RECOVERY_COOLDOWN_MS = 15000;
 const POST_APPLY_RECOVERY_GRACE_MS = 120000;
 let callUciCommit = null;
-let nextApplyAttemptId = 0;
 
 // Opt-in, same-origin-only Save & Apply timing log (development / lab). It is
 // disabled unless localStorage['nordvpnEasyTimingLog'] === '1'. When enabled it
@@ -57,9 +56,11 @@ function timingLog(location, event, data) {
 	}).catch(function() {});
 }
 
-function newApplyAttemptId() {
-	nextApplyAttemptId++;
-	return 'apply-' + nextApplyAttemptId;
+function newApplyAttemptId(state) {
+	// Keep the counter on state so each manager instance has its own apply-id
+	// sequence, instead of a module-global shared across views.
+	state.nextApplyAttempt = (state.nextApplyAttempt || 0) + 1;
+	return 'apply-' + state.nextApplyAttempt;
 }
 
 function applyAttemptIsCurrent(state, applyAttemptId) {
@@ -1895,7 +1896,7 @@ function handleSaveApply(viewState, state, ev) {
 		submittedRuntimeConfig.preferredStation,
 		selectedServer
 	);
-	const applyAttemptId = newApplyAttemptId();
+	const applyAttemptId = newApplyAttemptId(state);
 
 	notifyDebugBlock(_('Save & Apply requested'), debugLines.concat([
 		_('Runtime flow: save configuration, stop VPN when needed, connect when enabled.')
@@ -1952,14 +1953,17 @@ function handleSaveApply(viewState, state, ev) {
 		};
 
 		timeoutId = setTimeout(function() {
+			// Early-return if the apply already settled (or this attempt is no
+			// longer current): a stale watchdog must not fire a recovery network
+			// call or resurrect a settled attempt id.
+			if (settled || !applyAttemptIsCurrent(state, applyAttemptId))
+				return;
+
 			const timeoutError = new Error(_('Configuration apply timed out.'));
 			const timeoutApplyAttemptId = applyAttemptId + ':timeout';
 			const recoveryPromise = shouldRecoverAfterApplyFailure(state, submittedRuntimeConfig)
 				? recoverEnabledRuntimeAfterApplyFailure()
 				: Promise.resolve();
-
-			if (!applyAttemptIsCurrent(state, applyAttemptId))
-				return;
 
 			managerStore.setError(state, timeoutError);
 			state.currentApplyAttempt = timeoutApplyAttemptId;
