@@ -30,7 +30,6 @@
 					"diagnostics_summary",
 					"public_ip",
 					"refresh_countries",
-					"refresh_servers",
 					"server_catalog"
 				]
 			}
@@ -48,18 +47,14 @@
 					"start_connect",
 					"begin_connect_apply",
 					"abort_connect_apply",
-					"disconnect",
 					"stop_vpn",
-					"reconnect",
 					"reconcile",
 					"rotate",
 					"setup",
 					"check",
 					"install_hooks",
 					"remove_hooks",
-					"disable_runtime",
 					"refresh_countries",
-					"refresh_servers",
 					"server_catalog",
 					"public_ip",
 					"diagnostics",

@@ -199,6 +199,20 @@ The NordLynx private key is stored locally by OpenWrt in `/etc/config/network`
 under the WireGuard interface so netifd can bring the tunnel up. NordVPN Easy
 does not expose that key in LuCI, logs, status JSON or diagnostics export.
 
+### Securing the account token
+
+The NordVPN account token and the NordLynx private key are long-lived secrets
+held in `/etc/config/*` with root-only (`0600`) permissions. The LuCI form masks
+the token in the page, but that masking is client-side only: any authenticated
+LuCI admin session can read the stored token back over the standard `uci` ubus
+call (this is inherent to LuCI's uci-over-ubus model). To limit exposure:
+
+- serve LuCI over HTTPS only (configure `uhttpd` with TLS and redirect plain
+  HTTP) so the token is never sent to network intermediaries in clear text
+- restrict LuCI administrative access to trusted users and networks
+- rotate the NordVPN access token if a router or its backups may have been
+  exposed
+
 ## Current status
 
 - package names are fixed: `nordvpn-easy` and `luci-app-nordvpn-easy`
