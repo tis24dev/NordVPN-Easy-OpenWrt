@@ -99,19 +99,23 @@ return view.extend({
 		o = s.option(form.Value, 'wan_if', _('WAN Interface'));
 		o.placeholder = 'wan';
 		o.rmempty = false;
+		o.datatype = 'uciname';
 
 		o = s.option(form.Value, 'vpn_if', _('VPN Interface'));
 		o.placeholder = 'wg0';
 		o.rmempty = false;
+		o.datatype = 'uciname';
 
 		o = s.option(form.Value, 'vpn_addr', _('VPN Address'));
 		o.placeholder = '10.5.0.2/32';
 		o.rmempty = true;
-		o.description = _('Optional. Local VPN interface address.');
+		o.datatype = 'cidr4';
+		o.description = _('Optional. Local VPN interface address in CIDR form.');
 
 		o = s.option(form.Value, 'vpn_port', _('VPN Port'));
 		o.placeholder = '51820';
 		o.rmempty = true;
+		o.datatype = 'port';
 		o.description = _('Optional. Backend VPN server port.');
 
 		o = s.option(form.Value, 'wireguard_persistent_keepalive', _('WireGuard Keepalive'));
@@ -158,10 +162,12 @@ return view.extend({
 		o = s.option(form.Value, 'vpn_dns1', _('DNS 1'));
 		o.placeholder = '103.86.99.99';
 		o.rmempty = true;
+		o.datatype = 'ipaddr';
 
 		o = s.option(form.Value, 'vpn_dns2', _('DNS 2'));
 		o.placeholder = '103.86.96.96';
 		o.rmempty = true;
+		o.datatype = 'ipaddr';
 
 		s = m.section(form.NamedSection, 'main', 'nordvpn_easy', _('Fallback Recovery'));
 		s.anonymous = true;
@@ -209,6 +215,26 @@ return view.extend({
 		o.placeholder = '*/10 * * * *';
 		o.rmempty = true;
 		o.description = _('Leave empty to disable cron-based checks. Recommended values are 5 minutes or slower.');
+		o.validate = function(_section_id, value) {
+			const schedule = String(value || '').trim();
+
+			if (!schedule)
+				return true;
+
+			const fields = schedule.split(/\s+/);
+			if (fields.length !== 5)
+				return _('Cron schedule must have exactly 5 fields (minute hour day-of-month month day-of-week).');
+
+			// Mirror the init service's accepted tokens: *, */n, a, a-b, a-b/n and comma lists.
+			const item = '(\\*|\\*\\/[0-9]+|[0-9]+(-[0-9]+)?(\\/[0-9]+)?)';
+			const token = new RegExp('^' + item + '(,' + item + ')*$');
+			for (let i = 0; i < fields.length; i++) {
+				if (!token.test(fields[i]))
+					return _('Cron field "%s" is not a valid cron expression.').format(fields[i]);
+			}
+
+			return true;
+		};
 
 		o = s.option(form.Flag, 'enable_hotplug', _('Enable Hotplug Checks'));
 		o.default = '1';
