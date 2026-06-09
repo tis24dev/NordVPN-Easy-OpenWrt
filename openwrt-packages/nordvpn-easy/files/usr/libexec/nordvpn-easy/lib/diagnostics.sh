@@ -337,6 +337,12 @@ nordvpn_easy_diagnostics_add_finding() {
 	local severity='warning'
 	local current_priority='900'
 
+	# Findings are stored as tab/newline-delimited records; a tab or newline in
+	# an interpolated value (station name, last_error, endpoint host) would shift
+	# fields or split a record. Collapse them to spaces before building the row.
+	message="$(printf '%s' "$message" | tr '\t\r\n' '   ')"
+	action="$(printf '%s' "$action" | tr '\t\r\n' '   ')"
+
 	case "$DIAG_FINDINGS_CODES" in
 		''|none)
 			DIAG_FINDINGS_CODES="$code"
