@@ -198,7 +198,7 @@ nordvpn_easy_wait_for_vpn_connectivity "$VPN_IF" '3' 'timeout-test' || WAIT_RC=$
 assert_eq '1' "$WAIT_RC" 'wait helper fails when connectivity never returns'
 assert_eq '1,1,' "$SLEEP_CALLS" 'wait helper retries until the timeout window is exhausted'
 
-nordvpn_easy_set_vpn_server_in_uci 'it12.nordvpn.com' 'it123' 'PUBKEY-123' 'IT' 'Milan' '12'
+nordvpn_easy_set_vpn_server_in_uci 'it12.nordvpn.com' 'it123' 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' 'IT' 'Milan' '12'
 
 assert_eq 'it12.nordvpn.com' "$UCI_ENDPOINT_HOST" 'wireguard peer endpoint host uses hostname'
 assert_eq '51820' "$UCI_ENDPOINT_PORT" 'wireguard peer endpoint port is repaired during server update'
@@ -210,6 +210,17 @@ assert_eq 'it123' "$(nordvpn_easy_current_server_station)" 'current server stati
 
 UCI_STATION=''
 assert_eq '' "$(nordvpn_easy_current_server_station || true)" 'current server station does not fall back to endpoint host when station metadata is missing'
+
+# Reject corrupted/spoofed peers before they are committed.
+RC=0
+nordvpn_easy_set_vpn_server_in_uci 'it12.nordvpn.com' 'it123' 'PUBKEY-123' 'IT' 'Milan' '12' >/dev/null 2>&1 || RC=$?
+assert_eq '1' "$RC" 'set_vpn_server rejects a non-base64 public key'
+RC=0
+nordvpn_easy_set_vpn_server_in_uci 'it12.nordvpn.com' 'it123' 'AAAA' 'IT' 'Milan' '12' >/dev/null 2>&1 || RC=$?
+assert_eq '1' "$RC" 'set_vpn_server rejects a wrong-length public key'
+RC=0
+nordvpn_easy_set_vpn_server_in_uci 'bad host' 'it123' 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' 'IT' 'Milan' '12' >/dev/null 2>&1 || RC=$?
+assert_eq '1' "$RC" 'set_vpn_server rejects an endpoint host with invalid characters'
 
 WIREGUARD_PERSISTENT_KEEPALIVE='10'
 WIREGUARD_MTU='1420'

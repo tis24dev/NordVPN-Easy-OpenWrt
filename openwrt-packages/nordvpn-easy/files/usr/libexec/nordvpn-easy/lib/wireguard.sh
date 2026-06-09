@@ -549,6 +549,8 @@ nordvpn_easy_ensure_vpn_in_wan_zone() {
 }
 
 nordvpn_easy_set_vpn_server_in_uci() {
+	local public_key="$3"
+
 	[ -n "$1" ] || {
 		log 'ERROR: VPN SERVER HOSTNAME IS EMPTY'
 		return 1
@@ -557,10 +559,38 @@ nordvpn_easy_set_vpn_server_in_uci() {
 		log "ERROR: VPN SERVER STATION IS EMPTY FOR $1"
 		return 1
 	}
-	[ -n "$3" ] || {
+	[ -n "$public_key" ] || {
 		log "ERROR: VPN PUBLIC KEY IS EMPTY FOR $1"
 		return 1
 	}
+
+	# Reject a corrupted or spoofed peer before committing it: a WireGuard public
+	# key is 32 bytes => 43 base64 chars plus '=' padding, and the endpoint host
+	# must be a plain DNS name. A bad key otherwise only surfaced as a generic
+	# no-handshake failure much later.
+	case "$public_key" in
+		*[!A-Za-z0-9+/=]*)
+			log "ERROR: VPN PUBLIC KEY FOR $1 CONTAINS NON-BASE64 CHARACTERS"
+			return 1
+			;;
+	esac
+	case "$public_key" in
+		*=) ;;
+		*)
+			log "ERROR: VPN PUBLIC KEY FOR $1 IS NOT PROPERLY PADDED"
+			return 1
+			;;
+	esac
+	if [ "${#public_key}" -ne 44 ]; then
+		log "ERROR: VPN PUBLIC KEY FOR $1 HAS UNEXPECTED LENGTH ${#public_key} (want 44)"
+		return 1
+	fi
+	case "$1" in
+		*[!A-Za-z0-9.-]*)
+			log "ERROR: VPN ENDPOINT HOST $1 CONTAINS INVALID CHARACTERS"
+			return 1
+			;;
+	esac
 
 	uci set "network.${VPN_IF}server.description"="$1"
 	uci set "network.${VPN_IF}server.endpoint_host"="$1"
