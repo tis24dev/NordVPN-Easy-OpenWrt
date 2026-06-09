@@ -543,6 +543,25 @@ nordvpn_easy_sanitize_diagnostics_stream() {
 		-e 's/\(Authorization:[[:space:]]*Bearer[[:space:]]\)[^"[:space:]]*/\1***REDACTED***/g'
 }
 
+# /etc/config/network holds the NordLynx private key and /etc/config/nordvpn_easy
+# holds the account token. Keep them readable by root only. uci commit preserves
+# an existing file's mode, so asserting 0600 after our own commits keeps the
+# secrets protected across subsequent commits (including LuCI's).
+nordvpn_easy_harden_secret_config_perms() {
+	local name=''
+
+	for name in "$@"; do
+		case "$name" in
+			network|nordvpn_easy) ;;
+			*) continue ;;
+		esac
+		[ -e "/etc/config/$name" ] || continue
+		chmod 0600 "/etc/config/$name" 2>/dev/null || true
+	done
+
+	return 0
+}
+
 nordvpn_easy_diagnostics_section() {
 	printf '\n## %s\n' "$1"
 }

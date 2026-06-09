@@ -94,6 +94,9 @@ if [ "$$MIGRATION_STATUS" -ne 0 ]; then
 	exit "$$MIGRATION_STATUS"
 fi
 
+# /etc/config/nordvpn_easy holds the NordVPN account token; keep it root-only.
+chmod 0600 /etc/config/nordvpn_easy 2>/dev/null || true
+
 exit 0
 endef
 

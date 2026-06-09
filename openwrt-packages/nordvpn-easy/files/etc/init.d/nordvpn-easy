@@ -640,6 +640,11 @@ start() {
 	load_service_config
 	log_service_info 'service start requested'
 
+	# Keep the account token in /etc/config/nordvpn_easy readable by root only.
+	# LuCI writes the token through its own uci commit, so re-assert on every
+	# boot/start; uci commit preserves the mode afterwards.
+	chmod 0600 /etc/config/nordvpn_easy 2>/dev/null || true
+
 	if [ "$cfg_enabled" -ne 1 ]; then
 		disable_vpn_runtime || return 1
 		echo "$SERVICE_NAME is disabled in UCI; hooks removed and VPN interface disabled."

@@ -94,6 +94,7 @@ EOF
 		nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "could not commit network configuration while tearing down $VPN_IF"
 		return 1
 	}
+	nordvpn_easy_harden_secret_config_perms network
 
 	"${NORDVPN_EASY_NETWORK_INIT:-/etc/init.d/network}" reload >/dev/null 2>&1 || {
 		log 'ERROR: NETWORK RELOAD FAILED DURING VPN TEARDOWN'

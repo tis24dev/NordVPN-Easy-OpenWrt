@@ -287,6 +287,7 @@ nordvpn_easy_apply_next_manual_server_from_catalog() {
 		uci commit nordvpn_easy || {
 			log 'WARNING: COULD NOT COMMIT MANUAL SERVER PREFERENCE AFTER ROTATION'
 		}
+		nordvpn_easy_harden_secret_config_perms nordvpn_easy
 		PREFERRED_SERVER_HOSTNAME="$host_name"
 		PREFERRED_SERVER_STATION="$server_station"
 		return 0
@@ -387,6 +388,7 @@ nordvpn_easy_configure_vpn_interface() {
 		nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" 'could not commit network configuration while creating the VPN interface'
 		return 1
 	}
+	nordvpn_easy_harden_secret_config_perms network
 
 	nordvpn_easy_bring_up_vpn_interface "$VPN_IF" || return 1
 
