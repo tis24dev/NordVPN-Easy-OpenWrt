@@ -62,7 +62,11 @@ nordvpn_easy_handshake_epoch_indicates_connection() {
 
 	diff=$((now - epoch))
 	[ "$diff" -lt 0 ] && diff=0
-	[ "$diff" -le 7200 ]
+	# A WireGuard session is only valid for REJECT_AFTER_TIME (180s); a handshake
+	# older than that means the tunnel is no longer actively connected. This also
+	# matches the LuCI 180s convergence threshold, so the status banner and the
+	# Save & Apply result agree instead of a long-dead tunnel reporting connected.
+	[ "$diff" -le 180 ]
 }
 
 nordvpn_easy_install_exit_trap() {
