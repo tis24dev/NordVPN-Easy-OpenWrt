@@ -805,6 +805,26 @@ nordvpn_easy_diagnostics_runtime_transition_active() {
 	return 1
 }
 
+nordvpn_easy_diagnostics_now_ms() {
+	local ms=''
+
+	# /proc/uptime carries centisecond resolution; date +%s only whole seconds,
+	# which quantised the probe duration to multiples of 1000 (usually 0).
+	if [ -r /proc/uptime ]; then
+		ms="$(awk '{ printf "%d", $1 * 1000; exit }' /proc/uptime 2>/dev/null)"
+	fi
+	case "$ms" in
+		''|*[!0-9]*)
+			ms="$(date +%s 2>/dev/null || printf '%s' '0')"
+			case "$ms" in
+				''|*[!0-9]*) ms='0' ;;
+				*) ms=$((ms * 1000)) ;;
+			esac
+			;;
+	esac
+	printf '%s\n' "$ms"
+}
+
 nordvpn_easy_diagnostics_run_active_probes() {
 	local vpn_if="$1"
 	local probe_start probe_end wan_ns dns_out
@@ -821,7 +841,7 @@ nordvpn_easy_diagnostics_run_active_probes() {
 	DIAG_VPN_ENDPOINT_REACHABLE='skipped'
 	DIAG_VPN_ENDPOINT_HOST="$(nordvpn_easy_diagnostics_endpoint_host "$DIAG_WG_ENDPOINT" 2>/dev/null || true)"
 
-	probe_start="$(date +%s 2>/dev/null || printf '%s' '0')"
+	probe_start="$(nordvpn_easy_diagnostics_now_ms)"
 	DIAG_WAN_DEVICE=''
 	if command -v nordvpn_easy_resolve_wan_device >/dev/null 2>&1; then
 		WAN_IF="$DIAG_WAN_IF"
@@ -866,9 +886,9 @@ nordvpn_easy_diagnostics_run_active_probes() {
 		fi
 	fi
 
-	probe_end="$(date +%s 2>/dev/null || printf '%s' '0')"
+	probe_end="$(nordvpn_easy_diagnostics_now_ms)"
 	case "$probe_start" in
-		''|*[!0-9]*|0)
+		''|*[!0-9]*)
 			DIAG_PROBE_DURATION_MS='0'
 			;;
 		*)
@@ -877,7 +897,11 @@ nordvpn_easy_diagnostics_run_active_probes() {
 					DIAG_PROBE_DURATION_MS='0'
 					;;
 				*)
-					DIAG_PROBE_DURATION_MS=$(( (probe_end - probe_start) * 1000 ))
+					if [ "$probe_end" -ge "$probe_start" ]; then
+						DIAG_PROBE_DURATION_MS=$(( probe_end - probe_start ))
+					else
+						DIAG_PROBE_DURATION_MS='0'
+					fi
 					;;
 			esac
 			;;
