@@ -997,6 +997,7 @@ function buildHandleSaveApplyHarness(options) {
 	const runtimeActions = [];
 	const serviceCalls = [];
 	const phaseTransitions = [];
+	const controlsDisabledCalls = [];
 	const pollingTransitions = [];
 	const debugNotifications = [];
 	let runtimeStatusPayload = null;
@@ -1181,7 +1182,9 @@ function buildHandleSaveApplyHarness(options) {
 				return opts.preferredStation || '';
 			},
 			replaceStatusText() {},
-			setManagerControlsDisabled() {},
+			setManagerControlsDisabled(disabled) {
+				controlsDisabledCalls.push(!!disabled);
+			},
 			setVpnStatusIndicator() {},
 			updateCountryMatchStatus() {},
 			updateServerSelectionState() {},
@@ -1387,6 +1390,7 @@ function buildHandleSaveApplyHarness(options) {
 		phaseTransitions: phaseTransitions,
 		pollingTransitions: pollingTransitions,
 		debugNotifications: debugNotifications,
+		controlsDisabledCalls: controlsDisabledCalls,
 		calls: calls
 	};
 }
@@ -1592,6 +1596,11 @@ async function testHandleSaveApplyIgnoresLateApplyCycleAfterTimeout() {
 	assert.deepEqual(normalizeValue(harness.runtimeActions), [],
 		'timed-out apply cycle does not stop or connect before delayed load resolves');
 	assert.equal(harness.state.currentApplyAttempt, null, 'timeout clears the active apply attempt token');
+	assert.equal(
+		harness.controlsDisabledCalls[harness.controlsDisabledCalls.length - 1],
+		false,
+		'timeout settle re-enables the manager controls instead of leaving them stuck disabled'
+	);
 
 	releaseLoad();
 	await Promise.resolve();

@@ -1860,6 +1860,10 @@ function finishApplyCycle(state, options) {
 	state.pendingOperationLabel = '';
 	state.applyPhase = '';
 	state.saveApplyInProgress = false;
+	// Re-enable the manager controls deterministically when the apply cycle
+	// settles, rather than waiting for the forced status refresh below: if that
+	// refresh fails or hangs, the controls would otherwise stay disabled.
+	managerUI.setManagerControlsDisabled(false);
 	state.postApplyRecoveryGraceUntil = Date.now() + POST_APPLY_RECOVERY_GRACE_MS;
 	state.applySelectionBaseline = { captured: false };
 	managerStore.clearInFlight(state, 'status');
