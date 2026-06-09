@@ -109,18 +109,28 @@ nordvpn_easy_format_human_bytes() {
 }
 
 nordvpn_easy_parse_wg_dump_peer() {
+	# Line 1 of `wg show dump` is the interface; lines 2+ are peers. Rather than
+	# hard-coding the first peer (NR==2), pick the peer with the newest handshake
+	# so a leftover/extra peer cannot shadow the active server, and emit the N/A
+	# sentinel when there are no peer lines at all.
 	printf '%s\n' "$1" | awk '
-		NR == 2 {
-			endpoint = ($3 != "" && $3 != "(none)") ? $3 : "N/A"
-			handshake = ($5 ~ /^[0-9]+$/) ? $5 : 0
-			rx = ($6 ~ /^[0-9]+$/) ? $6 : 0
-			tx = ($7 ~ /^[0-9]+$/) ? $7 : 0
-			printf "%s\t%s\t%s\t%s\n", endpoint, handshake, rx, tx
-			found = 1
-			exit
+		NR == 1 { next }
+		NF == 0 { next }
+		{
+			hs = ($5 ~ /^[0-9]+$/) ? $5 : 0
+			if (!found || hs > best_hs) {
+				best_hs = hs
+				endpoint = ($3 != "" && $3 != "(none)") ? $3 : "N/A"
+				handshake = hs
+				rx = ($6 ~ /^[0-9]+$/) ? $6 : 0
+				tx = ($7 ~ /^[0-9]+$/) ? $7 : 0
+				found = 1
+			}
 		}
 		END {
-			if (!found)
+			if (found)
+				printf "%s\t%s\t%s\t%s\n", endpoint, handshake, rx, tx
+			else
 				printf "N/A\t0\t0\t0\n"
 		}
 		'
