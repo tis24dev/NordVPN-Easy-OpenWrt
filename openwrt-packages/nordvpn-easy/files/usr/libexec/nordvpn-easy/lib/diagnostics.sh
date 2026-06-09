@@ -256,6 +256,9 @@ nordvpn_easy_diagnostics_resolve_wan_nameserver() {
 	' /tmp/resolv.conf.d/resolv.conf.auto 2>/dev/null
 }
 
+# Single source of truth for finding priority and severity. add_finding records
+# the computed values into each finding so the JSON builder (build_findings_json)
+# never re-derives them. Lower priority number wins as the primary finding.
 nordvpn_easy_diagnostics_finding_priority() {
 	case "$1" in
 		routing.blackhole_default_via_vpn) printf '%s\n' '10' ;;
@@ -274,7 +277,9 @@ nordvpn_easy_diagnostics_finding_priority() {
 		config.not_wireguard) printf '%s\n' '130' ;;
 		service.enabled_mismatch) printf '%s\n' '140' ;;
 		selection.drift) printf '%s\n' '150' ;;
+		selection.public_country_mismatch) printf '%s\n' '155' ;;
 		operational.api_cache_missing) printf '%s\n' '160' ;;
+		operational.public_verification_failed) printf '%s\n' '165' ;;
 		operational.last_error) printf '%s\n' '170' ;;
 		*) printf '%s\n' '900' ;;
 	esac
@@ -329,6 +334,7 @@ nordvpn_easy_diagnostics_add_finding() {
 	local message="$2"
 	local action="$3"
 	local priority='900'
+	local severity='warning'
 	local current_priority='900'
 
 	case "$DIAG_FINDINGS_CODES" in
@@ -341,6 +347,7 @@ nordvpn_easy_diagnostics_add_finding() {
 	esac
 
 	priority="$(nordvpn_easy_diagnostics_finding_priority "$code")"
+	severity="$(nordvpn_easy_diagnostics_finding_severity "$code")"
 	if [ "$DIAG_PRIMARY_FINDING_CODE" != 'none' ]; then
 		current_priority="$(nordvpn_easy_diagnostics_finding_priority "$DIAG_PRIMARY_FINDING_CODE")"
 	fi
@@ -350,29 +357,32 @@ nordvpn_easy_diagnostics_add_finding() {
 		DIAG_PRIMARY_FINDING_MESSAGE="$message"
 		DIAG_PRIMARY_FINDING_ACTION="$action"
 		DIAG_PRIMARY_FINDING_PRIORITY="$priority"
-		DIAG_PRIMARY_FINDING_SEVERITY="$(nordvpn_easy_diagnostics_finding_severity "$code")"
+		DIAG_PRIMARY_FINDING_SEVERITY="$severity"
 	fi
 
-	DIAG_FINDINGS_RECORDS="${DIAG_FINDINGS_RECORDS}${code}	${message}	${action}
+	DIAG_FINDINGS_RECORDS="${DIAG_FINDINGS_RECORDS}${code}	${message}	${action}	${priority}	${severity}
 "
 }
 
 nordvpn_easy_diagnostics_finalize_primary_finding() {
-	local code='' message='' action='' priority=''
+	local code='' message='' action='' priority='' severity=''
 	local best_priority='9999'
 
 	[ -n "$DIAG_FINDINGS_RECORDS" ] || return 0
 
-	while IFS="$(printf '\t')" read -r code message action; do
+	while IFS="$(printf '\t')" read -r code message action priority severity; do
 		[ -n "$code" ] || continue
-		priority="$(nordvpn_easy_diagnostics_finding_priority "$code")"
+		case "$priority" in
+			''|*[!0-9]*) priority='900' ;;
+		esac
+		[ -n "$severity" ] || severity='warning'
 		if [ "$priority" -lt "$best_priority" ]; then
 			best_priority="$priority"
 			DIAG_PRIMARY_FINDING_CODE="$code"
 			DIAG_PRIMARY_FINDING_MESSAGE="$message"
 			DIAG_PRIMARY_FINDING_ACTION="$action"
 			DIAG_PRIMARY_FINDING_PRIORITY="$priority"
-			DIAG_PRIMARY_FINDING_SEVERITY="$(nordvpn_easy_diagnostics_finding_severity "$code")"
+			DIAG_PRIMARY_FINDING_SEVERITY="$severity"
 		fi
 	done <<EOF
 $(printf '%s' "$DIAG_FINDINGS_RECORDS")
@@ -385,53 +395,20 @@ nordvpn_easy_diagnostics_build_findings_json() {
 		return 0
 	fi
 
+	# Priority and severity are computed once by the shell case (the single
+	# source of truth) and stored in fields 4 and 5 of each record; jq only
+	# extracts them here instead of re-deriving the mapping.
 	printf '%s' "$DIAG_FINDINGS_RECORDS" | jq -R -s '
 		split("\n")
 		| map(select(length > 0))
 		| map(split("\t"))
-		| map(select(length >= 3))
+		| map(select(length >= 5))
 		| map({
 			code: .[0],
 			message: .[1],
 			action: .[2],
-			priority: (
-				.[0] as $c |
-				if $c == "routing.blackhole_default_via_vpn" then 10
-				elif $c == "connectivity.wan_down" then 20
-				elif $c == "connectivity.dns_failure" then 30
-				elif $c == "operational.kill_switch_active" then 40
-				elif $c == "runtime.endpoint_unreachable" then 50
-				elif $c == "operational.apply_incomplete" then 55
-				elif $c == "runtime.link_down" then 60
-				elif $c == "runtime.no_peers" then 70
-				elif $c == "runtime.no_handshake" then 80
-				elif $c == "runtime.stuck_tunnel" then 90
-				elif $c == "config.interface_incomplete" then 100
-				elif $c == "config.peer_missing" then 110
-				elif $c == "config.peer_incomplete" then 120
-				elif $c == "config.not_wireguard" then 130
-				elif $c == "service.enabled_mismatch" then 140
-				elif $c == "selection.drift" then 150
-				elif $c == "operational.api_cache_missing" then 160
-				elif $c == "operational.last_error" then 170
-				else 900
-				end
-			),
-			severity: (
-				.[0] as $c |
-				if (
-					($c[0:8] == "routing.") or
-					($c[0:13] == "connectivity.") or
-					($c == "runtime.endpoint_unreachable") or
-					($c == "runtime.link_down") or
-					($c == "runtime.no_peers") or
-					($c == "runtime.no_handshake") or
-					($c == "runtime.stuck_tunnel") or
-					($c == "operational.kill_switch_active")
-				) then "critical"
-				else "warning"
-				end
-			)
+			priority: (.[3] | tonumber? // 900),
+			severity: (.[4] // "warning")
 		})
 		| sort_by(.priority)
 	'
