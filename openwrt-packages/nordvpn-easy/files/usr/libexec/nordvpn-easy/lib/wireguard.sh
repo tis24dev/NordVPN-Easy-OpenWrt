@@ -96,10 +96,23 @@ EOF
 	}
 	nordvpn_easy_harden_secret_config_perms network
 
-	"${NORDVPN_EASY_NETWORK_INIT:-/etc/init.d/network}" reload >/dev/null 2>&1 || {
-		log 'ERROR: NETWORK RELOAD FAILED DURING VPN TEARDOWN'
-		return 1
-	}
+	if ! "${NORDVPN_EASY_NETWORK_INIT:-/etc/init.d/network}" reload >/dev/null 2>&1; then
+		log 'WARNING: NETWORK RELOAD FAILED DURING VPN TEARDOWN; retrying then restarting network'
+		sleep "${INTERFACE_RESTART_DELAY:-2}"
+		"${NORDVPN_EASY_NETWORK_INIT:-/etc/init.d/network}" reload >/dev/null 2>&1 ||
+			"${NORDVPN_EASY_NETWORK_INIT:-/etc/init.d/network}" restart >/dev/null 2>&1 || true
+
+		# UCI no longer references the interface; make sure the kernel device is
+		# gone so a failed reload cannot leave a live wg device behind with its
+		# config stripped (a split runtime/config state).
+		if nordvpn_easy_vpn_link_is_present; then
+			ip link del "$VPN_IF" 2>/dev/null || true
+		fi
+		if nordvpn_easy_vpn_link_is_present; then
+			nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "VPN interface $VPN_IF is still present after teardown reload/restart fallback"
+			return 1
+		fi
+	fi
 
 	log "apply: VPN interface $VPN_IF removed from runtime and UCI"
 	nordvpn_easy_log_vpn_interface_state 'after-teardown'
