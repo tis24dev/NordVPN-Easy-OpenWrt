@@ -282,7 +282,7 @@ nordvpn_easy_lookup_public_country_by_ip() {
 		return 1
 	fi
 
-	PUBLIC_COUNTRY=$(printf '%s' "$country_raw" | tr '[:lower:]' '[:upper:]')
+	PUBLIC_COUNTRY=$(printf '%s' "$country_raw" | tr 'a-z' 'A-Z')
 	nordvpn_easy_public_ip_valid_country_code "$PUBLIC_COUNTRY" || {
 		nordvpn_easy_public_ip_log "ERROR: INVALID COUNTRY LOOKUP RESPONSE FOR PUBLIC IP $LOOKUP_IP (parsed='$PUBLIC_COUNTRY', raw='$curl_raw')"
 		return 1
@@ -337,7 +337,7 @@ nordvpn_easy_run_public_ip_check() {
 	LOG_PHASE='poll'
 	ACTION='public_ip'
 	ACTION_TRACE_ID="$(date +%s 2>/dev/null || printf '%s' '0').$$"
-	expected_country="$(printf '%s' "${NORDVPN_EASY_EXPECTED_PUBLIC_COUNTRY:-${VPN_COUNTRY:-}}" | tr '[:lower:]' '[:upper:]')"
+	expected_country="$(printf '%s' "${NORDVPN_EASY_EXPECTED_PUBLIC_COUNTRY:-${VPN_COUNTRY:-}}" | tr 'a-z' 'A-Z')"
 
 	nordvpn_easy_public_ip_log "public_ip request starting (mode=${PUBLIC_LOOKUP_LOG_MODE})"
 	command -v curl >/dev/null 2>&1 || {

@@ -635,7 +635,7 @@ nordvpn_easy_diagnostics_collect_config() {
 				DIAG_MISSING_REQUIRED="$(nordvpn_easy_diagnostics_csv_append "$DIAG_MISSING_REQUIRED" "$value")"
 			fi
 		done
-		DIAG_CURRENT_SERVER_COUNTRY="$(uci -q get "network.${DIAG_PEER_SECTION}.nordvpn_country_code" 2>/dev/null | tr '[:lower:]' '[:upper:]' || true)"
+		DIAG_CURRENT_SERVER_COUNTRY="$(uci -q get "network.${DIAG_PEER_SECTION}.nordvpn_country_code" 2>/dev/null | tr 'a-z' 'A-Z' || true)"
 		DIAG_CURRENT_STATION="$(uci -q get "network.${DIAG_PEER_SECTION}.nordvpn_station" 2>/dev/null || true)"
 		DIAG_ROUTE_ALLOWED_IPS="$(uci -q get "network.${DIAG_PEER_SECTION}.route_allowed_ips" 2>/dev/null || true)"
 		if [ "$DIAG_ROUTE_ALLOWED_IPS" = '1' ] &&
@@ -647,7 +647,7 @@ nordvpn_easy_diagnostics_collect_config() {
 	fi
 
 	DIAG_SELECTION_MODE="$(uci -q get 'nordvpn_easy.main.server_selection_mode' 2>/dev/null || printf '%s' 'auto')"
-	DIAG_SELECTED_COUNTRY="$(uci -q get 'nordvpn_easy.main.vpn_country' 2>/dev/null | tr '[:lower:]' '[:upper:]' || true)"
+	DIAG_SELECTED_COUNTRY="$(uci -q get 'nordvpn_easy.main.vpn_country' 2>/dev/null | tr 'a-z' 'A-Z' || true)"
 	DIAG_PREFERRED_STATION="$(uci -q get 'nordvpn_easy.main.preferred_server_station' 2>/dev/null || true)"
 	DIAG_SERVICE_ENABLED="$(uci -q get 'nordvpn_easy.main.enabled' 2>/dev/null || printf '%s' '0')"
 	case "$DIAG_SERVICE_ENABLED" in

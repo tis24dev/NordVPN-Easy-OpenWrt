@@ -10,7 +10,7 @@ LIB_DIR="${NORDVPN_EASY_LIB_DIR:-/usr/libexec/nordvpn-easy/lib}"
 . "${LIB_DIR}/public-ip.sh" || exit 1
 
 if [ -z "${NORDVPN_EASY_EXPECTED_PUBLIC_COUNTRY:-}" ] && command -v uci >/dev/null 2>&1; then
-	NORDVPN_EASY_EXPECTED_PUBLIC_COUNTRY="$(uci -q get nordvpn_easy.main.vpn_country 2>/dev/null | tr '[:lower:]' '[:upper:]')"
+	NORDVPN_EASY_EXPECTED_PUBLIC_COUNTRY="$(uci -q get nordvpn_easy.main.vpn_country 2>/dev/null | tr 'a-z' 'A-Z')"
 	export NORDVPN_EASY_EXPECTED_PUBLIC_COUNTRY
 fi
 

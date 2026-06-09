@@ -608,7 +608,7 @@ nordvpn_easy_emit_status_json() {
 	esac
 
 	if nordvpn_easy_connect_apply_result_read "${NORDVPN_EASY_CONNECT_APPLY_RESULT:-/tmp/run/nordvpn-easy/connect-apply-result}"; then
-		connect_apply_country="$(printf '%s' "${CONNECT_APPLY_COUNTRY:-}" | tr '[:lower:]' '[:upper:]')"
+		connect_apply_country="$(printf '%s' "${CONNECT_APPLY_COUNTRY:-}" | tr 'a-z' 'A-Z')"
 		case "${CONNECT_APPLY_STARTED_AT:-}" in
 			''|*[!0-9]*)
 				connect_apply_started_at='0'

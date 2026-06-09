@@ -626,7 +626,7 @@ refresh_public_country_cache_for_current_ip () {
 verify_public_country_selection () {
   local expected_country=''
 
-  expected_country="$(printf '%s' "${RESOLVED_COUNTRY_CODE:-${VPN_COUNTRY:-}}" | tr '[:lower:]' '[:upper:]')"
+  expected_country="$(printf '%s' "${RESOLVED_COUNTRY_CODE:-${VPN_COUNTRY:-}}" | tr 'a-z' 'A-Z')"
   nordvpn_easy_public_verification_write 'pending' "$expected_country" '' 'public IP check running' >/dev/null 2>&1 || true
 
   update_public_ip_cache || {
@@ -685,7 +685,7 @@ resolve_country_filter () {
     if valid_country_code "$COUNTRY_QUERY"; then
       RESOLVED_COUNTRY_ID=''
       RESOLVED_COUNTRY_NAME='unknown in NordVPN country cache'
-      RESOLVED_COUNTRY_CODE=$(printf '%s' "$COUNTRY_QUERY" | tr '[:lower:]' '[:upper:]')
+      RESOLVED_COUNTRY_CODE=$(printf '%s' "$COUNTRY_QUERY" | tr 'a-z' 'A-Z')
       RESOLVED_COUNTRY_QUERY="$COUNTRY_QUERY"
       log "WARNING: COUNTRY '$RESOLVED_COUNTRY_CODE' is not in the NordVPN country cache; recommendations will be filtered by country code instead of API country id"
       return 0

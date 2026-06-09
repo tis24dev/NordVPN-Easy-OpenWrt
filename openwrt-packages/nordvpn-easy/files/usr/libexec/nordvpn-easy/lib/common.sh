@@ -380,7 +380,7 @@ nordvpn_easy_connect_apply_result_finish() {
 state=$state
 rc=$rc
 finished_at=$finished_at
-country=$(printf '%s' "$country" | tr '[:lower:]' '[:upper:]')
+country=$(printf '%s' "$country" | tr 'a-z' 'A-Z')
 started_at=${previous_started_at:-$finished_at}
 EOF
 

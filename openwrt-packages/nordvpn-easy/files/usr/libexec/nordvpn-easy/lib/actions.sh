@@ -97,7 +97,7 @@ nordvpn_easy_find_preferred_server_in_catalog() {
 }
 
 nordvpn_easy_normalize_country_code() {
-	printf '%s' "${1:-}" | tr '[:lower:]' '[:upper:]'
+	printf '%s' "${1:-}" | tr 'a-z' 'A-Z'
 }
 
 nordvpn_easy_apply_preferred_server_from_catalog() {
@@ -420,7 +420,7 @@ nordvpn_easy_stop_vpn_for_connect_apply() {
 nordvpn_easy_start_public_verification_background() {
 	local expected_country="${RESOLVED_COUNTRY_CODE:-${VPN_COUNTRY:-}}"
 
-	expected_country="$(printf '%s' "$expected_country" | tr '[:lower:]' '[:upper:]')"
+	expected_country="$(printf '%s' "$expected_country" | tr 'a-z' 'A-Z')"
 	if command -v nordvpn_easy_public_verification_write >/dev/null 2>&1; then
 		nordvpn_easy_public_verification_write 'pending' "$expected_country" '' 'public IP check queued' >/dev/null 2>&1 || true
 	fi
