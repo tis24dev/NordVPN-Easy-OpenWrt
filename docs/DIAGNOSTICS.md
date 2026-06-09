@@ -92,6 +92,8 @@ cat /tmp/nordvpn-easy.lock/pid
 
 ## 3. LuCI timing log (development / lab)
 
+> **Status:** the earlier automatic instrumentation (`agentDebugLog` / `#region agent log`, which also posted to an external `http://localhost:7842` debug endpoint) has been removed from shipped code. The timing log is being reintroduced as a clean, opt-in, same-origin-only client; the sections below describe the lab tooling and are updated for the new opt-in once it lands.
+
 The timing log records **browser-side** milestones during **Save & Apply**. It complements syslog: syslog shows backend work; the timing log shows when LuCI started/finished each RPC and how the **Operation Status** label changed.
 
 ### 3.1 Components

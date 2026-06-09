@@ -23,39 +23,6 @@ const ENABLED_RUNTIME_RECOVERY_COOLDOWN_MS = 15000;
 const POST_APPLY_RECOVERY_GRACE_MS = 120000;
 let callUciCommit = null;
 let nextApplyAttemptId = 0;
-const AGENT_DEBUG_SESSION_ID = 'cf39b0';
-
-function agentDebugLog(location, message, data, hypothesisId) {
-	const payload = {
-		sessionId: AGENT_DEBUG_SESSION_ID,
-		runId: 'save-apply-flush',
-		hypothesisId: hypothesisId || '',
-		location: location,
-		message: message,
-		data: data || {},
-		timestamp: Date.now()
-	};
-
-	// #region agent log
-	if (typeof fetch === 'function') {
-		fetch('http://localhost:7842/ingest/c0328b70-db95-4d07-846a-9cbc9e708094', {
-			method: 'POST',
-			headers: {
-				'Content-Type': 'application/json',
-				'X-Debug-Session-Id': AGENT_DEBUG_SESSION_ID
-			},
-			body: JSON.stringify(payload)
-		}).catch(function() {});
-	}
-
-	if (typeof request !== 'undefined' && typeof request.post === 'function') {
-		request.post('/cgi-bin/nordvpn-easy-timing-log', payload, {
-			timeout: 5000,
-			credentials: true
-		}).catch(function() {});
-	}
-	// #endregion
-}
 
 function newApplyAttemptId() {
 	nextApplyAttemptId++;
@@ -570,14 +537,6 @@ function runApplyCycleConfigurationPhase(viewState, state, ev, submitted, skipFo
 		syncPreferredServerFieldsToUci(submitted, state.serverCatalogIndex || {});
 		syncSubmittedRuntimeConfigToUci(submitted);
 
-		// #region agent log
-		agentDebugLog('manager-actions.js:runApplyCycleConfigurationPhase', 'sync after handleSave', {
-			submittedCountry: managerData.normalizeCountryCode((submitted && submitted.country) || ''),
-			uciCountry: managerData.normalizeCountryCode(uci.get('nordvpn_easy', 'main', 'vpn_country') || ''),
-			formCountry: managerUI.getSelectedCountry()
-		}, 'H4');
-		// #endregion
-
 		return flushLuCiPendingChanges();
 	}).then(function() {
 		if (!applyAttemptIsCurrent(state, applyAttemptId))
@@ -586,13 +545,6 @@ function runApplyCycleConfigurationPhase(viewState, state, ev, submitted, skipFo
 		return loadSavedRuntimeConfig().then(function(savedConfig) {
 			const expectedCountry = managerData.normalizeCountryCode((submitted && submitted.country) || '');
 			const persistedCountry = managerData.normalizeCountryCode((savedConfig && savedConfig.country) || '');
-
-			// #region agent log
-			agentDebugLog('manager-actions.js:runApplyCycleConfigurationPhase', 'loaded saved runtime config', {
-				expectedCountry: expectedCountry,
-				persistedCountry: persistedCountry
-			}, 'H5');
-			// #endregion
 
 			if (expectedCountry && persistedCountry !== expectedCountry) {
 				return Promise.reject(new Error(
@@ -769,17 +721,6 @@ function runApplyCycleStopPhase(viewState, state, submitted, applyAttemptId) {
 	state.applyPhase = 'stop_vpn';
 
 	const selectionChanged = runtimeSelectionChanged(state, viewState, submitted);
-
-	// #region agent log
-	agentDebugLog('manager-actions.js:runApplyCycleStopPhase', 'stop phase branch', {
-		selectionChanged: selectionChanged,
-		baselineCountry: managerData.normalizeCountryCode(
-			((state && state.applySelectionBaseline) || {}).country || ''
-		),
-		submittedCountry: managerData.normalizeCountryCode((submitted && submitted.country) || ''),
-		uciCountry: managerData.normalizeCountryCode(uci.get('nordvpn_easy', 'main', 'vpn_country') || '')
-	}, 'H6');
-	// #endregion
 
 	if (!selectionChanged)
 		return runApplyCycleStopWithConnectApplyGuard(state, applyAttemptId);
@@ -971,13 +912,6 @@ function applyLuCiPendingChangesWithSession() {
 }
 
 function commitLuCiPendingChangesFallback() {
-	// #region agent log
-	agentDebugLog('manager-actions.js:commitLuCiPendingChangesFallback', 'uci.commit fallback begin', {
-		hasRpc: typeof rpc !== 'undefined',
-		hasUciSave: !!(typeof uci !== 'undefined' && typeof uci.save === 'function')
-	}, 'H1');
-	// #endregion
-
 	if (!callUciCommit && typeof rpc !== 'undefined') {
 		callUciCommit = rpc.declare({
 			object: 'uci',
@@ -991,62 +925,24 @@ function commitLuCiPendingChangesFallback() {
 		return Promise.reject(new Error(_('Could not commit UCI changes: LuCI RPC is unavailable.')));
 
 	return callUciCommit('nordvpn_easy').then(function() {
-		// #region agent log
-		agentDebugLog('manager-actions.js:commitLuCiPendingChangesFallback', 'uci.commit fallback ok', {}, 'H1');
-		// #endregion
 		return refreshLuCiChangeTracker();
 	}).catch(function(err) {
 		const message = (err && err.message) ? err.message : String(err);
-
-		// #region agent log
-		agentDebugLog('manager-actions.js:commitLuCiPendingChangesFallback', 'uci.commit fallback failed', {
-			error: message
-		}, 'H1');
-		// #endregion
 
 		return Promise.reject(new Error(_('Could not commit UCI changes: ') + message));
 	});
 }
 
 function flushLuCiPendingChanges() {
-	const pendingPromise = (typeof uci !== 'undefined' && typeof uci.changes === 'function')
-		? uci.changes().catch(function() { return {}; })
-		: Promise.resolve({});
+	if (typeof uci !== 'undefined' && typeof uci.save === 'function') {
+		return uci.save().then(function() {
+			return commitLuCiPendingChangesFallback();
+		}).catch(function() {
+			return commitLuCiPendingChangesFallback();
+		});
+	}
 
-	return pendingPromise.then(function(pendingChanges) {
-		const pendingCount = countLuCiChanges(pendingChanges);
-
-		// #region agent log
-		agentDebugLog('manager-actions.js:flushLuCiPendingChanges', 'flush begin', {
-			pendingCount: pendingCount,
-			pendingConfigs: Object.keys(pendingChanges || {}),
-			hasUciSave: !!(typeof uci !== 'undefined' && typeof uci.save === 'function')
-		}, 'H2');
-		// #endregion
-
-		if (typeof uci !== 'undefined' && typeof uci.save === 'function') {
-			return uci.save().then(function() {
-				// #region agent log
-				agentDebugLog('manager-actions.js:flushLuCiPendingChanges', 'uci.save ok', {
-					pendingCount: pendingCount
-				}, 'H2');
-				// #endregion
-				return commitLuCiPendingChangesFallback();
-			}).catch(function(err) {
-				const message = (err && err.message) ? err.message : String(err);
-
-				// #region agent log
-				agentDebugLog('manager-actions.js:flushLuCiPendingChanges', 'uci.save failed; trying commit fallback', {
-					error: message
-				}, 'H3');
-				// #endregion
-
-				return commitLuCiPendingChangesFallback();
-			});
-		}
-
-		return commitLuCiPendingChangesFallback();
-	});
+	return commitLuCiPendingChangesFallback();
 }
 
 function notifyDebugBlock(title, lines) {

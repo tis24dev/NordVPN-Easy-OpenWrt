@@ -62,6 +62,13 @@ for file in "${JS_FILES[@]}"; do
 	node --check "$file"
 done
 
+printf '%s\n' 'Guarding against debug telemetry beacons in shipped LuCI JS'
+RESOURCES_DIR="$ROOT_DIR/openwrt-packages/luci-app-nordvpn-easy/htdocs/luci-static/resources"
+if grep -REn 'localhost:7842|/ingest/|fetch\(.{0,3}http|agentDebugLog|AGENT_DEBUG_SESSION_ID' "$RESOURCES_DIR" --include='*.js'; then
+	printf '%s\n' 'ERROR: debug telemetry beacon pattern found in shipped LuCI JS (matches above). The timing log must post same-origin only via request.post.' >&2
+	exit 1
+fi
+
 printf '%s\n' 'Checking shell syntax'
 for file in "${SH_FILES[@]}"; do
 	sh -n "$file"
