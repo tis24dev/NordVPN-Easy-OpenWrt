@@ -66,12 +66,12 @@ backend_version="$(extract_make_var 'NORDVPN_EASY_DEFAULT_VERSION' "$BACKEND_MAK
 luci_version="$(extract_make_var 'NORDVPN_EASY_DEFAULT_VERSION' "$LUCI_MAKEFILE")"
 backend_release="$(extract_make_var 'NORDVPN_EASY_DEFAULT_RELEASE' "$BACKEND_MAKEFILE")"
 luci_release="$(extract_make_var 'NORDVPN_EASY_DEFAULT_RELEASE' "$LUCI_MAKEFILE")"
-luci_init_source="\$(CURDIR)/../nordvpn-easy/files/etc/init.d/nordvpn-easy"
-luci_core_source="\$(CURDIR)/../nordvpn-easy/files/usr/libexec/nordvpn-easy/core.sh"
-luci_migrator_source="\$(CURDIR)/../nordvpn-easy/files/usr/libexec/nordvpn-easy/migrate-config.sh"
-luci_lib_source="\$(CURDIR)/../nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/."
-luci_rpcd_source="\$(CURDIR)/../nordvpn-easy/files/usr/libexec/rpcd/nordvpn.easy"
-luci_template_source="\$(CURDIR)/../nordvpn-easy/files/usr/share/nordvpn-easy/defaults/nordvpn_easy"
+release_preplace_publicip="\${BACKEND_FILES}/usr/libexec/nordvpn-easy/public-ip-poll.sh"
+release_preplace_ucidefaults="\${BACKEND_FILES}/etc/uci-defaults/99-nordvpn-easy-rpcd-timeout"
+release_apk_publicip="\${VERIFY_DIR}/usr/libexec/nordvpn-easy/public-ip-poll.sh"
+release_ipk_publicip="\${VERIFY_DIR}/data/usr/libexec/nordvpn-easy/public-ip-poll.sh"
+release_apk_ucidefaults="\${VERIFY_DIR}/etc/uci-defaults/99-nordvpn-easy-rpcd-timeout"
+release_ipk_ucidefaults="\${VERIFY_DIR}/data/etc/uci-defaults/99-nordvpn-easy-rpcd-timeout"
 backend_rpcd_install="\$(INSTALL_BIN) ./files/usr/libexec/rpcd/nordvpn.easy \$(1)/usr/libexec/rpcd/nordvpn.easy"
 backend_migrator_install="\$(INSTALL_BIN) ./files/usr/libexec/nordvpn-easy/migrate-config.sh \$(1)/usr/libexec/nordvpn-easy/migrate-config.sh"
 backend_template_install="\$(INSTALL_CONF) ./files/usr/share/nordvpn-easy/defaults/nordvpn_easy \$(1)/usr/share/nordvpn-easy/defaults/nordvpn_easy"
@@ -146,41 +146,10 @@ assert_eq "$backend_release" "$luci_release" 'backend and LuCI packages share de
 	exit 1
 }
 
-grep -F "$luci_init_source" "$LUCI_MAKEFILE" >/dev/null 2>&1 || {
-	printf '%s\n' 'FAIL: LuCI package must install init script from backend package source' >&2
-	exit 1
-}
-
-grep -F "$luci_core_source" "$LUCI_MAKEFILE" >/dev/null 2>&1 || {
-	printf '%s\n' 'FAIL: LuCI package must install core script from backend package source' >&2
-	exit 1
-}
-
-grep -F "$luci_migrator_source" "$LUCI_MAKEFILE" >/dev/null 2>&1 || {
-	printf '%s\n' 'FAIL: LuCI package must install config migrator from backend package source' >&2
-	exit 1
-}
-
-grep -F "$luci_lib_source" "$LUCI_MAKEFILE" >/dev/null 2>&1 || {
-	printf '%s\n' 'FAIL: LuCI package must copy backend library directory from backend package source' >&2
-	exit 1
-}
-
-dollar_pattern='[$]'
-grep -E "${dollar_pattern}${dollar_pattern}+lib" "$LUCI_MAKEFILE" >/dev/null 2>&1 && {
-	printf '%s\n' 'FAIL: LuCI package must not use shell-variable library install loops; OpenWrt expands them differently across build phases' >&2
-	exit 1
-}
-
-grep -F "$luci_rpcd_source" "$LUCI_MAKEFILE" >/dev/null 2>&1 || {
-	printf '%s\n' 'FAIL: LuCI package must install rpcd plugin from backend package source' >&2
-	exit 1
-}
-
-grep -F "$luci_template_source" "$LUCI_MAKEFILE" >/dev/null 2>&1 || {
-	printf '%s\n' 'FAIL: LuCI package must install config template from backend package source' >&2
-	exit 1
-}
+# Backend files are no longer pre-placed via a (dead) Build/Prepare define in
+# the LuCI Makefile; the release workflow is the single source of truth for the
+# manual-upload bundle and is verified below, so we no longer assert backend
+# source paths inside the LuCI Makefile.
 
 grep -F "$backend_rpcd_install" "$BACKEND_MAKEFILE" >/dev/null 2>&1 || {
 	printf '%s\n' 'FAIL: backend package must install rpcd plugin with executable permissions' >&2
@@ -217,6 +186,16 @@ grep -F "$release_preplace_template" "$RELEASE_WORKFLOW" >/dev/null 2>&1 || {
 	exit 1
 }
 
+grep -F "$release_preplace_publicip" "$RELEASE_WORKFLOW" >/dev/null 2>&1 || {
+	printf '%s\n' 'FAIL: OPKG compatibility pre-place must copy the public IP poll script' >&2
+	exit 1
+}
+
+grep -F "$release_preplace_ucidefaults" "$RELEASE_WORKFLOW" >/dev/null 2>&1 || {
+	printf '%s\n' 'FAIL: OPKG compatibility pre-place must copy the rpcd timeout uci-default' >&2
+	exit 1
+}
+
 for release_payload in \
 	"$release_apk_rpcd" \
 	"$release_ipk_rpcd" \
@@ -228,6 +207,10 @@ for release_payload in \
 	"$release_ipk_config_context" \
 	"$release_apk_runtime" \
 	"$release_ipk_runtime" \
+	"$release_apk_publicip" \
+	"$release_ipk_publicip" \
+	"$release_apk_ucidefaults" \
+	"$release_ipk_ucidefaults" \
 	"$release_apk_postrm" \
 	"$release_ipk_postrm"
 do

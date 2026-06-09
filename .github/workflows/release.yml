@@ -324,7 +324,9 @@ jobs:
             "${VERIFY_DIR}/usr/libexec/nordvpn-easy/migrate-config.sh" \
             "${VERIFY_DIR}/usr/libexec/nordvpn-easy/lib/config-context.sh" \
             "${VERIFY_DIR}/usr/libexec/nordvpn-easy/lib/runtime.sh" \
+            "${VERIFY_DIR}/usr/libexec/nordvpn-easy/public-ip-poll.sh" \
             "${VERIFY_DIR}/usr/libexec/rpcd/nordvpn.easy" \
+            "${VERIFY_DIR}/etc/uci-defaults/99-nordvpn-easy-rpcd-timeout" \
             "${VERIFY_DIR}/usr/share/nordvpn-easy/defaults/nordvpn_easy" \
             "${VERIFY_DIR}/www/luci-static/resources/view/nordvpn-easy/config.js"
           do
@@ -557,6 +559,8 @@ jobs:
             "${LUCI_ROOT}/usr/libexec/nordvpn-easy/core.sh"
           install -m0755 "${BACKEND_FILES}/usr/libexec/nordvpn-easy/migrate-config.sh" \
             "${LUCI_ROOT}/usr/libexec/nordvpn-easy/migrate-config.sh"
+          install -m0755 "${BACKEND_FILES}/usr/libexec/nordvpn-easy/public-ip-poll.sh" \
+            "${LUCI_ROOT}/usr/libexec/nordvpn-easy/public-ip-poll.sh"
           install -d -m0755 "${LUCI_ROOT}/usr/libexec/nordvpn-easy/lib"
           cp -R "${BACKEND_FILES}/usr/libexec/nordvpn-easy/lib/." \
             "${LUCI_ROOT}/usr/libexec/nordvpn-easy/lib/"
@@ -564,6 +568,10 @@ jobs:
           install -d -m0755 "${LUCI_ROOT}/usr/libexec/rpcd"
           install -m0755 "${BACKEND_FILES}/usr/libexec/rpcd/nordvpn.easy" \
             "${LUCI_ROOT}/usr/libexec/rpcd/nordvpn.easy"
+
+          install -d -m0755 "${LUCI_ROOT}/etc/uci-defaults"
+          install -m0755 "${BACKEND_FILES}/etc/uci-defaults/99-nordvpn-easy-rpcd-timeout" \
+            "${LUCI_ROOT}/etc/uci-defaults/99-nordvpn-easy-rpcd-timeout"
 
           install -d -m0755 "${LUCI_ROOT}/usr/share/nordvpn-easy/defaults"
           install -m0644 "${BACKEND_FILES}/usr/share/nordvpn-easy/defaults/nordvpn_easy" \
@@ -696,7 +704,9 @@ jobs:
             "${VERIFY_DIR}/data/usr/libexec/nordvpn-easy/migrate-config.sh" \
             "${VERIFY_DIR}/data/usr/libexec/nordvpn-easy/lib/config-context.sh" \
             "${VERIFY_DIR}/data/usr/libexec/nordvpn-easy/lib/runtime.sh" \
+            "${VERIFY_DIR}/data/usr/libexec/nordvpn-easy/public-ip-poll.sh" \
             "${VERIFY_DIR}/data/usr/libexec/rpcd/nordvpn.easy" \
+            "${VERIFY_DIR}/data/etc/uci-defaults/99-nordvpn-easy-rpcd-timeout" \
             "${VERIFY_DIR}/data/usr/share/nordvpn-easy/defaults/nordvpn_easy" \
             "${VERIFY_DIR}/data/www/luci-static/resources/view/nordvpn-easy/config.js"
           do

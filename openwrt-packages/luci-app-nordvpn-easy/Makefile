@@ -106,20 +106,10 @@ fi
 exit 0
 endef
 
-define Build/Prepare/$(PKG_NAME)
-	$(INSTALL_DIR) $(PKG_BUILD_DIR)/root/etc/init.d
-	$(INSTALL_BIN) $(CURDIR)/../nordvpn-easy/files/etc/init.d/nordvpn-easy $(PKG_BUILD_DIR)/root/etc/init.d/nordvpn-easy
-	$(INSTALL_DIR) $(PKG_BUILD_DIR)/root/usr/libexec/nordvpn-easy
-	$(INSTALL_BIN) $(CURDIR)/../nordvpn-easy/files/usr/libexec/nordvpn-easy/core.sh $(PKG_BUILD_DIR)/root/usr/libexec/nordvpn-easy/core.sh
-	$(INSTALL_BIN) $(CURDIR)/../nordvpn-easy/files/usr/libexec/nordvpn-easy/migrate-config.sh $(PKG_BUILD_DIR)/root/usr/libexec/nordvpn-easy/migrate-config.sh
-	$(INSTALL_DIR) $(PKG_BUILD_DIR)/root/usr/libexec/nordvpn-easy/lib
-	$(CP) $(CURDIR)/../nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/. $(PKG_BUILD_DIR)/root/usr/libexec/nordvpn-easy/lib/
-	$(INSTALL_DIR) $(PKG_BUILD_DIR)/root/usr/libexec/rpcd
-	$(INSTALL_BIN) $(CURDIR)/../nordvpn-easy/files/usr/libexec/rpcd/nordvpn.easy $(PKG_BUILD_DIR)/root/usr/libexec/rpcd/nordvpn.easy
-	$(INSTALL_DIR) $(PKG_BUILD_DIR)/root/usr/share/nordvpn-easy/defaults
-	$(INSTALL_CONF) $(CURDIR)/../nordvpn-easy/files/usr/share/nordvpn-easy/defaults/nordvpn_easy $(PKG_BUILD_DIR)/root/usr/share/nordvpn-easy/defaults/nordvpn_easy
-endef
-
+# Backend files are pre-placed into the luci-app root/ tree by the release
+# workflow (.github/workflows/release.yml). luci.mk does not invoke a
+# per-package Build/Prepare/$(PKG_NAME), so no such define is kept here: it was
+# dead and had drifted from the workflow's authoritative file list.
 include $(TOPDIR)/feeds/luci/luci.mk
 
 # call BuildPackage - OpenWrt buildroot signature
