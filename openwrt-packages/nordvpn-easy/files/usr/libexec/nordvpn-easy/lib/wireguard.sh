@@ -108,7 +108,10 @@ EOF
 nordvpn_easy_default_route_uses_vpn() {
 	local vpn_if="${1:-$VPN_IF}"
 
-	ip -4 route show default 2>/dev/null | grep -q "dev ${vpn_if}[[:space:]]"
+	# Check both families: a broken tunnel can hold the IPv6 default route too,
+	# which an IPv4-only check would miss and leave auto-recovery blind.
+	ip -4 route show default 2>/dev/null | grep -q "dev ${vpn_if}[[:space:]]" && return 0
+	ip -6 route show default 2>/dev/null | grep -q "dev ${vpn_if}[[:space:]]"
 }
 
 nordvpn_easy_wg_handshake_epoch() {
