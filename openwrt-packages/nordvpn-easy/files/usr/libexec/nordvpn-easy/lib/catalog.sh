@@ -70,15 +70,21 @@ nordvpn_easy_emit_server_catalog_json() {
 	local ts_file="$2"
 	local cache_ttl="${3:-86400}"
 	local cached_at=''
+	local generated_at=''
 
 	cached_at="$(cat "$ts_file" 2>/dev/null || true)"
+	# Router "now" so the UI can compute cache age server-relative instead of
+	# against the browser clock (RTC-less routers skew badly otherwise).
+	generated_at="$(date +%s 2>/dev/null || true)"
 
 	jq -ce \
 		--arg cached_at "$cached_at" \
-		--arg cache_ttl "$cache_ttl" '
+		--arg cache_ttl "$cache_ttl" \
+		--arg generated_at "$generated_at" '
 			. + {
 				cached_at: ($cached_at | tonumber? // null),
-				cache_ttl: ($cache_ttl | tonumber? // 86400)
+				cache_ttl: ($cache_ttl | tonumber? // 86400),
+				generated_at: ($generated_at | tonumber? // null)
 			}
 		' "$catalog_file"
 }

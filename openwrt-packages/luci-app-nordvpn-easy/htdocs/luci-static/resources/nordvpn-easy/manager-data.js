@@ -37,6 +37,7 @@ function emptyServerCatalog() {
 		country_name: '',
 		cached_at: null,
 		cache_ttl: null,
+		generated_at: null,
 		servers: []
 	};
 }
@@ -130,6 +131,7 @@ function parseServerCatalog(raw) {
 		country_name: String(catalog.country_name || ''),
 		cached_at: (catalog.cached_at != null && catalog.cached_at !== '') ? Number(catalog.cached_at) : null,
 		cache_ttl: (catalog.cache_ttl != null && catalog.cache_ttl !== '') ? Number(catalog.cache_ttl) : null,
+		generated_at: (catalog.generated_at != null && catalog.generated_at !== '') ? Number(catalog.generated_at) : null,
 		servers: Array.isArray(catalog.servers) ? catalog.servers.filter(function(server) {
 			return server && server.hostname && server.station && server.public_key;
 		}).map(function(server) {

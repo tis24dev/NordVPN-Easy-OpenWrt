@@ -333,7 +333,7 @@ function updateServerCatalogStatus(state) {
 		);
 
 		if (state.currentServerCatalog.cached_at)
-			freshness = managerFormat.formatRelativeTimestamp(state.currentServerCatalog.cached_at);
+			freshness = managerFormat.formatRelativeTimestamp(state.currentServerCatalog.cached_at, state.currentServerCatalog.generated_at);
 
 		if (freshness)
 			text += _(' (refreshed %s)').format(freshness);
