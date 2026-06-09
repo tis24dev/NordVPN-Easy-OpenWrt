@@ -668,7 +668,9 @@ function runtimeNeedsEnabledRecovery(status, state) {
 	if (runtimeOperationIsBusy(state, runtimeStatus))
 		return false;
 
-	if (runtimeStatus.runtime_configured === true || runtimeStatus.runtime_configured === 'true')
+	// runtime_configured is normalized to a boolean in parseLocalStatus, so a
+	// single-type check suffices (no dual string/boolean check needed).
+	if (runtimeStatus.runtime_configured === true)
 		return false;
 
 	if (runtimeStatus.vpn_status === 'active' || runtimeStatus.connected)
