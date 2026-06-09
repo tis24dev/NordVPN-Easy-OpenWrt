@@ -1790,6 +1790,9 @@ async function testHandleSaveApplyConvergesViaStartConnectAndStatusPolling() {
 	assert.ok(harness.notifications.some(function(entry) {
 		return entry.type === 'info' && /applied your configuration and connected/.test(entry.message);
 	}), 'status convergence reports the unified apply success message');
+	assert.equal(harness.notifications.filter(function(entry) {
+		return entry.type === 'info' && /applied your configuration and connected/.test(entry.message);
+	}).length, 1, 'status convergence reports the apply success exactly once (idempotent finish)');
 	assert.ok(harness.serviceCalls.filter(function(action) {
 		return action === 'status_json';
 	}).length >= 2, 'status convergence polls status after start_connect dispatch');

@@ -1842,6 +1842,15 @@ function finishApplyCycle(state, options) {
 	if (!applyAttemptIsCurrent(state, applyAttemptId))
 		return Promise.resolve();
 
+	// Idempotency: the convergence poll, the background status poll, and the
+	// timeout watchdog can each reach this for the same attempt. Complete the
+	// cycle (state reset + forced refresh) at most once per attempt so a
+	// converging apply never triggers a second forced refresh.
+	if (applyAttemptId && state.applyCycleFinishedFor === applyAttemptId)
+		return Promise.resolve();
+	if (applyAttemptId)
+		state.applyCycleFinishedFor = applyAttemptId;
+
 	state.pendingOperationLabel = '';
 	state.applyPhase = '';
 	state.saveApplyInProgress = false;
