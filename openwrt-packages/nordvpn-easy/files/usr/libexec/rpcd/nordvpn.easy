@@ -118,6 +118,15 @@ rpc_status() {
 		return 0
 	fi
 
+	# Even on a read-only context-load failure, emit the canonical status
+	# document: it still sources the WireGuard runtime snapshot and the
+	# connect-apply / public-verification caches the LuCI poller depends on, so
+	# those blocks are not silently dropped. The hand-rolled JSON below is the
+	# last resort only if the canonical emitter itself fails.
+	if nordvpn_easy_emit_status_json 2>/dev/null; then
+		return 0
+	fi
+
 	printf '{"updated_at":%s,"state":"failed","desired_enabled":false,"enabled":false,"runtime_disabled":true,"interface_disabled":true,"runtime_configured":false,"server_selection_mode":"auto","kill_switch_enabled":false,"selected_country":"","interface":"","vpn_status":"error","operation_status":"idle","operation_lock_state":"none","operation_lock_pid":"","operation_lock_action":"","operation_lock_age_seconds":0,"connected":false,"endpoint":"N/A","endpoint_port":"51820","wireguard_persistent_keepalive":15,"wireguard_mtu":"","firewall_mtu_fix":true,"latest_handshake":"Never","latest_handshake_epoch":0,"handshake_age_seconds":0,"transfer_rx":"0 B","transfer_rx_bytes":0,"transfer_tx":"0 B","transfer_tx_bytes":0,"public_ip_cached":"","public_ip_detected_at":0,"public_ip_detected_at_iso":"","public_ip_source":"","public_country_cached":"","last_error":"failed to load runtime context from UCI","current_server_hostname":"","current_server_station":"","current_server_city":"","current_server_country":"","current_server_load":"","preferred_server_hostname":"","preferred_server_station":""}\n' \
 		"$(date +%s 2>/dev/null || printf '%s' '0')"
 }
