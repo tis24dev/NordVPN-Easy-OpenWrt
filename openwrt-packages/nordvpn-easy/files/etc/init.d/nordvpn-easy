@@ -276,10 +276,10 @@ write_desired_cron_hook_to() {
 	local config_ready="${2:-0}"
 
 	if [ "$config_ready" != '1' ]; then
-		load_service_config
+		load_service_config || return 1
 	fi
 
-	if [ "$cfg_enabled" -eq 1 ] && [ -n "$cfg_check_cron_schedule" ]; then
+	if [ "${cfg_enabled:-0}" -eq 1 ] && [ -n "$cfg_check_cron_schedule" ]; then
 		if ! validate_cron_schedule "$cfg_check_cron_schedule"; then
 			return 1
 		fi
@@ -422,7 +422,7 @@ install_cron_hook() {
 	local effective_cron_schedule=''
 
 	if [ "$config_ready" != '1' ]; then
-		load_service_config
+		load_service_config || return 1
 	fi
 	mkdir -p /etc/cron.d
 
@@ -472,11 +472,11 @@ install_hotplug_hook() {
 	local tmp_hotplug=''
 
 	if [ "$config_ready" != '1' ]; then
-		load_service_config
+		load_service_config || return 1
 	fi
 	mkdir -p /etc/hotplug.d/iface
 
-	if [ "$cfg_enabled" -ne 1 ] || [ "$cfg_enable_hotplug" -ne 1 ]; then
+	if [ "${cfg_enabled:-0}" -ne 1 ] || [ "${cfg_enable_hotplug:-0}" -ne 1 ]; then
 		if [ -f "$HOTPLUG_PATH" ]; then
 			rm -f "$HOTPLUG_PATH"
 			log_service_info "removed hotplug hook from $HOTPLUG_PATH"
