@@ -283,11 +283,11 @@ nordvpn_easy_apply_next_manual_server_from_catalog() {
 
 		log "Selected manual VPN server $host_name ($server_station) for rotation"
 		nordvpn_easy_set_vpn_server_in_uci "$host_name" "$server_station" "$public_key" "$country_code" "$city_name" "$server_load" || return 1
-		nordvpn_easy_set_server_preference_in_uci "$host_name" "$server_station"
-		uci commit nordvpn_easy || {
-			log 'WARNING: COULD NOT COMMIT MANUAL SERVER PREFERENCE AFTER ROTATION'
-		}
-		nordvpn_easy_harden_secret_config_perms nordvpn_easy
+		# Defer persisting the rotated server as the saved preference until
+		# connectivity is verified (see provision_vpn): a rotation onto a dead
+		# server must not overwrite the user's manual choice with a known-bad one.
+		NORDVPN_EASY_PENDING_PREFERENCE_HOSTNAME="$host_name"
+		NORDVPN_EASY_PENDING_PREFERENCE_STATION="$server_station"
 		PREFERRED_SERVER_HOSTNAME="$host_name"
 		PREFERRED_SERVER_STATION="$server_station"
 		return 0
@@ -480,8 +480,24 @@ nordvpn_easy_provision_vpn_server_change() {
 	nordvpn_easy_provision_vpn_connect_fresh
 }
 
+nordvpn_easy_commit_pending_server_preference() {
+	[ -n "${NORDVPN_EASY_PENDING_PREFERENCE_STATION:-}" ] || return 0
+
+	nordvpn_easy_set_server_preference_in_uci \
+		"${NORDVPN_EASY_PENDING_PREFERENCE_HOSTNAME:-}" \
+		"$NORDVPN_EASY_PENDING_PREFERENCE_STATION"
+	uci commit nordvpn_easy ||
+		log 'WARNING: COULD NOT COMMIT ROTATED SERVER PREFERENCE AFTER VERIFICATION'
+	nordvpn_easy_harden_secret_config_perms nordvpn_easy
+	NORDVPN_EASY_PENDING_PREFERENCE_HOSTNAME=''
+	NORDVPN_EASY_PENDING_PREFERENCE_STATION=''
+}
+
 nordvpn_easy_provision_vpn() {
 	local mode="${1:-}"
+
+	NORDVPN_EASY_PENDING_PREFERENCE_HOSTNAME=''
+	NORDVPN_EASY_PENDING_PREFERENCE_STATION=''
 
 	nordvpn_easy_require_core_action_helpers refresh_countries_cache verify_public_country_selection || return 1
 	log "apply: provisioning VPN interface $VPN_IF (mode=${mode:-fresh}, selection=${SERVER_SELECTION_MODE:-auto}, country=${VPN_COUNTRY:-automatic})"
@@ -526,6 +542,7 @@ nordvpn_easy_provision_vpn() {
 	fi
 
 	verify_public_country_selection || return 1
+	nordvpn_easy_commit_pending_server_preference
 	log 'apply: VPN provisioning completed'
 }
 
