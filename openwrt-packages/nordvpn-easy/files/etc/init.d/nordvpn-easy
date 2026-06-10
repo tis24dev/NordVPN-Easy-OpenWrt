@@ -280,6 +280,14 @@ acquire_runtime_transaction_lock() {
 connect_apply_guard_begin() {
 	mkdir -p "$RUN_STATE_DIR" 2>/dev/null || true
 	: > "$CONNECT_APPLY_GUARD" 2>/dev/null || true
+	# The guard suppresses the cron recovery check while a connect-apply is in
+	# flight; connect_apply_guard_end removes it on every normal path. Register it
+	# for the lock's exit trap so a TERM/INT/HUP or crash before guard_end cannot
+	# leave it behind and silently suppress cron/hotplug recovery forever. The
+	# result file is intentionally NOT registered: it must persist for the LuCI
+	# frontend to read the apply outcome. The lock is already held here, so the
+	# trap is installed.
+	nordvpn_easy_register_temp_path "$CONNECT_APPLY_GUARD" 2>/dev/null || true
 	nordvpn_easy_connect_apply_result_begin "$CONNECT_APPLY_RESULT" 2>/dev/null || true
 }
 

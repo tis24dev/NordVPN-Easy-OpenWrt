@@ -37,8 +37,13 @@ extract_function() {
 		$0 ~ ("^" fn "\\(\\)") { capture = 1 }
 		capture { print }
 		capture && /^}/ { exit }
-	' "$INIT_SCRIPT"
+	' "${2:-$INIT_SCRIPT}"
 }
+
+COMMON_LIB="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/common.sh"
+eval "$(extract_function nordvpn_easy_register_temp_path "$COMMON_LIB")"
+eval "$(extract_function nordvpn_easy_cleanup_temp_paths "$COMMON_LIB")"
+NORDVPN_EASY_TEMP_PATHS=''
 
 eval "$(extract_function run_core_action)"
 eval "$(extract_function connect_apply_guard_begin)"
@@ -535,5 +540,24 @@ assert_eq '0' "$SETUP_COUNT" 'busy reconcile does not connect/setup'
 }
 
 TRANSACTION_LOCK_RC=0
+
+# The connect-apply guard suppresses the cron recovery check while it exists, so
+# an interrupted connect-apply (no connect_apply_guard_end) must not leave it
+# behind. guard_begin registers the guard with the lock's exit-cleanup, so the
+# trap removes it even when guard_end never runs.
+NORDVPN_EASY_TEMP_PATHS=''
+rm -f "$CONNECT_APPLY_GUARD"
+connect_apply_guard_begin
+[ -f "$CONNECT_APPLY_GUARD" ] || {
+	printf '%s\n' 'FAIL: guard_begin should create the connect-apply guard' >&2
+	exit 1
+}
+# Simulate an abnormal exit: guard_end did NOT run; the exit cleanup must remove
+# the guard so cron recovery is not suppressed forever.
+nordvpn_easy_cleanup_temp_paths
+[ ! -f "$CONNECT_APPLY_GUARD" ] || {
+	printf '%s\n' 'FAIL: an interrupted connect-apply guard must be cleaned on exit' >&2
+	exit 1
+}
 
 printf '%s\n' 'test-init-run-core.sh: ok'
