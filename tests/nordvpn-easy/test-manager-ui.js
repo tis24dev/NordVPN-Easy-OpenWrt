@@ -68,7 +68,7 @@ function makeSelect(value) {
 const context = {
 	baseclass: { extend(api) { return api; } },
 	managerData: managerData,
-	managerFormat: {},
+	managerFormat: { formatServerSummary: function(o) { return String((o && o.station) || ''); } },
 	ui: {},
 	L: {},
 	_: function(s) { return s; },
@@ -173,5 +173,22 @@ persistent.appliedCountryCode = 'DE';
 managerUI.updateCountryMatchStatus(persistent);
 assert.equal(changes.length, 2, 'returning to a match logs the transition back');
 assert.equal(changes[1].indicator, 'match', 'transition back reports the match indicator');
+
+// Current Server is transitional while an apply is mid-flight, then real.
+const cfgStatus = {
+	desired_enabled: true, runtime_disabled: false, interface_disabled: false,
+	runtime_configured: true, current_server_station: 'be1', current_server_hostname: 'be1.nordvpn.com',
+	current_server_city: 'Brussels', current_server_country: 'BE', current_server_load: '10'
+};
+assert.equal(
+	managerUI.currentServerSummaryFromStatus(cfgStatus, { applyTransitionActive: true }),
+	'Reconnecting...',
+	'Current Server shows the transition while an apply is mid-flight'
+);
+assert.equal(
+	managerUI.currentServerSummaryFromStatus(cfgStatus, { applyTransitionActive: false }),
+	'be1',
+	'Current Server shows the real server once the apply settles'
+);
 
 console.log('test-manager-ui.js: ok');

@@ -23,6 +23,7 @@ function createState() {
 		appliedCountryCode: '',
 		countryMatchLogKey: '',
 		onCountryMatchChange: null,
+		applyTransitionActive: false,
 		currentLocalStatus: managerData.parseLocalStatus('{}'),
 		currentLocalStatusFresh: false,
 		currentLocalStatusLastUpdated: 0,

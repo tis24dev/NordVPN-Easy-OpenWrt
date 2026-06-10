@@ -410,6 +410,74 @@ function testRenderLocalStatusSnapshotClearsDisabledPlaceholders() {
 	assert.deepEqual(controls, [ false ], 'disabled idle status leaves manager controls enabled');
 }
 
+function testRenderLocalStatusSnapshotHonestDuringApply() {
+	const indicators = {};
+	const serverFlags = [];
+	const actions = loadManagerActionsModule({
+		managerData: {
+			normalizeCountryCode(value) { return String(value || '').trim().toUpperCase(); },
+			parseLocalStatus(raw) { return JSON.parse(raw || '{}'); }
+		},
+		managerStore: {
+			PHASES: { RUNTIME_BUSY: 'runtime_busy', SAVING: 'saving' },
+			syncPhase(state) { state.phase = 'synced'; },
+			setPhase(state, phase) { state.phase = phase; }
+		},
+		managerUI: {
+			ids: {
+				CURRENT_SERVER_STATUS_ID: 'current', PREFERRED_SERVER_STATUS_ID: 'preferred',
+				ENDPOINT_STATUS_ID: 'endpoint', HANDSHAKE_STATUS_ID: 'handshake',
+				TRANSFER_STATUS_ID: 'transfer', OPERATION_STATUS_ID: 'operation',
+				LAST_ERROR_STATUS_ID: 'last_error', PUBLIC_IP_STATUS_ID: 'public_ip',
+				PUBLIC_COUNTRY_STATUS_ID: 'public_country'
+			},
+			replaceStatusText() {},
+			setManagerControlsDisabled() {},
+			setVpnStatusIndicator(state, label) { indicators.vpn = { state: state, label: String(label) }; },
+			updateCountryMatchStatus() {},
+			updateServerSelectionState() {},
+			// Capture whether the transition flag is set when Current Server renders.
+			currentServerSummaryFromStatus(status, state) { serverFlags.push(!!state.applyTransitionActive); return 'srv'; },
+			preferredServerSummaryFromStatus() { return 'auto'; },
+			isDisableRequested() { return false; }
+		}
+	}).managerActions;
+
+	// Optimistically stale snapshot: during the teardown window the backend still
+	// reports the OLD tunnel as connected (handshake within the 180s window), but
+	// it is not fresh (age 9999), so convergence has NOT succeeded.
+	const status = {
+		desired_enabled: true, runtime_disabled: false, interface_disabled: false,
+		runtime_configured: true, connected: true, vpn_status: 'active', state: 'connected',
+		operation_status: 'idle', handshake_age_seconds: 9999,
+		current_server_hostname: 'at107.nordvpn.com', current_server_station: 'at107',
+		current_server_country: 'AT', endpoint: 'at107.nordvpn.com:51820',
+		latest_handshake: '1 minute ago', transfer_rx: '1 B', transfer_tx: '1 B',
+		public_ip_cached: '', public_country_cached: '', last_error: ''
+	};
+	const state = {
+		appliedEnabled: true, appliedCountryCode: 'AT', saveApplyInProgress: true,
+		applyPhase: 'stop_vpn', applyTransitionActive: false,
+		currentLocalStatus: status, currentOperationStatus: 'idle',
+		pendingOperationLabel: '', currentPublicIp: '', currentPublicCountry: ''
+	};
+
+	actions.renderLocalStatusSnapshot(state, status);
+	assert.deepEqual(indicators.vpn, { state: 'starting', label: 'Connecting' },
+		'an unconverged apply renders Connecting instead of the stale Connected');
+	assert.equal(state.applyTransitionActive, true,
+		'applyTransitionActive is set during an unconverged apply');
+	assert.equal(serverFlags[serverFlags.length - 1], true,
+		'Current Server renders with the transition flag set');
+
+	// Once the apply is no longer in progress, the real connected state shows.
+	state.saveApplyInProgress = false;
+	actions.renderLocalStatusSnapshot(state, status);
+	assert.deepEqual(indicators.vpn, { state: 'active', label: 'Connected' },
+		'a settled connected runtime still renders Connected');
+	assert.equal(state.applyTransitionActive, false, 'transition flag clears once the apply settles');
+}
+
 async function testPublicLookupsReturnEarlyWhenRuntimeDisabled() {
 	const networkCalls = [];
 	const lockCalls = [];
@@ -949,8 +1017,8 @@ function testSaveApplyTransitionSuppressesConnectedAndDrift() {
 	);
 	assert.deepEqual(
 		diagnosticsBanners.vpn,
-		{ state: 'active', label: 'Connected' },
-		'Save & Apply keeps live runtime status visible while controls stay locked'
+		{ state: 'starting', label: 'Connecting' },
+		'Save & Apply renders Connecting (not the stale Connected) until convergence'
 	);
 	assert.equal(
 		diagnosticsBanners.summaryHidden,
@@ -2321,6 +2389,7 @@ Promise.resolve().then(async function() {
 	await testUpdateLocalStatusPreservesSnapshotOnFailedResponse();
 	await testUpdateLocalStatusMarksSnapshotsStaleOnRejectedExec();
 	testRenderLocalStatusSnapshotClearsDisabledPlaceholders();
+	testRenderLocalStatusSnapshotHonestDuringApply();
 	await testPublicLookupsReturnEarlyWhenRuntimeDisabled();
 	await testPublicIpPollUpdatesCountryFromSingleSnapshot();
 	await testPublicIpChangeReplacesCountryFromSnapshot();

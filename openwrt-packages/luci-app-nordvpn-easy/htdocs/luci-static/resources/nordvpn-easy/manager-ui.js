@@ -212,6 +212,12 @@ function currentServerSummaryFromStatus(status, state) {
 	if (!status.desired_enabled || status.runtime_disabled || status.interface_disabled || isDisableRequested(state))
 		return _('Disabled');
 
+	// While a Save & Apply is mid-transition the snapshot still names the OLD
+	// server (the new tunnel is not up yet); show the transition instead of the
+	// stale server. renderLocalStatusSnapshot sets this flag before this runs.
+	if (state && state.applyTransitionActive)
+		return _('Reconnecting...');
+
 	if (!status.runtime_configured || !status.current_server_station)
 		return _('Not configured');
 

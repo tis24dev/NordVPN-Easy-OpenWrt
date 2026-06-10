@@ -1496,6 +1496,15 @@ function renderLocalStatusSnapshot(state, status) {
 
 	state.currentLocalStatus = runtimeStatus;
 	state.currentOperationStatus = operationStatus;
+	// During an in-flight Save & Apply that has not yet converged, the tunnel is
+	// being torn down / re-established, so the raw status snapshot (connected,
+	// current_server_*) is optimistically stale (the backend still reports the
+	// old session within the 180s handshake window). Mark the transition so the
+	// connection indicator and the Current Server line render it honestly instead
+	// of trusting the stale snapshot. 'busy:finishing' means convergence already
+	// succeeded, so we let the real connected state show through from then on.
+	const applyConverging = !!state.saveApplyInProgress && operationStatus !== 'busy:finishing';
+	state.applyTransitionActive = applyConverging;
 	renderLocalStatusDetails(state, runtimeStatus);
 
 	if (operationStatus.indexOf('busy:') === 0) {
@@ -1536,6 +1545,8 @@ function renderLocalStatusSnapshot(state, status) {
 
 	if (!desiredEnabled || runtimeStatus.runtime_disabled || runtimeStatus.interface_disabled || managerUI.isDisableRequested(state))
 		managerUI.setVpnStatusIndicator('inactive', _('Disabled'));
+	else if (applyConverging)
+		managerUI.setVpnStatusIndicator('starting', _('Connecting'));
 	else if (enterpriseState === 'connected' || runtimeStatus.vpn_status === 'active' || runtimeStatus.connected)
 		managerUI.setVpnStatusIndicator('active', _('Connected'));
 	else if (state.saveApplyInProgress ||
