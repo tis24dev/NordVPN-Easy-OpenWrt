@@ -36,7 +36,6 @@ function createState() {
 		lastAutoReconcileFailureAt: 0,
 		saveApplyInProgress: false,
 		runtimeActionCooldownUntil: 0,
-		pollingSuspended: false,
 		pollersStarted: false,
 		lastError: '',
 		inFlight: {
@@ -91,14 +90,6 @@ function derivePhase(state) {
 
 function syncPhase(state) {
 	return setPhase(state, derivePhase(state));
-}
-
-function suspendPolling(state) {
-	state.pollingSuspended = true;
-}
-
-function resumePolling(state) {
-	state.pollingSuspended = false;
 }
 
 function ensureInFlightState(state, key) {
@@ -171,8 +162,6 @@ return baseclass.extend({
 	setError: setError,
 	clearError: clearError,
 	syncPhase: syncPhase,
-	suspendPolling: suspendPolling,
-	resumePolling: resumePolling,
 	clearInFlight: clearInFlight,
 	runExclusive: runExclusive
 });

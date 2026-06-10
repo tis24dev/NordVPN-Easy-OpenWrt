@@ -1078,7 +1078,6 @@ function buildHandleSaveApplyHarness(options) {
 	const serviceCalls = [];
 	const phaseTransitions = [];
 	const controlsDisabledCalls = [];
-	const pollingTransitions = [];
 	const debugNotifications = [];
 	let runtimeStatusPayload = null;
 	const calls = {
@@ -1220,14 +1219,6 @@ function buildHandleSaveApplyHarness(options) {
 			setPhase(state, phase) {
 				phaseTransitions.push(phase);
 				state.phase = phase;
-			},
-			suspendPolling(state) {
-				pollingTransitions.push('suspend');
-				state.pollingSuspended = true;
-			},
-			resumePolling(state) {
-				pollingTransitions.push('resume');
-				state.pollingSuspended = false;
 			},
 			syncPhase() {}
 		},
@@ -1468,7 +1459,6 @@ function buildHandleSaveApplyHarness(options) {
 		runtimeActions: runtimeActions,
 		serviceCalls: serviceCalls,
 		phaseTransitions: phaseTransitions,
-		pollingTransitions: pollingTransitions,
 		debugNotifications: debugNotifications,
 		controlsDisabledCalls: controlsDisabledCalls,
 		calls: calls
@@ -1622,7 +1612,6 @@ async function testHandleSaveApplyTimesOutWhenPostSaveSyncNeverFinishes() {
 	assert.equal(rejected && rejected.message, 'uci reload failed', 'post-save sync failure rejects with the original error');
 	assert.deepEqual(normalizeValue(harness.runtimeActions), [], 'post-save sync failure does not stop VPN before configuration is saved');
 	assert.equal(harness.state.pendingOperationLabel, '', 'post-save sync failure clears pending state');
-	assert.equal(harness.pollingTransitions[harness.pollingTransitions.length - 1], 'resume', 'post-save sync failure resumes polling');
 }
 
 async function testHandleSaveApplyClearsBusyStateWhenPostApplySyncFails() {
@@ -1645,7 +1634,6 @@ async function testHandleSaveApplyClearsBusyStateWhenPostApplySyncFails() {
 
 	assert.equal(rejected, syncError, 'post-apply sync failure rejects with the original error');
 	assert.equal(harness.state.pendingOperationLabel, '', 'post-apply sync failure clears the applying label');
-	assert.equal(harness.pollingTransitions[harness.pollingTransitions.length - 1], 'resume', 'post-apply sync failure resumes polling');
 	assert.ok(harness.serviceCalls.indexOf('status_json') !== -1, 'post-apply sync failure refreshes local status');
 	assert.match(harness.notifications[harness.notifications.length - 1].message, /Save & Apply failed: uci reload failed/, 'post-apply sync failure reports a readable notification');
 }
@@ -1728,7 +1716,6 @@ async function testHandleSaveApplyAutoModeClearsManualSelectionAndReconnects() {
 	assert.equal(harness.viewState.initialMode, 'auto', 'view state tracks saved automatic mode');
 	assert.equal(harness.viewState.initialPreferredStation, '', 'view state clears saved preferred station');
 	assert.equal(harness.state.pendingOperationLabel, '', 'runtime action completion clears pending operation label');
-	assert.equal(harness.pollingTransitions[harness.pollingTransitions.length - 1], 'resume', 'save/apply resumes polling after runtime handling');
 	assert.ok(harness.phaseTransitions.indexOf('saving') !== -1, 'save/apply enters saving phase');
 	assert.ok(harness.serviceCalls.indexOf('status_json') !== -1, 'save/apply refreshes local status during the flow');
 }
@@ -1872,7 +1859,6 @@ async function testHandleSaveApplyConvergesViaStartConnectAndStatusPolling() {
 	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn' ], [ 'begin_connect_apply' ], [ 'start_connect' ] ],
 		'Save & Apply dispatches start_connect then polls status');
 	assert.equal(harness.state.pendingOperationLabel, '', 'status convergence clears pending operation label');
-	assert.equal(harness.pollingTransitions[harness.pollingTransitions.length - 1], 'resume', 'status convergence resumes polling');
 	assert.equal(harness.notifications.filter(function(entry) {
 		return entry.type === 'error';
 	}).length, 0, 'status convergence does not show a false error notification');
@@ -1992,7 +1978,6 @@ async function testHandleSaveApplyRecoversAbortedRuntimeActionWhenStatusConverge
 	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn' ], [ 'begin_connect_apply' ], [ 'start_connect' ] ],
 		'legacy recovery test name kept for start_connect apply cycle');
 	assert.equal(harness.state.pendingOperationLabel, '', 'aborted runtime recovery clears pending operation label');
-	assert.equal(harness.pollingTransitions[harness.pollingTransitions.length - 1], 'resume', 'aborted runtime recovery resumes polling');
 	assert.equal(harness.notifications.filter(function(entry) {
 		return entry.type === 'error';
 	}).length, 0, 'aborted runtime recovery does not show a false error notification');

@@ -13,14 +13,13 @@ function documentIsHidden() {
 }
 
 function shouldSkipBackgroundPoll(state) {
-	return state.pollingSuspended ||
-		state.phase === managerStore.PHASES.SAVING ||
+	return state.phase === managerStore.PHASES.SAVING ||
 		managerActions.runtimeOperationIsBusy(state, state.currentLocalStatus) ||
 		documentIsHidden();
 }
 
-function shouldSkipPublicIpPoll(state) {
-	return state.pollingSuspended || documentIsHidden();
+function shouldSkipPublicIpPoll() {
+	return documentIsHidden();
 }
 
 function start(state) {
@@ -30,7 +29,7 @@ function start(state) {
 	state.pollersStarted = true;
 
 	poll.add(function() {
-		if (documentIsHidden() || (state.pollingSuspended && !state.saveApplyInProgress))
+		if (documentIsHidden())
 			return Promise.resolve();
 
 		return managerActions.updateLocalStatus(state, {
@@ -39,7 +38,7 @@ function start(state) {
 	}, LOCAL_STATUS_POLL_SECONDS);
 
 	poll.add(function() {
-		if (shouldSkipPublicIpPoll(state) || !state.appliedEnabled)
+		if (shouldSkipPublicIpPoll() || !state.appliedEnabled)
 			return Promise.resolve();
 
 		return managerActions.updatePublicIp(state, { quiet: true });

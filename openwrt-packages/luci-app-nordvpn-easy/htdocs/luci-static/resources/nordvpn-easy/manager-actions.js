@@ -1584,12 +1584,7 @@ function parsePublicIpSnapshot(res) {
 	return snapshot;
 }
 
-function updatePublicIp(state, options) {
-	const opts = options || {};
-
-	if (state.pollingSuspended && !opts.force)
-		return Promise.resolve();
-
+function updatePublicIp(state) {
 	if (!publicLookupsAllowed(state, state.currentLocalStatus)) {
 		clearPublicLookupDisplay(state);
 		managerUI.updateCountryMatchStatus(state);
@@ -1654,12 +1649,7 @@ function renderDiagnosticsSnapshot(state, summary, fresh) {
 	managerUI.updateDiagnosticsBanner(summary);
 }
 
-function updateDiagnosticsSummary(state, options) {
-	const opts = options || {};
-
-	if (state.pollingSuspended && !opts.force)
-		return Promise.resolve(state.currentDiagnosticsSummary);
-
+function updateDiagnosticsSummary(state) {
 	if (!driftEvaluationAllowed(state)) {
 		suppressDriftUi(state);
 		return Promise.resolve(state.currentDiagnosticsSummary);
@@ -1905,7 +1895,6 @@ function finishApplyCycle(state, options) {
 	state.postApplyRecoveryGraceUntil = Date.now() + POST_APPLY_RECOVERY_GRACE_MS;
 	state.applySelectionBaseline = { captured: false };
 	managerStore.clearInFlight(state, 'status');
-	managerStore.resumePolling(state);
 	managerStore.setPhase(state, managerStore.PHASES.IDLE);
 
 	timingLog('finishApplyCycle', 'apply_finished', {
