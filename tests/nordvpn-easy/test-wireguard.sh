@@ -222,6 +222,20 @@ RC=0
 nordvpn_easy_set_vpn_server_in_uci 'bad host' 'it123' 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' 'IT' 'Milan' '12' >/dev/null 2>&1 || RC=$?
 assert_eq '1' "$RC" 'set_vpn_server rejects an endpoint host with invalid characters'
 
+# nordvpn_easy_valid_wireguard_key backs both the peer public key and the
+# NordLynx private key (core.sh get_private_key): 43 base64 chars + '=' = 44.
+WG_KEY_B43="$(printf '%043d' 0 | tr '0' 'A')"
+RC=0; nordvpn_easy_valid_wireguard_key "${WG_KEY_B43}=" || RC=$?
+assert_eq '0' "$RC" 'a 44-char padded base64 key validates'
+RC=0; nordvpn_easy_valid_wireguard_key '' || RC=$?
+assert_eq '1' "$RC" 'an empty key is rejected'
+RC=0; nordvpn_easy_valid_wireguard_key 'AAAA' || RC=$?
+assert_eq '1' "$RC" 'a too-short key is rejected'
+RC=0; nordvpn_easy_valid_wireguard_key "${WG_KEY_B43}A" || RC=$?
+assert_eq '1' "$RC" 'an unpadded 44-char key is rejected'
+RC=0; nordvpn_easy_valid_wireguard_key "$(printf '%042d' 0 | tr '0' 'A')!=" || RC=$?
+assert_eq '1' "$RC" 'a non-base64 key is rejected'
+
 WIREGUARD_PERSISTENT_KEEPALIVE='10'
 WIREGUARD_MTU='1420'
 nordvpn_easy_apply_wireguard_transport_settings 'wg0server'

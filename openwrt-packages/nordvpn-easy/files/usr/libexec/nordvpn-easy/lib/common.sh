@@ -113,6 +113,24 @@ nordvpn_easy_cleanup_temp_paths() {
 	NORDVPN_EASY_TEMP_PATHS=''
 }
 
+nordvpn_easy_valid_wireguard_key() {
+	# A WireGuard key (private NordLynx key or peer public key) is 32 raw bytes,
+	# i.e. 43 base64 characters plus a single '=' pad = 44 chars. Reject anything
+	# else so a corrupt/truncated API response is caught at retrieval instead of
+	# surfacing much later as a generic no-handshake failure.
+	local key="$1"
+
+	[ -n "$key" ] || return 1
+	case "$key" in
+		*[!A-Za-z0-9+/=]*) return 1 ;;
+	esac
+	case "$key" in
+		*=) ;;
+		*) return 1 ;;
+	esac
+	[ "${#key}" -eq 44 ] || return 1
+}
+
 nordvpn_easy_mktemp_dir() {
 	local prefix="${1:-runtime}"
 	local result_var="${2:-}"

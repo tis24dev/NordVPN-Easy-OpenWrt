@@ -430,12 +430,13 @@ get_private_key () {
   PRIVATE_KEY=$(printf '%s' "$CREDENTIALS_JSON" | jq -er '.nordlynx_private_key // empty' 2>/dev/null)
   credentials_response_bytes="$(printf '%s' "$CREDENTIALS_JSON" | wc -c | awk '{ print $1 }')"
   CREDENTIALS_JSON=''
-  [ -n "$PRIVATE_KEY" ] || {
+  if ! nordvpn_easy_valid_wireguard_key "$PRIVATE_KEY"; then
+    PRIVATE_KEY=''
     credentials_message="invalid NordLynx private key response received from NordVPN API (http_code=${NORDVPN_EASY_CREDENTIALS_HTTP_CODE:-000}, response_bytes=${credentials_response_bytes:-0})"
     nordvpn_easy_record_last_error "$credentials_message"
     nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "$credentials_message"
     return 1
-  }
+  fi
 
   log 'apply: NordLynx private key retrieved successfully'
 }

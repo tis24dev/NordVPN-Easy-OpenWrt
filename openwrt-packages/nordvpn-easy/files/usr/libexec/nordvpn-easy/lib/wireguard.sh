@@ -581,21 +581,8 @@ nordvpn_easy_set_vpn_server_in_uci() {
 	# key is 32 bytes => 43 base64 chars plus '=' padding, and the endpoint host
 	# must be a plain DNS name. A bad key otherwise only surfaced as a generic
 	# no-handshake failure much later.
-	case "$public_key" in
-		*[!A-Za-z0-9+/=]*)
-			log "ERROR: VPN PUBLIC KEY FOR $1 CONTAINS NON-BASE64 CHARACTERS"
-			return 1
-			;;
-	esac
-	case "$public_key" in
-		*=) ;;
-		*)
-			log "ERROR: VPN PUBLIC KEY FOR $1 IS NOT PROPERLY PADDED"
-			return 1
-			;;
-	esac
-	if [ "${#public_key}" -ne 44 ]; then
-		log "ERROR: VPN PUBLIC KEY FOR $1 HAS UNEXPECTED LENGTH ${#public_key} (want 44)"
+	if ! nordvpn_easy_valid_wireguard_key "$public_key"; then
+		log "ERROR: VPN PUBLIC KEY FOR $1 IS NOT A VALID WIREGUARD KEY (length=${#public_key}, want 44 base64 chars)"
 		return 1
 	fi
 	case "$1" in
