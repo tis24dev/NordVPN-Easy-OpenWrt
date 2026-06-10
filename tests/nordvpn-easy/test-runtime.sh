@@ -158,7 +158,7 @@ assert_eq '1420' "$(printf '%s' "$STATUS_JSON" | jq -r '.wireguard_mtu')" 'statu
 assert_eq 'true' "$(printf '%s' "$STATUS_JSON" | jq -r '.firewall_mtu_fix')" 'status json exposes firewall MTU fix'
 assert_eq '0' "$(printf '%s' "$STATUS_JSON" | jq -r '.handshake_age_seconds')" 'status json exposes handshake age seconds'
 assert_eq 'false' "$(printf '%s' "$STATUS_JSON" | jq -r '.runtime_disabled')" 'status json keeps runtime disabled false'
-assert_eq 'active' "$(printf '%s' "$STATUS_JSON" | jq -r '.vpn_status')" 'status json falls back to ip link when ifstatus probe fails'
+assert_eq 'starting' "$(printf '%s' "$STATUS_JSON" | jq -r '.vpn_status')" 'a present link with no fresh handshake and a failed ifstatus probe is not reported active'
 assert_eq '198.51.100.10' "$(printf '%s' "$STATUS_JSON" | jq -r '.public_ip_cached')" 'status json exposes structured public IP cache value'
 assert_eq '1770000000' "$(printf '%s' "$STATUS_JSON" | jq -r '.public_ip_detected_at')" 'status json exposes public IP detection timestamp'
 assert_eq '2026-02-01T00:00:00Z' "$(printf '%s' "$STATUS_JSON" | jq -r '.public_ip_detected_at_iso')" 'status json exposes public IP detection time'
@@ -167,6 +167,12 @@ assert_eq 'ok' "$(printf '%s' "$STATUS_JSON" | jq -r '.public_verification_statu
 assert_eq '1770000002' "$(printf '%s' "$STATUS_JSON" | jq -r '.public_verification_checked_at')" 'status json exposes public verification timestamp'
 assert_eq '0' "$(nordvpn_easy_wg_runtime_non_negative_int 'not-a-number')" 'non-numeric epoch sanitizes to zero'
 assert_eq '1770000000' "$(nordvpn_easy_wg_runtime_non_negative_int '1770000000')" 'numeric epoch is preserved'
+
+# vpn_status no longer reports 'active' from a bare present interface: with no
+# fresh handshake (stubbed wg has none) and a failed ifstatus probe, a teardown
+# reports 'stopping' and an idle configured interface reports 'inactive'.
+assert_eq 'stopping' "$(nordvpn_easy_vpn_status_value 1 wg0 'busy:stop_vpn')" 'a teardown with no fresh handshake reports stopping, not active'
+assert_eq 'inactive' "$(nordvpn_easy_vpn_status_value 1 wg0 'idle')" 'a configured interface with no fresh handshake and no operation reports inactive, not active'
 {
 	printf '%s\n' 'ip=198.51.100.10'
 	printf '%s\n' 'detected_at=not-a-number'

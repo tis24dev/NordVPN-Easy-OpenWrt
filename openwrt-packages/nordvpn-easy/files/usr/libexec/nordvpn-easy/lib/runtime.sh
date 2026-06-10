@@ -450,16 +450,16 @@ nordvpn_easy_vpn_status_value() {
 		fi
 	fi
 
-	if ip link show dev "$vpn_if" >/dev/null 2>&1; then
-		printf '%s\n' 'active'
-		return 0
-	fi
-
+	# A present interface alone does not mean the VPN session is alive: during a
+	# teardown the wg device can still exist (even with a sub-180s handshake) while
+	# traffic is already going out unprotected. Only a fresh handshake or a netifd
+	# 'up' interface (both handled above) counts as 'active'; otherwise report the
+	# honest transitional/inactive state for the operation in flight.
 	case "$operation" in
-		busy:setup|busy:check|busy:rotate)
+		busy:setup|busy:check|busy:rotate|busy:reconnect|busy:reconcile)
 			printf '%s\n' 'starting'
 			;;
-		busy:disable_runtime)
+		busy:stop_vpn|busy:disable_runtime)
 			printf '%s\n' 'stopping'
 			;;
 		*)
