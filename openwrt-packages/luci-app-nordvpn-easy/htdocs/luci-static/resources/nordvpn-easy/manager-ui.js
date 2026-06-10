@@ -244,9 +244,14 @@ function preferredServerSummaryFromStatus(status) {
 function updateCountryMatchStatus(state) {
 	let busyAction;
 	const runtimeStatus = state.currentLocalStatus || {};
+	// Country Match compares the exit IP's country against the SAVED/applied
+	// country, never the live dropdown selection: applyTargetCountryCode while a
+	// Save & Apply is converging, otherwise appliedCountryCode (the last applied
+	// value, tracked from status.selected_country). Reading getSelectedCountry()
+	// here made the indicator flip the instant the dropdown changed, before the
+	// user pressed Save & Apply.
 	const expectedCountry = managerData.normalizeCountryCode(
 		state.applyTargetCountryCode ||
-		getSelectedCountry() ||
 		state.appliedCountryCode ||
 		''
 	);

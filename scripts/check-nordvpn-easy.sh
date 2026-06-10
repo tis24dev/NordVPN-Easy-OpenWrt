@@ -22,6 +22,7 @@ JS_FILES=(
 	"$ROOT_DIR/tests/nordvpn-easy/test-service.js"
 	"$ROOT_DIR/tests/nordvpn-easy/test-manager-store.js"
 	"$ROOT_DIR/tests/nordvpn-easy/test-manager-actions.js"
+	"$ROOT_DIR/tests/nordvpn-easy/test-manager-ui.js"
 	"$ROOT_DIR/tests/nordvpn-easy/test-config.js"
 	"$ROOT_DIR/tests/nordvpn-easy/test-advanced.js"
 )
@@ -82,6 +83,7 @@ printf '%s\n' 'Running fixture tests'
 node "$ROOT_DIR/tests/nordvpn-easy/test-service.js"
 node "$ROOT_DIR/tests/nordvpn-easy/test-manager-store.js"
 node "$ROOT_DIR/tests/nordvpn-easy/test-manager-actions.js"
+node "$ROOT_DIR/tests/nordvpn-easy/test-manager-ui.js"
 node "$ROOT_DIR/tests/nordvpn-easy/test-config.js"
 node "$ROOT_DIR/tests/nordvpn-easy/test-advanced.js"
 sh "$ROOT_DIR/tests/nordvpn-easy/test-config-context.sh"
