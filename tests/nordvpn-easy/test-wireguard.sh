@@ -198,6 +198,18 @@ nordvpn_easy_wait_for_vpn_connectivity "$VPN_IF" '3' 'timeout-test' || WAIT_RC=$
 assert_eq '1' "$WAIT_RC" 'wait helper fails when connectivity never returns'
 assert_eq '1,1,' "$SLEEP_CALLS" 'wait helper retries until the timeout window is exhausted'
 
+# A fresh handshake must not short-circuit readiness on its own: connectivity is
+# still confirmed with a ping through the interface before the tunnel is ready.
+# (Subshell so the handshake stub does not leak into the later real-handshake test.)
+(
+	nordvpn_easy_wait_for_vpn_handshake() { return 0; }
+	printf '%s\n' '300' > "$FAKE_NOW_FILE"
+	PING_ATTEMPTS=0
+	SUCCESS_ON_ATTEMPT=1
+	nordvpn_easy_wait_for_vpn_connectivity "$VPN_IF" "$POST_RESTART_DELAY" 'handshake-success-test'
+	assert_eq '1' "$PING_ATTEMPTS" 'a fresh handshake still confirms connectivity with a ping before declaring ready'
+)
+
 nordvpn_easy_set_vpn_server_in_uci 'it12.nordvpn.com' 'it123' 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' 'IT' 'Milan' '12'
 
 assert_eq 'it12.nordvpn.com' "$UCI_ENDPOINT_HOST" 'wireguard peer endpoint host uses hostname'

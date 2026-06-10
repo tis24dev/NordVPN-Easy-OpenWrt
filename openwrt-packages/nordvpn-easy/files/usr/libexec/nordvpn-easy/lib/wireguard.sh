@@ -307,7 +307,16 @@ nordvpn_easy_wait_for_vpn_connectivity() {
 
 	if [ "$handshake_wait_max" -gt 0 ] &&
 		nordvpn_easy_wait_for_vpn_handshake "$vpn_if" "$handshake_wait_max" "$wait_context"; then
-		return 0
+		# A fresh handshake means the tunnel established (keys exchanged), but it
+		# does not prove the 0.0.0.0/0 route and firewall path actually carry
+		# traffic. Confirm real connectivity through the interface before declaring
+		# it ready; if routing has not settled yet, fall through to the probe loop
+		# instead of falsely reporting connected on the handshake alone.
+		if nordvpn_easy_ping_interface "$vpn_if"; then
+			log "apply: VPN handshake and connectivity validated on $vpn_if after ${wait_context}"
+			return 0
+		fi
+		log "apply: $vpn_if handshake is up but traffic is not routing yet; verifying connectivity"
 	fi
 
 	log "apply: waiting up to ${wait_timeout}s for VPN connectivity on $vpn_if after ${wait_context}"
