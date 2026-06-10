@@ -6,7 +6,7 @@
 
 # Use NORDVPN_TOKEN with the token you get from https://my.nordaccount.com/dashboard/nordvpn/access-tokens/
 
-LIB_DIR='/usr/libexec/nordvpn-easy/lib'
+LIB_DIR="${NORDVPN_EASY_LIB_DIR:-/usr/libexec/nordvpn-easy/lib}"
 CONFIG_CONTEXT_LIB="${LIB_DIR}/config-context.sh"
 CATALOG_LIB="${LIB_DIR}/catalog.sh"
 RUNTIME_LIB="${LIB_DIR}/runtime.sh"
@@ -1106,14 +1106,17 @@ case "$ACTION" in
     fi
     ;;
   stop_vpn)
-    validate_stop_runtime
-    if [ -f "${NORDVPN_EASY_CONNECT_APPLY_GUARD:-/tmp/run/nordvpn-easy/connect-apply-guard}" ] ||
-      [ "${NORDVPN_EASY_CONNECT_APPLY:-0}" = '1' ]; then
-      nordvpn_easy_stop_vpn_for_connect_apply
+    if validate_stop_runtime; then
+      if [ -f "${NORDVPN_EASY_CONNECT_APPLY_GUARD:-/tmp/run/nordvpn-easy/connect-apply-guard}" ] ||
+        [ "${NORDVPN_EASY_CONNECT_APPLY:-0}" = '1' ]; then
+        nordvpn_easy_stop_vpn_for_connect_apply
+      else
+        nordvpn_easy_stop_vpn_for_server_change
+      fi
+      ACTION_RC=$?
     else
-      nordvpn_easy_stop_vpn_for_server_change
+      ACTION_RC=1
     fi
-    ACTION_RC=$?
     ;;
   reconnect)
     validate_setup_runtime &&
@@ -1122,15 +1125,18 @@ case "$ACTION" in
     ACTION_RC=$?
     ;;
   setup)
-    validate_setup_runtime
-    if [ "${NORDVPN_EASY_CONNECT_APPLY:-0}" = '1' ]; then
-      provision_vpn connect_apply &&
-      log 'NordVPN configuration is ready (connect apply)'
+    if validate_setup_runtime; then
+      if [ "${NORDVPN_EASY_CONNECT_APPLY:-0}" = '1' ]; then
+        provision_vpn connect_apply &&
+        log 'NordVPN configuration is ready (connect apply)'
+      else
+        provision_vpn connect_fresh &&
+        log 'NordVPN configuration is ready'
+      fi
+      ACTION_RC=$?
     else
-      provision_vpn connect_fresh &&
-      log 'NordVPN configuration is ready'
+      ACTION_RC=1
     fi
-    ACTION_RC=$?
     ;;
   rotate)
     rotate_action
