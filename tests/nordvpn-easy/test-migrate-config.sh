@@ -31,13 +31,30 @@ cat > "$FAKE_BIN/uci" <<'EOF'
 
 set -eu
 
-[ "${1:-}" = '-q' ] && shift
+# Parse the leading global options. The migrator builds the new config in an
+# isolated workspace via `uci -c <confdir> -t <delta>`; honor -c so commit lands
+# in that workspace (the migrator then atomically renames it into place), and
+# ignore -t/-q.
+confdir=''
+while [ $# -gt 0 ]; do
+	case "${1:-}" in
+		-q) shift ;;
+		-c) confdir="${2:-}"; shift 2 ;;
+		-t) shift 2 ;;
+		*) break ;;
+	esac
+done
 cmd="${1:-}"
 shift || true
 
 store_dir="${FAKE_UCI_STORE_DIR:?}"
 config_file="${FAKE_UCI_CONFIG_FILE:?}"
 options_file="${FAKE_UCI_OPTIONS_FILE:?}"
+
+# The migrator builds in an isolated `uci -c <confdir>` workspace; scope the fake
+# store to that confdir so build writes never leak into the live config's store,
+# mirroring real uci confdir isolation.
+[ -n "$confdir" ] && store_dir="$confdir/.store"
 
 option_from_key() {
 	key="$1"
@@ -71,7 +88,13 @@ case "$cmd" in
 		rm -f "$store_dir/$option"
 		;;
 	commit)
-		mkdir -p "$(dirname "$config_file")"
+		if [ "${FAKE_UCI_FAIL_COMMIT:-0}" = '1' ]; then
+			printf '%s\n' 'fake uci: forced commit failure' >&2
+			exit 1
+		fi
+		out="$config_file"
+		[ -n "$confdir" ] && out="$confdir/${1:-nordvpn_easy}"
+		mkdir -p "$(dirname "$out")"
 		{
 			printf "config nordvpn_easy 'main'\n"
 			while IFS= read -r option; do
@@ -79,7 +102,7 @@ case "$cmd" in
 				[ -f "$store_dir/$option" ] || continue
 				printf "\toption %s '%s'\n" "$option" "$(cat "$store_dir/$option")"
 			done < "$options_file"
-		} > "$config_file"
+		} > "$out"
 		;;
 	*)
 		printf '%s\n' "unsupported fake uci command: $cmd" >&2
@@ -143,6 +166,7 @@ run_migrator() {
 	FAKE_UCI_STORE_DIR="$FAKE_UCI_STORE_DIR" \
 	FAKE_UCI_CONFIG_FILE="$config_file" \
 	FAKE_UCI_OPTIONS_FILE="$FAKE_UCI_OPTIONS_FILE" \
+	FAKE_UCI_FAIL_COMMIT="${FAKE_UCI_FAIL_COMMIT:-0}" \
 	NORDVPN_EASY_CONFIG_FILE="$config_file" \
 	NORDVPN_EASY_LEGACY_CONFIG_FILE="$legacy_config_file" \
 	NORDVPN_EASY_TEMPLATE_FILE="$TEMPLATE_FILE" \
@@ -317,5 +341,42 @@ set_store_value 'config_schema_version' "$NORDVPN_EASY_SCHEMA_VERSION"
 run_migrator
 
 assert_file_has_line "	option post_restart_delay '60'" "$FAKE_UCI_CONFIG_FILE" 'same-schema migration is a no-op and does not rewrite post_restart_delay'
+
+# Atomic-swap durability: a failure during the build (here a commit failure)
+# must leave the ORIGINAL config byte-for-byte intact - never a template-only
+# file with the user's settings lost - and clean up its workspace.
+reset_fake_uci
+cat > "$FAKE_UCI_CONFIG_FILE" <<'EOF'
+config nordvpn_easy 'main'
+	option enabled '1'
+	option nordvpn_token 'precious-user-token'
+	option vpn_country 'SE'
+EOF
+set_store_value '__section__' 'nordvpn_easy'
+set_store_value 'enabled' '1'
+set_store_value 'nordvpn_token' 'precious-user-token'
+set_store_value 'vpn_country' 'SE'
+original_before="$(cat "$FAKE_UCI_CONFIG_FILE")"
+
+FAKE_UCI_FAIL_COMMIT=1
+migrate_rc=0
+run_migrator || migrate_rc=$?
+FAKE_UCI_FAIL_COMMIT=0
+
+[ "$migrate_rc" -ne 0 ] || {
+	printf '%s\n' 'FAIL: migrator should report failure when the build commit fails' >&2
+	exit 1
+}
+assert_eq "$original_before" "$(cat "$FAKE_UCI_CONFIG_FILE")" 'failed migration leaves the original config byte-for-byte intact'
+if ls "$(dirname "$FAKE_UCI_CONFIG_FILE")"/.nordvpn-easy-migrate.* >/dev/null 2>&1; then
+	printf '%s\n' 'FAIL: failed migration left a build workspace behind' >&2
+	exit 1
+fi
+
+# And the next (successful) run still migrates cleanly into place via the swap.
+run_migrator
+assert_file_has_line "	option nordvpn_token 'precious-user-token'" "$FAKE_UCI_CONFIG_FILE" 'retry after a failed build migrates the preserved config'
+assert_file_has_line "	option vpn_country 'SE'" "$FAKE_UCI_CONFIG_FILE" 'retry after a failed build preserves the selected country'
+assert_file_has_line "	option config_schema_version '$NORDVPN_EASY_SCHEMA_VERSION'" "$FAKE_UCI_CONFIG_FILE" 'retry after a failed build writes the current schema version'
 
 printf '%s\n' 'test-migrate-config.sh: ok'
