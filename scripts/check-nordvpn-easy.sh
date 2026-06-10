@@ -80,9 +80,16 @@ if grep -REn 'localhost:7842|/ingest/|fetch\(.{0,3}http|agentDebugLog|AGENT_DEBU
 fi
 
 printf '%s\n' 'Checking shell syntax'
+# The shipped backend runs under OpenWrt's BusyBox ash, not the host sh (dash),
+# so parse-check and run the shell suite under busybox ash too when available.
+BUSYBOX="$(command -v busybox 2>/dev/null || true)"
 for file in "${SH_FILES[@]}"; do
 	sh -n "$file"
+	[ -z "$BUSYBOX" ] || busybox ash -n "$file"
 done
+if [ -z "$BUSYBOX" ]; then
+	printf '%s\n' 'WARNING: busybox not found; skipping BusyBox ash coverage (host sh only)' >&2
+fi
 
 printf '%s\n' 'Running fixture tests'
 node "$ROOT_DIR/tests/nordvpn-easy/test-service.js"
@@ -92,30 +99,41 @@ node "$ROOT_DIR/tests/nordvpn-easy/test-manager-ui.js"
 node "$ROOT_DIR/tests/nordvpn-easy/test-manager-polling.js"
 node "$ROOT_DIR/tests/nordvpn-easy/test-config.js"
 node "$ROOT_DIR/tests/nordvpn-easy/test-advanced.js"
-sh "$ROOT_DIR/tests/nordvpn-easy/test-config-context.sh"
-sh "$ROOT_DIR/tests/nordvpn-easy/test-schema.sh"
-sh "$ROOT_DIR/tests/nordvpn-easy/test-catalog-fixtures.sh"
-sh "$ROOT_DIR/tests/nordvpn-easy/test-common-lock.sh"
-sh "$ROOT_DIR/tests/nordvpn-easy/test-common-temp.sh"
-sh "$ROOT_DIR/tests/nordvpn-easy/test-diagnostics.sh"
-sh "$ROOT_DIR/tests/nordvpn-easy/test-healthcheck-blackhole.sh"
-sh "$ROOT_DIR/tests/nordvpn-easy/test-degraded-state-log.sh"
-sh "$ROOT_DIR/tests/nordvpn-easy/test-init-cron.sh"
-sh "$ROOT_DIR/tests/nordvpn-easy/test-init-run-core.sh"
-sh "$ROOT_DIR/tests/nordvpn-easy/test-init-transaction-lock.sh"
-sh "$ROOT_DIR/tests/nordvpn-easy/test-timing-log-cgi.sh"
-sh "$ROOT_DIR/tests/nordvpn-easy/test-init-start-soft-fail.sh"
-sh "$ROOT_DIR/tests/nordvpn-easy/test-rpcd.sh"
-sh "$ROOT_DIR/tests/nordvpn-easy/test-core-dispatch.sh"
-sh "$ROOT_DIR/tests/nordvpn-easy/test-uci-defaults-timeout.sh"
-sh "$ROOT_DIR/tests/nordvpn-easy/test-package-lockstep.sh"
-sh "$ROOT_DIR/tests/nordvpn-easy/test-migrate-config.sh"
-sh "$ROOT_DIR/tests/nordvpn-easy/test-runtime.sh"
-sh "$ROOT_DIR/tests/nordvpn-easy/test-public-ip-cache.sh"
-sh "$ROOT_DIR/tests/nordvpn-easy/test-wireguard.sh"
-sh "$ROOT_DIR/tests/nordvpn-easy/test-service-config.sh"
-sh "$ROOT_DIR/tests/nordvpn-easy/test-actions.sh"
-sh "$ROOT_DIR/tests/nordvpn-easy/test-provision.sh"
+SHELL_TESTS=(
+	test-config-context.sh
+	test-schema.sh
+	test-catalog-fixtures.sh
+	test-common-lock.sh
+	test-common-temp.sh
+	test-diagnostics.sh
+	test-healthcheck-blackhole.sh
+	test-degraded-state-log.sh
+	test-init-cron.sh
+	test-init-run-core.sh
+	test-init-transaction-lock.sh
+	test-timing-log-cgi.sh
+	test-init-start-soft-fail.sh
+	test-rpcd.sh
+	test-core-dispatch.sh
+	test-uci-defaults-timeout.sh
+	test-package-lockstep.sh
+	test-migrate-config.sh
+	test-runtime.sh
+	test-public-ip-cache.sh
+	test-wireguard.sh
+	test-service-config.sh
+	test-actions.sh
+	test-provision.sh
+)
+for t in "${SHELL_TESTS[@]}"; do
+	sh "$ROOT_DIR/tests/nordvpn-easy/$t"
+done
+if [ -n "$BUSYBOX" ]; then
+	printf '%s\n' 'Re-running shell fixture tests under BusyBox ash'
+	for t in "${SHELL_TESTS[@]}"; do
+		busybox ash "$ROOT_DIR/tests/nordvpn-easy/$t"
+	done
+fi
 
 if command -v shellcheck >/dev/null 2>&1; then
 	printf '%s\n' 'Running shellcheck'
