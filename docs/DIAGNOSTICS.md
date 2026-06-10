@@ -122,9 +122,26 @@ Environment override:
 export NORDVPN_EASY_LUCI_TIMING_LOG=/tmp/my-custom-timing.ndjson
 ```
 
-The CGI rotates the file when it exceeds **1 MiB** (renames to `.1`).
+The CGI rotates the file when it exceeds **1 MiB** (renames to `.1`), and
+ignores request bodies larger than **8 KiB** without reading them (the only
+callers post tiny JSON records). It also mirrors **Country Match indicator
+transitions** (`event:"country_match"`) into the system log via
+`logger -t nordvpn-easy`, so `logread` / `diagnostics_log` records when the
+on-screen indicator changes, cross-referencing the backend's own
+country-match transitions. That mirroring is always-on (not gated by the
+opt-in flag), but only fires on an actual transition.
+
+> This CGI is **lab-only** and must not be installed on production routers
+> (it is an unauthenticated, same-origin endpoint). The package ships the
+> source under `/www/luci-static/...`; it is **not** placed at the
+> `/cgi-bin/` endpoint by the package.
 
 ### 3.2 Deploy on a test router
+
+`scripts/deploy-debug-vm102-qemu.sh [VMID]` already installs the CGI to
+`/www/cgi-bin/nordvpn-easy-timing-log` (executable) alongside the rest of the
+dev tree, so on the VM 102 bench no manual step is needed. The manual steps
+below are a fallback for other routers.
 
 From your build machine (example: serve files over HTTP on the lab LAN):
 

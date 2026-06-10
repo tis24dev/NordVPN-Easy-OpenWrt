@@ -4,6 +4,10 @@
 
 LOG_FILE="${NORDVPN_EASY_LUCI_TIMING_LOG:-/tmp/nordvpn-easy-luci-timing.ndjson}"
 MAX_BYTES=1048576
+# Cap the accepted request body: the only callers post tiny JSON records
+# (timing milestones, country-match transitions), so anything larger is junk
+# and must not be read into memory (a same-origin-but-unauthenticated CGI).
+MAX_BODY_BYTES=8192
 
 nordvpn_easy_timing_respond() {
 	local body="$1"
@@ -27,6 +31,8 @@ nordvpn_easy_timing_read_body() {
 	esac
 
 	[ "$content_length" -gt 0 ] || return 0
+	# Ignore oversized bodies without reading them (DoS guard).
+	[ "$content_length" -le "${MAX_BODY_BYTES:-8192}" ] || return 0
 
 	if command -v dd >/dev/null 2>&1; then
 		body="$(dd bs=1 count="$content_length" 2>/dev/null | tr -d '\r')"

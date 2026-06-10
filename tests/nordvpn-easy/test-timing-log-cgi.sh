@@ -50,4 +50,11 @@ post '{"location":"runApplyCycleConnectPhase","event":"connect","data":{},"times
 [ ! -s "$LOGGER_CAP" ] || fail 'non country_match events must not reach the system log'
 grep -qF '"event":"connect"' "$NDJSON" || fail 'timing events are still appended to the NDJSON log'
 
+# An oversized body is rejected without being read/appended/logged (DoS guard).
+: > "$NDJSON"
+big="$(awk 'BEGIN { while (n++ < 9000) printf "a" }')"
+post "$big"
+[ ! -s "$LOGGER_CAP" ] || fail 'oversized body must not reach the system log'
+[ ! -s "$NDJSON" ] || fail 'oversized body must not be appended to the NDJSON log'
+
 printf '%s\n' 'test-timing-log-cgi.sh: ok'

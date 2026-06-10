@@ -47,7 +47,9 @@ EXECUTABLES = {
     "usr/libexec/nordvpn-easy/migrate-config.sh",
     "usr/libexec/nordvpn-easy/public-ip-poll.sh",
     "usr/libexec/rpcd/nordvpn.easy",
-    "www/luci-static/resources/nordvpn-easy/nordvpn-easy-timing-log.cgi",
+    # The timing CGI's live endpoint (installed at the cgi_prefix below); the
+    # htdocs copy is just the bundled source and ships 0644.
+    "www/cgi-bin/nordvpn-easy-timing-log",
 }
 
 REMOTE_TGZ = "/tmp/nvpn-deploy.tgz"
@@ -67,6 +69,14 @@ def collect_files():
                 arc = rel if not prefix else f"{prefix}/{rel}"
                 mode = 0o755 if arc in EXECUTABLES else 0o644
                 out.append((local, arc, mode))
+    # The timing CGI is bundled under htdocs (-> /www/luci-static, static), but
+    # the /cgi-bin/nordvpn-easy-timing-log endpoint the UI posts to (country-match
+    # logging) only runs from the uhttpd cgi_prefix. Install it there too,
+    # executable. This stays lab-only: the package itself does not ship it here.
+    cgi_src = os.path.join(
+        PKG, "luci-app-nordvpn-easy/htdocs/luci-static/resources/nordvpn-easy/nordvpn-easy-timing-log.cgi"
+    )
+    out.append((cgi_src, "www/cgi-bin/nordvpn-easy-timing-log", 0o755))
     out.sort(key=lambda item: item[1])
     return out
 
