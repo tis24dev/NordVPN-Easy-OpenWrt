@@ -96,6 +96,27 @@ nordvpn_easy_public_verification_write() {
 	mv "$cache_tmp" "$NORDVPN_EASY_PUBLIC_VERIFICATION_CACHE"
 }
 
+# Emit a single diagnostics-log line when the country-match outcome actually
+# changes (status, selected country, or detected exit country), so the automatic
+# log records the transition once instead of repeating it on every poll. Returns
+# without logging when nothing changed.
+nordvpn_easy_log_country_match_transition() {
+	local new_status="$1"
+	local expected="$2"
+	local actual="$3"
+	local old_status="$4"
+	local old_expected="$5"
+	local old_actual="$6"
+
+	if [ "$new_status" = "$old_status" ] &&
+		[ "$expected" = "$old_expected" ] &&
+		[ "$actual" = "$old_actual" ]; then
+		return 0
+	fi
+
+	nordvpn_easy_public_ip_log "country match changed: ${old_status:-unknown} -> ${new_status} (selected=${expected:-automatic}, exit=${actual:-unknown})"
+}
+
 nordvpn_easy_public_ip_endpoint_is_known() {
 	case "$1" in
 		https://ifconfig.me/ip|https://api.ipify.org|https://icanhazip.com)
@@ -328,6 +349,7 @@ nordvpn_easy_run_public_ip_check() {
 	local expected_country=''
 	local verification_status='ok'
 	local verification_message=''
+	local prev_status='' prev_expected='' prev_actual=''
 
 	case "$mode" in
 		quiet|verbose) PUBLIC_LOOKUP_LOG_MODE="$mode" ;;
@@ -338,6 +360,14 @@ nordvpn_easy_run_public_ip_check() {
 	ACTION='public_ip'
 	ACTION_TRACE_ID="$(date +%s 2>/dev/null || printf '%s' '0').$$"
 	expected_country="$(printf '%s' "${NORDVPN_EASY_EXPECTED_PUBLIC_COUNTRY:-${VPN_COUNTRY:-}}" | tr 'a-z' 'A-Z')"
+
+	# Snapshot the previously recorded country-match outcome before this poll
+	# overwrites it, so we only log a transition line when it actually changes.
+	if [ -r "$NORDVPN_EASY_PUBLIC_VERIFICATION_CACHE" ]; then
+		prev_status="$(sed -n 's/^status=//p' "$NORDVPN_EASY_PUBLIC_VERIFICATION_CACHE" 2>/dev/null | sed -n '1p')"
+		prev_expected="$(sed -n 's/^expected_country=//p' "$NORDVPN_EASY_PUBLIC_VERIFICATION_CACHE" 2>/dev/null | sed -n '1p')"
+		prev_actual="$(sed -n 's/^actual_country=//p' "$NORDVPN_EASY_PUBLIC_VERIFICATION_CACHE" 2>/dev/null | sed -n '1p')"
+	fi
 
 	nordvpn_easy_public_ip_log "public_ip request starting (mode=${PUBLIC_LOOKUP_LOG_MODE})"
 	command -v curl >/dev/null 2>&1 || {
@@ -359,6 +389,7 @@ nordvpn_easy_run_public_ip_check() {
 				verification_status='ok'
 				verification_message='public country check passed'
 			fi
+			nordvpn_easy_log_country_match_transition "$verification_status" "$expected_country" "$PUBLIC_COUNTRY" "$prev_status" "$prev_expected" "$prev_actual"
 			nordvpn_easy_public_verification_write "$verification_status" "$expected_country" "$PUBLIC_COUNTRY" "$verification_message" >/dev/null 2>&1 || true
 		else
 			verification_message="could not geolocate public IP ${PUBLIC_IP:-unknown}"

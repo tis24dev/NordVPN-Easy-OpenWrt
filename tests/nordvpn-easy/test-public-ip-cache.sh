@@ -168,4 +168,32 @@ assert_eq 'failed' "$(sed -n 's/^status=//p' "$NORDVPN_EASY_PUBLIC_VERIFICATION_
 	'failed public IP poll records public verification status'
 unset -f curl 2>/dev/null || true
 
+# Country-match transition logging: a single diagnostics line only when the
+# outcome (status / selected / exit country) actually changes.
+CM_LOG="$TMP_DIR/country_match_log"
+nordvpn_easy_public_ip_log() { printf '%s\n' "$*" >> "$CM_LOG"; }
+
+: > "$CM_LOG"
+nordvpn_easy_log_country_match_transition 'ok' 'CH' 'CH' 'ok' 'CH' 'CH'
+assert_eq '' "$(cat "$CM_LOG")" 'unchanged country match logs nothing'
+
+: > "$CM_LOG"
+nordvpn_easy_log_country_match_transition 'mismatch' 'CH' 'DE' 'ok' 'CH' 'CH'
+assert_eq 'country match changed: ok -> mismatch (selected=CH, exit=DE)' "$(cat "$CM_LOG")" \
+	'a country-match status change is logged once with selected and exit country'
+
+: > "$CM_LOG"
+nordvpn_easy_log_country_match_transition 'mismatch' 'CH' 'FR' 'mismatch' 'CH' 'DE'
+assert_eq 'country match changed: mismatch -> mismatch (selected=CH, exit=FR)' "$(cat "$CM_LOG")" \
+	'a changed exit country is logged even when the status is unchanged'
+
+: > "$CM_LOG"
+nordvpn_easy_log_country_match_transition 'ok' '' 'US' '' '' ''
+assert_eq 'country match changed: unknown -> ok (selected=automatic, exit=US)' "$(cat "$CM_LOG")" \
+	'the first recorded result logs with unknown previous and automatic selection'
+
+unset -f nordvpn_easy_public_ip_log 2>/dev/null || true
+# shellcheck disable=SC1090
+. "$PUBLIC_IP_LIB"
+
 printf '%s\n' 'test-public-ip-cache.sh: ok'
