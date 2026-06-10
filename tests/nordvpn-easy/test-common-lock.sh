@@ -86,5 +86,46 @@ alive_old_rc=0
 nordvpn_easy_acquire_lock >/dev/null 2>&1 || alive_old_rc=$?
 assert_eq '2' "$alive_old_rc" 'alive lock is never stolen even when old'
 assert_eq "$$" "$(cat "$LOCK_DIR/pid")" 'alive lock ownership preserved'
+rm -rf "$LOCK_DIR"
+
+# Inherited lock: a parent transaction holds the lock and hands it down to a
+# child core.sh via NORDVPN_EASY_LOCK_INHERITED. The child adopts the live
+# holder's lock without taking ownership and must never remove it on release.
+mkdir -p "$LOCK_DIR"
+printf '%s\n' "$$" > "$LOCK_DIR/pid"
+printf '%s\n' 'connect' > "$LOCK_DIR/action"
+printf '%s\n' "$(date +%s)" > "$LOCK_DIR/started_at"
+printf '%s\n' 'held' > "$LOCK_DIR/state"
+LOCK_ACQUIRED=0
+NORDVPN_EASY_LOCK_INHERITED=1
+
+inherit_rc=0
+nordvpn_easy_acquire_lock >/dev/null 2>&1 || inherit_rc=$?
+assert_eq '0' "$inherit_rc" 'inherited lock with a live holder is adopted'
+assert_eq '0' "$LOCK_ACQUIRED" 'adopting an inherited lock does not take ownership'
+
+nordvpn_easy_release_lock
+[ -d "$LOCK_DIR" ] || {
+	printf '%s\n' 'FAIL: a non-owner release must not remove the inherited lock' >&2
+	exit 1
+}
+assert_eq "$$" "$(cat "$LOCK_DIR/pid")" 'inherited lock holder metadata preserved'
+rm -rf "$LOCK_DIR"
+
+# Inherited but the recorded holder is gone: fall through to a real acquisition
+# so the child is never left running unprotected.
+mkdir -p "$LOCK_DIR"
+printf '%s\n' '999999' > "$LOCK_DIR/pid"
+printf '%s\n' 'connect' > "$LOCK_DIR/action"
+LOCK_ACQUIRED=0
+NORDVPN_EASY_LOCK_INHERITED=1
+
+fallthrough_rc=0
+nordvpn_easy_acquire_lock >/dev/null 2>&1 || fallthrough_rc=$?
+assert_eq '0' "$fallthrough_rc" 'inherited-but-dead lock falls through to a direct acquisition'
+assert_eq '1' "$LOCK_ACQUIRED" 'fallthrough acquisition takes ownership'
+assert_eq "$$" "$(cat "$LOCK_DIR/pid")" 'fallthrough acquisition records this pid'
+nordvpn_easy_release_lock
+unset NORDVPN_EASY_LOCK_INHERITED
 
 printf '%s\n' 'test-common-lock.sh: ok'

@@ -234,6 +234,49 @@ restart_cron_service() {
 	true
 }
 
+RUNTIME_TRANSACTION_LOCK_HELD=0
+
+# Serialize the whole connect/reconnect/reconcile/disconnect transaction under
+# the runtime lock. Each of these verbs composes a transaction from several
+# independent core.sh runs plus UCI writes; the per-core.sh lock is free between
+# those runs, so a concurrent rpcd connect/reconcile or a cron/hotplug check
+# could slip into the gaps and tear the runtime down while another call was
+# provisioning it. We take the lock once here and hand it down to every child
+# core.sh via NORDVPN_EASY_LOCK_INHERITED so the sub-actions adopt it instead of
+# re-acquiring it between steps. The exit trap the lock library installs releases
+# it once when the init process exits, covering every return path (including a
+# crash or signal mid-transaction).
+acquire_runtime_transaction_lock() {
+	local action_label="${1:-transaction}"
+	local rc=0
+	local holder_pid=''
+	local holder_action=''
+
+	# Reentrant within a single init process: reconcile() delegates to connect(),
+	# and both want the transaction lock. The first acquisition wins; nested
+	# callers adopt the already-held lock and must not re-acquire or release it.
+	[ "$RUNTIME_TRANSACTION_LOCK_HELD" -eq 1 ] && return 0
+
+	load_config_context_library || return 1
+
+	LOCK_DIR="$RUNTIME_LOCK_DIR"
+	ACTION="$action_label"
+	nordvpn_easy_acquire_lock || rc=$?
+	if [ "$rc" -eq 0 ]; then
+		RUNTIME_TRANSACTION_LOCK_HELD=1
+		export NORDVPN_EASY_LOCK_INHERITED=1
+		return 0
+	fi
+
+	# Any non-success means another live operation owns the runtime; surface the
+	# shared RC_BUSY contract so callers log and return uniformly instead of
+	# interleaving with the in-flight transaction.
+	holder_pid="$(cat "${RUNTIME_LOCK_DIR}/pid" 2>/dev/null || true)"
+	holder_action="$(cat "${RUNTIME_LOCK_DIR}/action" 2>/dev/null || true)"
+	log_service_info "apply: $action_label deferred because another runtime operation is running (holder_action=${holder_action:-unknown}, holder_pid=${holder_pid:-unknown})"
+	return "$NORDVPN_EASY_RC_BUSY"
+}
+
 connect_apply_guard_begin() {
 	mkdir -p "$RUN_STATE_DIR" 2>/dev/null || true
 	: > "$CONNECT_APPLY_GUARD" 2>/dev/null || true
@@ -732,6 +775,7 @@ connect() {
 	local rc=0
 
 	load_service_config || return 1
+	acquire_runtime_transaction_lock connect || return $?
 	log_service_info "connect requested; enabling runtime transactionally; $(nordvpn_easy_service_debug_summary 'cfg_')"
 	uci set "${UCI_CONFIG}.${UCI_SECTION}.enabled=1" || {
 		log_service_error 'connect failed while setting enabled=1'
@@ -773,6 +817,7 @@ connect() {
 
 disconnect() {
 	load_service_config || return 1
+	acquire_runtime_transaction_lock disconnect || return $?
 	log_service_info "disconnect requested; disabling runtime transactionally; $(nordvpn_easy_service_debug_summary 'cfg_')"
 	uci set "${UCI_CONFIG}.${UCI_SECTION}.enabled=0" || {
 		log_service_error 'disconnect failed while setting enabled=0'
@@ -810,6 +855,7 @@ reconnect() {
 		log_service_error 'reconnect refused because enabled=0; use connect to enable the runtime'
 		return 1
 	fi
+	acquire_runtime_transaction_lock reconnect || return $?
 	run_core_action reconnect || return $?
 	install_hooks
 }
@@ -820,6 +866,7 @@ reconcile() {
 
 	load_service_config || return 1
 	log_service_info "reconcile requested; synchronizing runtime with saved config; $(nordvpn_easy_service_debug_summary 'cfg_')"
+	acquire_runtime_transaction_lock reconcile || return $?
 
 	if [ "$cfg_enabled" -ne 1 ]; then
 		log_service_info 'reconcile: saved config is disabled; ensuring runtime is disabled'

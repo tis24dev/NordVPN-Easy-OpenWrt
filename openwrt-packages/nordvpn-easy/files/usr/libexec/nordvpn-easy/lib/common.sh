@@ -453,6 +453,33 @@ nordvpn_easy_acquire_lock() {
 	local now_ts=0
 	local stale_reason='unknown'
 
+	# Adopt a lock a parent transaction already holds. The init service's
+	# acquire_runtime_transaction_lock takes the runtime lock once for the whole
+	# connect/reconnect/reconcile sequence and exports NORDVPN_EASY_LOCK_INHERITED
+	# so each child core.sh run shares that single lock instead of re-acquiring
+	# (and releasing) it between steps, which is what used to leave the runtime
+	# unprotected in the gaps. We only adopt when a live holder still owns the
+	# dir; we install the exit trap so temp paths are still cleaned, but leave
+	# LOCK_ACQUIRED=0 so this child never releases a lock it did not create.
+	if [ "${NORDVPN_EASY_LOCK_INHERITED:-0}" = '1' ]; then
+		lock_pid="$(cat "$lock_pid_file" 2>/dev/null)"
+		case "$lock_pid" in
+			''|*[!0-9]*)
+				;;
+			*)
+				if kill -0 "$lock_pid" 2>/dev/null; then
+					LOCK_ACQUIRED=0
+					nordvpn_easy_install_exit_trap
+					nordvpn_easy_log_phase 'runtime' "adopting inherited execution lock at $LOCK_DIR (holder pid=$lock_pid)"
+					return 0
+				fi
+				;;
+		esac
+		# The inherited lock vanished or its holder died: fall through and
+		# acquire/recover it directly so this run is never left unprotected.
+		nordvpn_easy_log_phase 'runtime' "inherited execution lock at $LOCK_DIR is no longer held; acquiring directly"
+	fi
+
 	now_ts="$(date +%s 2>/dev/null || printf '0')"
 	if mkdir "$LOCK_DIR" 2>/dev/null; then
 		if ! nordvpn_easy_write_lock_metadata "$LOCK_DIR" "$$" "${ACTION:-unknown}" "$now_ts" 'held'; then

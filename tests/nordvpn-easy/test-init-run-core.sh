@@ -60,6 +60,8 @@ remove_hooks() {
 
 load_config_context_library() { :; }
 load_service_config() { :; }
+TRANSACTION_LOCK_RC=0
+acquire_runtime_transaction_lock() { return "${TRANSACTION_LOCK_RC:-0}"; }
 log_service_info() { printf '%s\n' "$1" >> "$INFO_CAPTURE"; }
 log_service_error() { printf '%s\n' "$1" >> "$ERROR_CAPTURE"; }
 nordvpn_easy_debug_cli_args() { printf '%s\n' 'none'; }
@@ -463,5 +465,53 @@ assert_eq '0' "$RC" 'abort_connect_apply succeeds'
 ' 'FAIL: abort_connect_apply should remove connect apply guard' >&2
 	exit 1
 }
+
+# Transaction-lock contention: the mutating verbs must defer with RC_BUSY and
+# run no setup / core action / hook work, so a second operation can never
+# interleave into the gaps of an in-flight connect/reconnect/reconcile.
+TRANSACTION_LOCK_RC="$NORDVPN_EASY_RC_BUSY"
+
+cfg_enabled=1
+cfg_nordvpn_token='token-secret'
+cfg_vpn_if='wg0'
+SETUP_COUNT=0
+INSTALL_HOOKS_COUNT=0
+rm -f "$CONNECT_APPLY_GUARD"
+RC=0
+connect || RC=$?
+assert_eq "$NORDVPN_EASY_RC_BUSY" "$RC" 'connect defers with RC_BUSY when the runtime lock is held'
+assert_eq '0' "$SETUP_COUNT" 'busy connect does not run setup'
+[ ! -f "$CONNECT_APPLY_GUARD" ] || {
+	printf '%s\n' 'FAIL: busy connect should not begin the connect apply guard' >&2
+	exit 1
+}
+
+rm -f "$CORE_CAPTURE"
+SETUP_COUNT=0
+INSTALL_HOOKS_COUNT=0
+RC=0
+reconnect || RC=$?
+assert_eq "$NORDVPN_EASY_RC_BUSY" "$RC" 'reconnect defers with RC_BUSY when the runtime lock is held'
+assert_eq '0' "$INSTALL_HOOKS_COUNT" 'busy reconnect does not install hooks'
+[ ! -f "$CORE_CAPTURE" ] || {
+	printf '%s\n' 'FAIL: busy reconnect should not run any core action' >&2
+	exit 1
+}
+
+rm -f "$CORE_CAPTURE"
+DISABLE_RUNTIME_COUNT=0
+SETUP_COUNT=0
+INSTALL_HOOKS_COUNT=0
+RC=0
+reconcile || RC=$?
+assert_eq "$NORDVPN_EASY_RC_BUSY" "$RC" 'reconcile defers with RC_BUSY when the runtime lock is held'
+assert_eq '0' "$DISABLE_RUNTIME_COUNT" 'busy reconcile does not disable the runtime'
+assert_eq '0' "$SETUP_COUNT" 'busy reconcile does not connect/setup'
+[ ! -f "$CORE_CAPTURE" ] || {
+	printf '%s\n' 'FAIL: busy reconcile should not run any core action' >&2
+	exit 1
+}
+
+TRANSACTION_LOCK_RC=0
 
 printf '%s\n' 'test-init-run-core.sh: ok'
