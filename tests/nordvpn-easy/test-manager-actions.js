@@ -61,6 +61,18 @@ function loadManagerDataModule() {
 
 const managerData = loadManagerDataModule();
 
+// The rpcd readonly-status fail-safe stub omits most fields on purpose;
+// parseLocalStatus must fill safe (down) defaults so a context-load + emitter
+// double-failure never reads as connected or mid-apply.
+{
+	const fallback = managerData.parseLocalStatus(
+		'{"updated_at":1,"state":"failed","desired_enabled":false,"enabled":false,"runtime_disabled":true,"interface_disabled":true,"runtime_configured":false,"connected":false,"vpn_status":"error","operation_status":"idle","last_error":"failed to load runtime context from UCI"}'
+	);
+	assert.equal(fallback.connected, false, 'rpcd fail-safe stub parses as disconnected');
+	assert.equal(fallback.connect_apply_pending, false, 'rpcd fail-safe stub defaults connect-apply pending to false');
+	assert.equal(fallback.public_verification_status, 'unknown', 'rpcd fail-safe stub defaults public verification to unknown');
+}
+
 function loadManagerActionsModule(overrides) {
 	const source = fs.readFileSync(managerActionsPath, 'utf8');
 	const context = {
