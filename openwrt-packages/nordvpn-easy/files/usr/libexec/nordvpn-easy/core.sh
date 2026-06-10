@@ -683,7 +683,18 @@ resolve_country_filter () {
       ((.code // "" | ascii_downcase) == ($query | ascii_downcase)) or
       ((.name // "" | ascii_downcase) == ($query | ascii_downcase))
     ) ][0] | [.id, .name, .code] | @tsv
-  ' "$COUNTRIES_CACHE_FILE" 2>/dev/null) || {
+  ' "$COUNTRIES_CACHE_FILE" 2>/dev/null) || COUNTRY_MATCH=''
+
+  IFS="$(printf '\t')" read -r RESOLVED_COUNTRY_ID RESOLVED_COUNTRY_NAME RESOLVED_COUNTRY_CODE <<EOF
+$COUNTRY_MATCH
+EOF
+
+  if [ -z "$RESOLVED_COUNTRY_ID" ]; then
+    # The country could not be resolved from the cache -- either it is absent
+    # from a readable cache (jq returns an empty row) or the cache could not be
+    # parsed (jq fails). In both cases a syntactically valid country code is
+    # still usable by filtering recommendations by code instead of the API
+    # country id, rather than failing the whole operation.
     if valid_country_code "$COUNTRY_QUERY"; then
       RESOLVED_COUNTRY_ID=''
       RESOLVED_COUNTRY_NAME='unknown in NordVPN country cache'
@@ -694,16 +705,7 @@ resolve_country_filter () {
     fi
     log "ERROR: COUNTRY '$COUNTRY_QUERY' NOT FOUND"
     return 1
-  }
-
-  IFS="$(printf '\t')" read -r RESOLVED_COUNTRY_ID RESOLVED_COUNTRY_NAME RESOLVED_COUNTRY_CODE <<EOF
-$COUNTRY_MATCH
-EOF
-
-  [ -n "$RESOLVED_COUNTRY_ID" ] || {
-    log "ERROR: COUNTRY '$COUNTRY_QUERY' NOT FOUND"
-    return 1
-  }
+  fi
 
   RESOLVED_COUNTRY_QUERY="$COUNTRY_QUERY"
   log "Filtering VPN servers by country: $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"

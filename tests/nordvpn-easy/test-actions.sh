@@ -206,53 +206,41 @@ RESOLVED_COUNTRY_NAME=''
 RESOLVED_COUNTRY_CODE=''
 RESOLVED_COUNTRY_QUERY=''
 
-valid_country_code() {
-	printf '%s' "$1" | grep -Eq '^[A-Z]{2}$'
+# Exercise the REAL resolve_country_filter / valid_country_code from core.sh
+# (extracted, not a drifting copy) so a production regression is caught here.
+CORE_SCRIPT="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/core.sh"
+PUBLIC_IP_LIB="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/public-ip.sh"
+extract_function() {
+	awk -v fn="$1" '
+		$0 ~ ("^" fn " ?\\(\\)") { capture = 1 }
+		capture { print }
+		capture && /^}/ { exit }
+	' "$2"
+}
+eval "$(extract_function nordvpn_easy_public_ip_valid_country_code "$PUBLIC_IP_LIB")"
+eval "$(extract_function valid_country_code "$CORE_SCRIPT")"
+eval "$(extract_function resolve_country_filter "$CORE_SCRIPT")"
+# The cache is pre-seeded above; stub the fetch + logging so resolution reads the
+# seeded cache directly and stays quiet.
+refresh_countries_cache() { return 0; }
+log() { :; }
+
+# A country present in the cache resolves to its API id.
+RESOLVED_COUNTRY_ID=''
+RESOLVED_COUNTRY_QUERY=''
+resolve_country_filter 'BZ' || {
+	printf '%s\n' 'FAIL: BZ should resolve from the country cache' >&2
+	exit 1
+}
+[ "$RESOLVED_COUNTRY_ID" = '22' ] && [ "$RESOLVED_COUNTRY_CODE" = 'BZ' ] || {
+	printf '%s\n' "FAIL: BZ should resolve to id 22 (got id=${RESOLVED_COUNTRY_ID:-unset})" >&2
+	exit 1
 }
 
-resolve_country_filter() {
-	COUNTRY_QUERY="${1:-$VPN_COUNTRY}"
-
-	[ -z "$COUNTRY_QUERY" ] && return 0
-	if [ -n "$RESOLVED_COUNTRY_ID" ] && [ "$RESOLVED_COUNTRY_QUERY" = "$COUNTRY_QUERY" ]; then
-		return 0
-	fi
-
-	COUNTRY_MATCH=$(jq -er --arg query "$COUNTRY_QUERY" '
-		[ .[] | select(
-			((.id | tostring) == $query) or
-			((.code // "" | ascii_downcase) == ($query | ascii_downcase)) or
-			((.name // "" | ascii_downcase) == ($query | ascii_downcase))
-		) ][0] | [.id, .name, .code] | @tsv
-	' "$COUNTRIES_CACHE_FILE" 2>/dev/null) || {
-		if valid_country_code "$COUNTRY_QUERY"; then
-			RESOLVED_COUNTRY_ID=''
-			RESOLVED_COUNTRY_NAME='unknown in NordVPN country cache'
-			RESOLVED_COUNTRY_CODE=$(printf '%s' "$COUNTRY_QUERY" | tr '[:lower:]' '[:upper:]')
-			RESOLVED_COUNTRY_QUERY="$COUNTRY_QUERY"
-			return 0
-		fi
-		return 1
-	}
-
-	IFS="$(printf '\t')" read -r RESOLVED_COUNTRY_ID RESOLVED_COUNTRY_NAME RESOLVED_COUNTRY_CODE <<EOF
-$COUNTRY_MATCH
-EOF
-
-	[ -n "$RESOLVED_COUNTRY_ID" ] || {
-		if valid_country_code "$COUNTRY_QUERY"; then
-			RESOLVED_COUNTRY_ID=''
-			RESOLVED_COUNTRY_NAME='unknown in NordVPN country cache'
-			RESOLVED_COUNTRY_CODE=$(printf '%s' "$COUNTRY_QUERY" | tr '[:lower:]' '[:upper:]')
-			RESOLVED_COUNTRY_QUERY="$COUNTRY_QUERY"
-			return 0
-		fi
-		return 1
-	}
-	RESOLVED_COUNTRY_QUERY="$COUNTRY_QUERY"
-	return 0
-}
-
+# A valid country code absent from a readable cache soft-resolves (filter by
+# code) instead of failing the whole operation.
+RESOLVED_COUNTRY_ID=''
+RESOLVED_COUNTRY_QUERY=''
 resolve_country_filter 'EC' || {
 	printf '%s\n' 'FAIL: EC should soft-resolve when missing from country cache' >&2
 	exit 1
@@ -261,6 +249,32 @@ resolve_country_filter 'EC' || {
 	printf '%s\n' 'FAIL: soft resolve should keep EC code without API country id' >&2
 	exit 1
 }
+
+# An unparseable cache also soft-resolves a valid code (jq fails, not empty).
+printf '%s' 'not json{' > "$COUNTRIES_CACHE_FILE"
+RESOLVED_COUNTRY_ID=''
+RESOLVED_COUNTRY_QUERY=''
+resolve_country_filter 'EC' || {
+	printf '%s\n' 'FAIL: EC should soft-resolve when the country cache is unparseable' >&2
+	exit 1
+}
+[ -z "$RESOLVED_COUNTRY_ID" ] && [ "$RESOLVED_COUNTRY_CODE" = 'EC' ] || {
+	printf '%s\n' 'FAIL: soft resolve should keep EC code when the cache is unparseable' >&2
+	exit 1
+}
+
+# An invalid (not two-letter-uppercase) query is a hard not-found.
+RESOLVED_COUNTRY_ID=''
+RESOLVED_COUNTRY_QUERY=''
+invalid_rc=0
+resolve_country_filter 'zz' || invalid_rc=$?
+[ "$invalid_rc" -ne 0 ] || {
+	printf '%s\n' 'FAIL: an invalid country query must not resolve' >&2
+	exit 1
+}
+
+# Restore a valid cache for the remaining tests.
+jq -n '[{ "id": 22, "name": "Belize", "code": "BZ" }]' > "$COUNTRIES_CACHE_FILE"
 
 RESOLVED_COUNTRY_CODE='IT'
 nordvpn_easy_set_first_server_from_list || {
