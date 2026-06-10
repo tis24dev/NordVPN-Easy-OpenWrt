@@ -64,6 +64,7 @@ if (!String.prototype.format) {
 function buildServiceModule(initialRpctimeout) {
 	const source = fs.readFileSync(servicePath, 'utf8');
 	const calls = [];
+	const declares = [];
 	const responses = [];
 	const context = {
 		baseclass: {
@@ -74,6 +75,7 @@ function buildServiceModule(initialRpctimeout) {
 		managerData: managerData,
 		rpc: {
 			declare(spec) {
+				declares.push(spec);
 				return function() {
 					const args = Array.prototype.slice.call(arguments);
 					const response = responses.length ? responses.shift() : {
@@ -130,6 +132,7 @@ function buildServiceModule(initialRpctimeout) {
 	return {
 		service: service,
 		calls: calls,
+		declares: declares,
 		responses: responses,
 		getRpctimeout() {
 			return context.L.env.rpctimeout;
@@ -146,13 +149,35 @@ function loadServiceModule(initialRpctimeout) {
 	return {
 		service: built.service,
 		calls: built.calls,
+		declares: built.declares,
 		responses: built.responses,
 		getRpctimeout: built.getRpctimeout,
 		setRpctimeout: built.setRpctimeout
 	};
 }
 
+function testAclGrantsEveryDeclaredMethod() {
+	const built = loadServiceModule();
+	const declaredMethods = built.declares
+		.filter(function(spec) { return spec && spec.object === 'nordvpn.easy'; })
+		.map(function(spec) { return spec.method; });
+
+	assert.ok(declaredMethods.length > 0, 'service.js declares at least one nordvpn.easy method');
+
+	const aclPath = path.join(__dirname, '..', '..', 'openwrt-packages', 'luci-app-nordvpn-easy', 'root', 'usr', 'share', 'rpcd', 'acl.d', 'luci-app-nordvpn-easy.json');
+	const acl = JSON.parse(fs.readFileSync(aclPath, 'utf8'));
+	const grant = acl['luci-app-nordvpn-easy'] || {};
+	const grantedUbus = function(scope) {
+		return (grant[scope] && grant[scope].ubus && grant[scope].ubus['nordvpn.easy']) || [];
+	};
+	const granted = grantedUbus('read').concat(grantedUbus('write'));
+
+	const missing = declaredMethods.filter(function(method) { return granted.indexOf(method) === -1; });
+	assert.deepEqual(missing, [], 'every nordvpn.easy method the frontend declares must be granted by the rpcd ACL (missing: ' + JSON.stringify(missing) + ')');
+}
+
 Promise.resolve().then(async function() {
+	testAclGrantsEveryDeclaredMethod();
 	const lowTimeout = loadServiceModule(20);
 	lowTimeout.service.ensureLuCiRpcTimeout();
 	assert.equal(lowTimeout.getRpctimeout(), 180, 'ensureLuCiRpcTimeout raises LuCI global RPC timeout');
