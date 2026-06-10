@@ -2382,7 +2382,41 @@ function testHideSelectionDriftDiagnosticsPicksMostUrgentRemaining() {
 	}), false, 'hideSelectionDriftDiagnostics filters drift from findings list');
 }
 
+function testForcedCatalogRefreshUsesADistinctSlot() {
+	const keys = [];
+	const actions = loadManagerActionsModule({
+		managerData: {
+			normalizeCountryCode(v) { return String(v || '').trim().toUpperCase(); },
+			runtimeStatusIsBusy() { return false; },
+			parseServerCatalog() { return { servers: [], country_code: 'DE' }; },
+			buildServerCatalogIndex() { return {}; },
+			emptyServerCatalog() { return { servers: [] }; }
+		},
+		managerStore: {
+			runExclusive(_state, key, factory) { keys.push(key); return Promise.resolve(factory && factory()); }
+		},
+		managerUI: {
+			ids: { SERVER_FIELD_ID: 'srv' },
+			getSelectElement() { return null; },
+			renderServerChoices() {},
+			updateServerSelectionState() {},
+			getSelectedCountry() { return 'DE'; },
+			getSelectedPreferredStation() { return ''; }
+		},
+		service: { execService() { return Promise.resolve({ code: 0, stdout: '{}' }); } }
+	}).managerActions;
+	const state = { latestServerCatalogRequestId: 0, currentLocalStatus: {}, currentServerCatalog: { servers: [] }, serverCatalogIndex: {} };
+
+	// The exclusive key is captured synchronously when runExclusive is invoked.
+	actions.loadServerCatalog(state, 'DE', false);
+	actions.loadServerCatalog(state, 'DE', true);
+
+	assert.deepEqual(keys, [ 'catalog:DE', 'catalog:force:DE' ],
+		'a forced catalog refresh uses a distinct exclusive slot from a non-forced fetch');
+}
+
 Promise.resolve().then(async function() {
+	testForcedCatalogRefreshUsesADistinctSlot();
 	await testUpdateLocalStatusPreservesSnapshotOnFailedResponse();
 	await testUpdateLocalStatusMarksSnapshotsStaleOnRejectedExec();
 	testRenderLocalStatusSnapshotClearsDisabledPlaceholders();
