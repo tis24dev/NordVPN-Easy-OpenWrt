@@ -502,8 +502,20 @@ nordvpn_easy_acquire_lock() {
 		lock_action="$(cat "$lock_action_file" 2>/dev/null)"
 		lock_started_at="$(cat "$lock_started_at_file" 2>/dev/null)"
 		lock_age="$(nordvpn_easy_lock_age_seconds "$LOCK_DIR" "$lock_started_at")"
-		nordvpn_easy_log_blocker 'runtime' "execution lock metadata is incomplete (missing pid metadata, action=${lock_action:-unknown}, age=${lock_age}s)"
-		return 2
+		# A lock dir with no pid file means a crash between mkdir and the
+		# metadata write -- a window of microseconds. Within a short grace
+		# period stay conservative (a creator may legitimately be mid-write) and
+		# report contention; once the dir has aged past it no live owner can
+		# ever appear, so fall through to recovery instead of leaving every
+		# future operation blocked while status reports the runtime as idle.
+		case "$lock_age" in
+			''|*[!0-9]*) lock_age=0 ;;
+		esac
+		if [ "$lock_age" -lt "${NORDVPN_EASY_LOCK_PIDLESS_GRACE:-30}" ]; then
+			nordvpn_easy_log_blocker 'runtime' "execution lock metadata is incomplete (missing pid metadata, action=${lock_action:-unknown}, age=${lock_age}s)"
+			return 2
+		fi
+		stale_reason="missing pid metadata (age=${lock_age}s; creator died mid-acquire)"
 	else
 		lock_pid="$(cat "$lock_pid_file" 2>/dev/null)"
 		case "$lock_pid" in

@@ -60,6 +60,8 @@ nordvpn_easy_acquire_lock >/dev/null 2>&1 || stale_rc=$?
 assert_eq '0' "$stale_rc" 'stale lock recovery'
 nordvpn_easy_release_lock
 
+# A fresh pid-less lock (within the grace window) is treated as contention: a
+# creator may legitimately still be mid-write between mkdir and the metadata.
 mkdir -p "$LOCK_DIR"
 printf '%s\n' 'missing-pid-action' > "$LOCK_DIR/action"
 printf '%s\n' "$(date +%s)" > "$LOCK_DIR/started_at"
@@ -68,11 +70,27 @@ LOCK_ACQUIRED=0
 
 missing_pid_rc=0
 nordvpn_easy_acquire_lock >/dev/null 2>&1 || missing_pid_rc=$?
-assert_eq '2' "$missing_pid_rc" 'missing pid metadata is treated as contention'
+assert_eq '2' "$missing_pid_rc" 'fresh missing-pid lock is treated as contention'
 [ -d "$LOCK_DIR" ] || {
 	printf '%s\n' 'FAIL: lock directory should remain when pid metadata is missing' >&2
 	exit 1
 }
+rm -rf "$LOCK_DIR"
+
+# An aged pid-less lock (a crash between mkdir and the metadata write) can never
+# gain a live owner, so it is recovered instead of blocking every future
+# operation forever while status reports the runtime as idle.
+mkdir -p "$LOCK_DIR"
+printf '%s\n' 'aged-missing-pid' > "$LOCK_DIR/action"
+printf '%s\n' "$(( $(date +%s) - 600 ))" > "$LOCK_DIR/started_at"
+printf '%s\n' 'held' > "$LOCK_DIR/state"
+LOCK_ACQUIRED=0
+
+aged_pidless_rc=0
+nordvpn_easy_acquire_lock >/dev/null 2>&1 || aged_pidless_rc=$?
+assert_eq '0' "$aged_pidless_rc" 'aged pid-less lock is recovered, not a permanent block'
+assert_eq "$$" "$(cat "$LOCK_DIR/pid")" 'recovered pid-less lock is owned by the recoverer'
+nordvpn_easy_release_lock
 rm -rf "$LOCK_DIR"
 
 mkdir -p "$LOCK_DIR"
