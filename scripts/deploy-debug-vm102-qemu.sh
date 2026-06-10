@@ -1,203 +1,168 @@
 #!/bin/sh
-# Deploy NordVPN Easy LuCI/rpcd lab files to OpenWrt via QEMU guest agent.
-# Usage: ./scripts/deploy-debug-vm102-qemu.sh [VMID]
+# Deploy the full NordVPN Easy development tree (backend + rpcd + LuCI) to a
+# running OpenWrt VM via the QEMU guest agent, for fast iteration on the VM 102
+# busybox-ash test bench without rebuilding packages.
+#
+# The whole tree is bundled into one gzip tarball and streamed in a SINGLE
+# `qm guest exec --pass-stdin` call (the guest agent forwards stdin, up to 1 MiB,
+# straight to the remote shell). That one call decodes, verifies the tarball md5,
+# extracts into place, verifies every file's md5, restarts rpcd, clears the LuCI
+# cache and confirms the ubus object re-registered. One round-trip, a few seconds.
+#
+# Usage: ./scripts/deploy-debug-vm102-qemu.sh [VMID]   (VMID defaults to 102)
 
 set -eu
 VMID="${1:-102}"
 REPO_ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
-BASE="$REPO_ROOT/openwrt-packages"
 
-export VMID REPO_ROOT BASE
-exec python3 - "$@" <<'PY'
+export VMID REPO_ROOT
+exec python3 - <<'PY'
 import hashlib
+import io
 import json
 import os
 import subprocess
 import sys
+import tarfile
 
 VM = os.environ.get("VMID", "102")
-BASE = os.environ["BASE"]
-CHUNK = 2000  # bytes per guest-exec (faster than 350)
+REPO = os.environ["REPO_ROOT"]
+PKG = os.path.join(REPO, "openwrt-packages")
 
-FILES = [
-    (
-        f"{BASE}/nordvpn-easy/files/etc/init.d/nordvpn-easy",
-        "/etc/init.d/nordvpn-easy",
-        "755",
-    ),
-    (
-        f"{BASE}/nordvpn-easy/files/usr/libexec/rpcd/nordvpn.easy",
-        "/usr/libexec/rpcd/nordvpn.easy",
-        "755",
-    ),
-    (
-        f"{BASE}/nordvpn-easy/files/usr/libexec/nordvpn-easy/core.sh",
-        "/usr/libexec/nordvpn-easy/core.sh",
-        "755",
-    ),
-    (
-        f"{BASE}/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/actions.sh",
-        "/usr/libexec/nordvpn-easy/lib/actions.sh",
-        "644",
-    ),
-    (
-        f"{BASE}/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/wireguard.sh",
-        "/usr/libexec/nordvpn-easy/lib/wireguard.sh",
-        "644",
-    ),
-    (
-        f"{BASE}/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/common.sh",
-        "/usr/libexec/nordvpn-easy/lib/common.sh",
-        "644",
-    ),
-    (
-        f"{BASE}/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/runtime.sh",
-        "/usr/libexec/nordvpn-easy/lib/runtime.sh",
-        "644",
-    ),
-    (
-        f"{BASE}/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/public-ip.sh",
-        "/usr/libexec/nordvpn-easy/lib/public-ip.sh",
-        "644",
-    ),
-    (
-        f"{BASE}/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/diagnostics.sh",
-        "/usr/libexec/nordvpn-easy/lib/diagnostics.sh",
-        "644",
-    ),
-    (
-        f"{BASE}/nordvpn-easy/files/usr/libexec/nordvpn-easy/migrate-config.sh",
-        "/usr/libexec/nordvpn-easy/migrate-config.sh",
-        "755",
-    ),
-    (
-        f"{BASE}/nordvpn-easy/files/usr/libexec/nordvpn-easy/public-ip-poll.sh",
-        "/usr/libexec/nordvpn-easy/public-ip-poll.sh",
-        "755",
-    ),
-    (
-        f"{BASE}/luci-app-nordvpn-easy/root/usr/share/rpcd/acl.d/luci-app-nordvpn-easy.json",
-        "/usr/share/rpcd/acl.d/luci-app-nordvpn-easy.json",
-        "644",
-    ),
-    (
-        f"{BASE}/luci-app-nordvpn-easy/root/usr/share/luci/menu.d/luci-app-nordvpn-easy.json",
-        "/usr/share/luci/menu.d/luci-app-nordvpn-easy.json",
-        "644",
-    ),
-    (
-        f"{BASE}/luci-app-nordvpn-easy/htdocs/luci-static/resources/nordvpn-easy/manager-actions.js",
-        "/www/luci-static/resources/nordvpn-easy/manager-actions.js",
-        "644",
-    ),
-    (
-        f"{BASE}/luci-app-nordvpn-easy/htdocs/luci-static/resources/nordvpn-easy/manager-data.js",
-        "/www/luci-static/resources/nordvpn-easy/manager-data.js",
-        "644",
-    ),
-    (
-        f"{BASE}/luci-app-nordvpn-easy/htdocs/luci-static/resources/nordvpn-easy/manager-ui.js",
-        "/www/luci-static/resources/nordvpn-easy/manager-ui.js",
-        "644",
-    ),
-    (
-        f"{BASE}/luci-app-nordvpn-easy/htdocs/luci-static/resources/nordvpn-easy/service.js",
-        "/www/luci-static/resources/nordvpn-easy/service.js",
-        "644",
-    ),
-    (
-        f"{BASE}/luci-app-nordvpn-easy/htdocs/luci-static/resources/view/nordvpn-easy/config.js",
-        "/www/luci-static/resources/view/nordvpn-easy/config.js",
-        "644",
-    ),
+# Source roots mapped to their on-device prefix:
+#   backend  files/*   -> /*
+#   LuCI     htdocs/*  -> /www/*
+#   LuCI     root/*    -> /*
+SOURCES = [
+    (os.path.join(PKG, "nordvpn-easy/files"), ""),
+    (os.path.join(PKG, "luci-app-nordvpn-easy/htdocs"), "www"),
+    (os.path.join(PKG, "luci-app-nordvpn-easy/root"), ""),
 ]
 
+# Everything ships 0644 except these entry points, which stay executable.
+EXECUTABLES = {
+    "etc/init.d/nordvpn-easy",
+    "etc/uci-defaults/99-nordvpn-easy-rpcd-timeout",
+    "usr/libexec/nordvpn-easy/core.sh",
+    "usr/libexec/nordvpn-easy/migrate-config.sh",
+    "usr/libexec/nordvpn-easy/public-ip-poll.sh",
+    "usr/libexec/rpcd/nordvpn.easy",
+    "www/luci-static/resources/nordvpn-easy/nordvpn-easy-timing-log.cgi",
+}
 
-def guest_sh(script, timeout=90):
+REMOTE_TGZ = "/tmp/nvpn-deploy.tgz"
+REMOTE_MANIFEST = "/tmp/nvpn-deploy.md5"  # relative-path md5 list, checked from /
+
+
+def collect_files():
+    """Return [(local_path, arcname, mode)] for the whole dev tree."""
+    out = []
+    for root, prefix in SOURCES:
+        if not os.path.isdir(root):
+            sys.exit(f"missing source tree: {root}")
+        for dirpath, _dirs, names in os.walk(root):
+            for name in names:
+                local = os.path.join(dirpath, name)
+                rel = os.path.relpath(local, root).replace(os.sep, "/")
+                arc = rel if not prefix else f"{prefix}/{rel}"
+                mode = 0o755 if arc in EXECUTABLES else 0o644
+                out.append((local, arc, mode))
+    out.sort(key=lambda item: item[1])
+    return out
+
+
+def add_member(tf, arcname, data, mode):
+    info = tarfile.TarInfo(arcname)
+    info.size = len(data)
+    info.mode = mode
+    info.mtime = 0
+    info.uid = info.gid = 0
+    info.uname = info.gname = "root"
+    tf.addfile(info, io.BytesIO(data))
+
+
+def build_tarball(files):
+    """Build a gzip tarball rooted at '/', with an embedded md5 manifest."""
+    buf = io.BytesIO()
+    manifest_lines = []
+    with tarfile.open(fileobj=buf, mode="w:gz", format=tarfile.GNU_FORMAT) as tf:
+        for local, arc, mode in files:
+            with open(local, "rb") as fh:
+                data = fh.read()
+            manifest_lines.append(f"{hashlib.md5(data).hexdigest()}  {arc}")
+            add_member(tf, arc, data, mode)
+        manifest = ("\n".join(manifest_lines) + "\n").encode()
+        # Manifest paths are relative; the remote checks them from `cd /`.
+        add_member(tf, REMOTE_MANIFEST.lstrip("/"), manifest, 0o644)
+    return buf.getvalue(), len(files)
+
+
+def remote_script(tar_md5):
+    return f"""set -e
+cat > {REMOTE_TGZ}
+got=$(md5sum {REMOTE_TGZ} | cut -d' ' -f1)
+[ "$got" = "{tar_md5}" ] || {{ echo "TARBALL_MD5_MISMATCH $got"; exit 1; }}
+tar -xzf {REMOTE_TGZ} -C /
+cd / && md5sum -c {REMOTE_MANIFEST} >/dev/null 2>&1 || {{ echo MANIFEST_FAIL; exit 1; }}
+for f in /etc/init.d/nordvpn-easy /usr/libexec/rpcd/nordvpn.easy /usr/libexec/nordvpn-easy/core.sh; do
+    sh -n "$f" || {{ echo "PARSE_FAIL $f"; exit 1; }}
+done
+/etc/init.d/rpcd restart >/dev/null 2>&1 || /etc/init.d/rpcd reload >/dev/null 2>&1
+rm -f /tmp/luci-indexcache* 2>/dev/null || true
+rm -rf /tmp/luci-modulecache 2>/dev/null || true
+sleep 1
+ubus list 2>/dev/null | grep -qx nordvpn.easy && echo UBUS_OK || echo UBUS_MISSING
+rm -f {REMOTE_TGZ} {REMOTE_MANIFEST}
+echo DEPLOY_DONE
+"""
+
+
+def require_running_vm():
+    r = subprocess.run(["qm", "status", VM], capture_output=True, text=True)
+    if r.returncode != 0:
+        sys.exit(f"cannot query VM {VM}: {r.stderr.strip() or r.stdout.strip()}")
+    if "running" not in r.stdout:
+        sys.exit(f"VM {VM} is not running ({r.stdout.strip()})")
+
+
+def guest_exec_stdin(stdin_bytes, script, timeout=90):
+    """Run a remote shell with stdin forwarded via the guest agent (one call)."""
     r = subprocess.run(
-        ["qm", "guest", "exec", VM, "--", "sh", "-c", script],
+        [
+            "qm", "guest", "exec", VM,
+            "--pass-stdin", "1", "--timeout", str(timeout),
+            "--", "/bin/sh", "-c", script,
+        ],
+        input=stdin_bytes,
         capture_output=True,
-        text=True,
-        timeout=timeout,
+        timeout=timeout + 30,
     )
+    out = r.stdout.decode("utf-8", "replace")
     try:
-        j = json.loads(r.stdout)
-        return j.get("exitcode", 1), j.get("out-data", ""), j.get("err-data", "")
+        j = json.loads(out)
     except json.JSONDecodeError:
-        return r.returncode, r.stdout, r.stderr
-
-
-def remote_md5(path):
-    rc, out, err = guest_sh(
-        f"md5sum {path} 2>/dev/null || busybox md5sum {path} 2>/dev/null"
-    )
-    if rc != 0:
-        return None
-    line = out.strip().splitlines()
-    if not line:
-        return None
-    return line[0].split()[0]
-
-
-def deploy_binary(local_path, remote_path, chmod=None):
-    with open(local_path, "rb") as f:
-        data = f.read()
-    want_md5 = hashlib.md5(data).hexdigest()
-    tmp = remote_path + ".new"
-    guest_sh(f"rm -f {tmp}")
-    for i in range(0, len(data), CHUNK):
-        part = data[i : i + CHUNK]
-        esc = "".join(f"\\x{b:02x}" for b in part)
-        rc, out, err = guest_sh(f"printf '{esc}' >> {tmp}")
-        if rc != 0:
-            print(f"chunk failed at {i}: {err}{out}", file=sys.stderr)
-            return False
-    rc, out, err = guest_sh(f"wc -c {tmp}")
-    try:
-        size = int(out.strip().split()[0])
-    except (ValueError, IndexError):
-        print(f"wc failed: {out!r} {err!r}", file=sys.stderr)
-        return False
-    if size != len(data):
-        print(f"size mismatch {remote_path}: {size} != {len(data)}", file=sys.stderr)
-        return False
-    got_md5 = remote_md5(tmp)
-    if got_md5 != want_md5:
-        print(
-            f"md5 mismatch {remote_path}: {got_md5} != {want_md5}",
-            file=sys.stderr,
-        )
-        return False
-    inst = f"cp {tmp} {remote_path}"
-    if chmod:
-        inst += f" && chmod {chmod} {remote_path}"
-    rc, out, err = guest_sh(inst)
-    if rc != 0:
-        return False
-    final_md5 = remote_md5(remote_path)
-    if final_md5 != want_md5:
-        print(
-            f"md5 mismatch after install {remote_path}: {final_md5} != {want_md5}",
-            file=sys.stderr,
-        )
-        return False
-    if remote_path.endswith("nordvpn.easy"):
-        rc, out, err = guest_sh(f"sh -n {remote_path} 2>&1")
-        if rc != 0:
-            print(f"syntax check failed {remote_path}: {out}{err}", file=sys.stderr)
-            return False
-    print(f"OK {remote_path} ({len(data)} bytes, md5={want_md5})")
-    return True
+        sys.exit(f"unexpected qm output: {out}{r.stderr.decode('utf-8', 'replace')}")
+    return j.get("exitcode", 1) or 0, j.get("out-data", ""), j.get("err-data", "")
 
 
 def main():
-    for local, remote, mode in FILES:
-        if not os.path.isfile(local):
-            print(f"missing: {local}", file=sys.stderr)
-            sys.exit(1)
-        if not deploy_binary(local, remote, mode):
-            sys.exit(1)
-    guest_sh("/etc/init.d/rpcd restart; sleep 1")
+    require_running_vm()
+
+    files = collect_files()
+    tarball, count = build_tarball(files)
+    tar_md5 = hashlib.md5(tarball).hexdigest()
+    if len(tarball) > 1024 * 1024:
+        sys.exit(f"tarball {len(tarball)} bytes exceeds the 1 MiB guest-agent stdin limit")
+    print(f"Bundling {count} files ({len(tarball)} bytes, md5={tar_md5}) and streaming to VM {VM}...")
+
+    rc, out, err = guest_exec_stdin(tarball, remote_script(tar_md5))
+    out = out.strip()
+    if rc != 0 or "DEPLOY_DONE" not in out:
+        sys.exit(f"deploy failed (rc={rc}): {out}\n{err}")
+    if "UBUS_MISSING" in out:
+        print(f"WARNING: nordvpn.easy ubus object not listed after rpcd restart.", file=sys.stderr)
+    else:
+        print(f"Verified {count} files; rpcd restarted; nordvpn.easy ubus object registered.")
     print(f"Deploy to VM {VM} complete. Hard-refresh LuCI (Ctrl+F5).")
 
 
