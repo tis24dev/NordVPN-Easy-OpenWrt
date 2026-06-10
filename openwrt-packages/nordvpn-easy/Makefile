@@ -19,7 +19,7 @@ define Package/nordvpn-easy
   CATEGORY:=Network
   SUBMENU:=VPN
   TITLE:=NordVPN Easy backend service for OpenWrt
-  DEPENDS:=+ca-certificates +curl +jq +kmod-wireguard +wireguard-tools +rpcd
+  DEPENDS:=+ca-certificates +curl +jq +kmod-wireguard +wireguard-tools +firewall4 +rpcd
   PKGARCH:=all
   URL:=$(NORDVPN_EASY_PACKAGE_URL)
   MAINTAINER:=$(NORDVPN_EASY_PACKAGE_MAINTAINER)
