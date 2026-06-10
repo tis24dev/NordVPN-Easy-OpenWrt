@@ -622,24 +622,21 @@ function runApplyCycleConfigurationPhase(viewState, state, ev, submitted, skipFo
 	});
 }
 
-function runApplyCycleStopWithConnectApplyGuard(state, applyAttemptId) {
-	return service.runAction('begin_connect_apply').then(function(beginResult) {
-		if (!applyAttemptIsCurrent(state, applyAttemptId))
-			return rejectStaleApplyAttempt();
-
-		if (!beginResult.success)
-			throw service.resultToError(beginResult);
-
-		state.applyPhase = 'stop_vpn';
-
-		return service.runAction('stop_vpn').then(function(stopResult) {
+function runApplyActionSequence(state, applyAttemptId, actions) {
+	return actions.reduce(function(chain, action) {
+		return chain.then(function() {
 			if (!applyAttemptIsCurrent(state, applyAttemptId))
 				return rejectStaleApplyAttempt();
 
-			if (!stopResult.success)
-				throw service.resultToError(stopResult);
+			return service.runAction(action).then(function(result) {
+				if (!applyAttemptIsCurrent(state, applyAttemptId))
+					return rejectStaleApplyAttempt();
+
+				if (!result.success)
+					throw service.resultToError(result);
+			});
 		});
-	});
+	}, Promise.resolve());
 }
 
 function runApplyCycleDisabledStop(state, applyAttemptId) {
@@ -789,24 +786,16 @@ function runApplyCycleStopPhase(viewState, state, submitted, applyAttemptId) {
 	const selectionChanged = runtimeSelectionChanged(state, viewState, submitted);
 	timingLog('runApplyCycleStopPhase', 'stop_phase', { selectionChanged: selectionChanged });
 
-	if (!selectionChanged)
-		return runApplyCycleStopWithConnectApplyGuard(state, applyAttemptId);
+	// A server/selection change stops FIRST then arms the connect-apply guard, so
+	// the stop runs in server-change mode and clears the stale recommendation
+	// caches; an unchanged selection arms the guard FIRST so the whole stop is
+	// guarded and the reusable recommendation cache is preserved. The two paths
+	// differ only in this ordering.
+	const sequence = selectionChanged
+		? [ 'stop_vpn', 'begin_connect_apply' ]
+		: [ 'begin_connect_apply', 'stop_vpn' ];
 
-	return service.runAction('stop_vpn').then(function(stopResult) {
-		if (!applyAttemptIsCurrent(state, applyAttemptId))
-			return rejectStaleApplyAttempt();
-
-		if (!stopResult.success)
-			throw service.resultToError(stopResult);
-
-		return service.runAction('begin_connect_apply').then(function(beginResult) {
-			if (!applyAttemptIsCurrent(state, applyAttemptId))
-				return rejectStaleApplyAttempt();
-
-			if (!beginResult.success)
-				throw service.resultToError(beginResult);
-		});
-	});
+	return runApplyActionSequence(state, applyAttemptId, sequence);
 }
 
 function shouldHideDiagnosticsAlerts(state) {
