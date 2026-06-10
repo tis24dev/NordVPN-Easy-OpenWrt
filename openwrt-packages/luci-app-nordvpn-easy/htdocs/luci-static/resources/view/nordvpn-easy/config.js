@@ -138,7 +138,17 @@ const TokenValue = form.Value.extend({
 		const existingValue = this.storedValue(section_id);
 		const normalizedValue = String(value != null ? value : '').trim();
 
-		if (!normalizedValue && !existingValue)
+		if (normalizedValue || existingValue)
+			return true;
+
+		// The token is only needed to bring the VPN up; the runtime skips it
+		// entirely while disabled. So require it only when this save would enable
+		// the VPN -- a disabled / pre-configured profile can be saved without one.
+		const enabledLookup = this.map.lookupOption('enabled', section_id);
+		const enabledOption = enabledLookup && enabledLookup[0];
+		const wantsEnabled = enabledOption ? enabledOption.formvalue(section_id) : null;
+
+		if (wantsEnabled === '1' || wantsEnabled === true)
 			return _('Required. NordVPN access token.');
 
 		return true;

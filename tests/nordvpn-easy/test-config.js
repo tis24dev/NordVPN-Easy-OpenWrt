@@ -182,6 +182,11 @@ function createFormHarness() {
 			map: this
 		});
 	};
+	form.Map.prototype.lookupOption = function(name, section_id) {
+		const option = this.options.find(function(o) { return o.option === name; });
+
+		return option ? [ option, section_id ] : null;
+	};
 
 	harness.form = form;
 	harness.findOption = function(name) {
@@ -809,7 +814,36 @@ async function testRenderRefreshesEmptyCountryCacheInBackground() {
 	);
 }
 
+async function testTokenRequiredOnlyWhenEnabling() {
+	const countryRaw = JSON.stringify([ { name: 'Uruguay', code: 'UY' } ]);
+	const statusResult = {
+		code: 0,
+		stdout: JSON.stringify({ desired_enabled: false, runtime_disabled: false, interface_disabled: false, operation_status: 'idle' }),
+		stderr: ''
+	};
+	const harness = loadConfigView({
+		uciValues: { enabled: '0', nordvpn_token: '', vpn_country: 'uy', server_selection_mode: 'auto', preferred_server_station: '' }
+	});
+	await harness.view.render([ countryRaw, statusResult, null, emptyDiagnosticsExecResult() ]);
+
+	const tokenOption = harness.formHarness.findOption('nordvpn_token');
+	const enabledOption = harness.formHarness.findOption('enabled');
+	const sid = tokenOption.section.section_id;
+
+	// No stored token. Saving a disabled / pre-configured profile is allowed.
+	enabledOption.formvalue = function() { return '0'; };
+	assert.equal(tokenOption.validate(sid, ''), true, 'a disabled save does not require a token');
+
+	// Saving while enabling the VPN still requires the token.
+	enabledOption.formvalue = function() { return '1'; };
+	assert.notEqual(tokenOption.validate(sid, ''), true, 'enabling without a token is rejected');
+
+	// A provided token always validates, regardless of the enabled flag.
+	assert.equal(tokenOption.validate(sid, 'some-token'), true, 'a provided token validates while enabling');
+}
+
 Promise.resolve().then(async function() {
+	await testTokenRequiredOnlyWhenEnabling();
 	await testLoadUsesCachedCountriesWithoutBlockingOnManualCatalog();
 	await testLoadSkipsRefreshesWhenRuntimeBusy();
 	await testRenderWiresInitialStateAndLiveHandlers();
