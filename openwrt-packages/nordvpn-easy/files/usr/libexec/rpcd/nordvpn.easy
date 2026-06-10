@@ -12,6 +12,11 @@ NORDVPN_EASY_RC_BUSY="${NORDVPN_EASY_RC_BUSY:-75}"
 . "${LIB_DIR}/config-context.sh" || exit 1
 # shellcheck disable=SC1090
 . "${LIB_DIR}/runtime.sh" || exit 1
+# runtime.sh's status path (nordvpn_easy_vpn_status_value) calls
+# nordvpn_easy_wg_handshake_epoch, which lives in wireguard.sh; load it so the
+# status emit does not fail with "not found".
+# shellcheck disable=SC1090
+. "${LIB_DIR}/wireguard.sh" || exit 1
 
 rpc_json_string() {
 	printf '%s' "$1" | jq -Rs .

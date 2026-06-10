@@ -76,7 +76,9 @@ core_source_libs_for_action() {
       core_source_files "$RUNTIME_LIB" "$WIREGUARD_LIB" "$ACTIONS_LIB"
       ;;
     operation_status|vpn_status|status_json)
-      core_source_files "$RUNTIME_LIB"
+      # runtime.sh's vpn_status path calls nordvpn_easy_wg_handshake_epoch, which
+      # is defined in wireguard.sh; load it so status does not fail "not found".
+      core_source_files "$RUNTIME_LIB" "$WIREGUARD_LIB"
       ;;
     public_ip)
       core_source_files "$RUNTIME_LIB" "${LIB_DIR}/public-ip.sh"

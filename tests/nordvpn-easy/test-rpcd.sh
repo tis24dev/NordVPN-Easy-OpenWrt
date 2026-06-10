@@ -322,14 +322,23 @@ exit 0
 EOF
 chmod 755 "$STATUS_INIT"
 
+STATUS_STDERR="$TMP_DIR/status-stderr"
 STATUS_JSON="$(
 	printf '{}' |
 		PATH="$STATUS_BIN_DIR:$PATH" \
 		NORDVPN_EASY_LIB_DIR="$LIB_DIR" \
 		NORDVPN_EASY_INIT_SCRIPT="$STATUS_INIT" \
 		NORDVPN_EASY_RUN_DIR="$STATUS_RUN_DIR" \
-		sh "$RPCD_SCRIPT" call status
+		sh "$RPCD_SCRIPT" call status 2>"$STATUS_STDERR"
 )"
+# Regression: the rpcd status path must load every library the status emit needs.
+# runtime.sh's vpn_status path calls nordvpn_easy_wg_handshake_epoch (wireguard.sh);
+# if it is not loaded, every status emit prints "... not found" on stderr.
+if grep -qi 'not found' "$STATUS_STDERR"; then
+	printf '%s\n' 'FAIL: rpc status emitted a missing-symbol error on stderr:' >&2
+	cat "$STATUS_STDERR" >&2
+	exit 1
+fi
 printf '%s' "$STATUS_JSON" | jq -er '
 	.selected_country == "BO" and
 	.current_server_country == "AU"
