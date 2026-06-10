@@ -41,6 +41,15 @@ assert_eq '86400' "$(nordvpn_easy_normalize_value server_cache_ttl not-a-number)
 assert_eq '15' "$(nordvpn_easy_normalize_value wireguard_persistent_keepalive not-a-number)" 'invalid keepalive normalization'
 assert_eq '0' "$(nordvpn_easy_normalize_value wireguard_persistent_keepalive 0)" 'zero keepalive disables keepalive'
 assert_eq '120' "$(nordvpn_easy_normalize_value wireguard_persistent_keepalive 120)" 'maximum keepalive accepted'
+# wan_if/vpn_if become UCI section names, so only the UCI identifier charset is
+# accepted; anything else falls back to the safe default.
+assert_eq 'wan' "$(nordvpn_easy_normalize_value wan_if wan)" 'valid wan_if preserved'
+assert_eq 'wan_eth1' "$(nordvpn_easy_normalize_value wan_if wan_eth1)" 'underscore wan_if preserved'
+assert_eq 'wg0' "$(nordvpn_easy_normalize_value vpn_if wg0)" 'valid vpn_if preserved'
+assert_eq 'wg0' "$(nordvpn_easy_normalize_value vpn_if 'wg0.5')" 'vpn_if with a dot falls back to default'
+assert_eq 'wan' "$(nordvpn_easy_normalize_value wan_if 'wan eth0')" 'wan_if with a space falls back to default'
+assert_eq 'wg0' "$(nordvpn_easy_normalize_value vpn_if 'wg0;reboot')" 'vpn_if with a metacharacter falls back to default'
+assert_eq 'wan' "$(nordvpn_easy_normalize_value wan_if '')" 'empty wan_if falls back to default'
 assert_eq '15' "$(nordvpn_easy_normalize_value wireguard_persistent_keepalive 121)" 'out-of-range keepalive normalization'
 assert_eq '1420' "$(nordvpn_easy_normalize_value wireguard_mtu 1420)" 'valid WireGuard MTU accepted'
 assert_eq '' "$(nordvpn_easy_normalize_value wireguard_mtu 1279)" 'low WireGuard MTU normalizes to automatic'

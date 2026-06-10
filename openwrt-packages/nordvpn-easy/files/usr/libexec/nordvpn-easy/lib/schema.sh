@@ -413,11 +413,18 @@ nordvpn_easy_normalize_value() {
 			esac
 			;;
 		wan_if|vpn_if)
-			if [ -n "$value" ]; then
-				printf '%s\n' "$value"
-			else
-				printf '%s\n' "$default_value"
-			fi
+			# These become UCI section names (network.${IF}, firewall lookups), so
+			# restrict them to the UCI identifier charset. A value with any other
+			# character (dot, slash, space, ...) would address the wrong section or
+			# break the uci command, so fall back to the safe default.
+			case "$value" in
+				''|*[!A-Za-z0-9_]*)
+					printf '%s\n' "$default_value"
+					;;
+				*)
+					printf '%s\n' "$value"
+					;;
+			esac
 			;;
 		server_selection_mode)
 			case "$value" in
