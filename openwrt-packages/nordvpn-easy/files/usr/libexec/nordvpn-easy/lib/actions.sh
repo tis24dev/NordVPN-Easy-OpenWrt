@@ -409,11 +409,10 @@ nordvpn_easy_stop_vpn_for_connect_apply() {
 	nordvpn_easy_immediate_vpn_shutdown || return 1
 	nordvpn_easy_clear_connect_apply_caches || return 1
 	nordvpn_easy_teardown_vpn || return 1
-	if [ -f "${NORDVPN_EASY_CONNECT_APPLY_GUARD:-/tmp/run/nordvpn-easy/connect-apply-guard}" ]; then
-		nordvpn_easy_connect_apply_result_begin "${NORDVPN_EASY_CONNECT_APPLY_RESULT:-/tmp/run/nordvpn-easy/connect-apply-result}" 2>/dev/null || true
-	else
-		rm -f "${NORDVPN_EASY_CONNECT_APPLY_RESULT:-/tmp/run/nordvpn-easy/connect-apply-result}" 2>/dev/null || true
-	fi
+	# Do not touch the connect-apply-result here: it is owned by the init
+	# connect_apply_guard_begin (which runs before this stop in the apply flow),
+	# clear_connect_apply_caches above does not remove it, and re-beginning it
+	# would just duplicate that owner.
 	return 0
 }
 

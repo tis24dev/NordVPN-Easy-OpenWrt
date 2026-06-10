@@ -182,8 +182,11 @@ rpc_start_connect() {
 		fi
 	fi
 
-	nordvpn_easy_connect_apply_result_begin "${NORDVPN_EASY_CONNECT_APPLY_RESULT:-/tmp/run/nordvpn-easy/connect-apply-result}" 2>/dev/null || true
-
+	# The connect-apply-result lifecycle is owned solely by the init
+	# connect_apply_guard_begin (run by begin_connect_apply and by the background
+	# connect worker). Do NOT begin it here: begin_connect_apply has already
+	# marked it pending before start_connect, and beginning ahead of the busy
+	# check below would leave a phantom 'pending' when the call is rejected busy.
 	nordvpn_easy_load_lock_metadata "$LOCK_DIR"
 	case "$OPERATION_LOCK_STATE" in
 		held|stale_recovered)
