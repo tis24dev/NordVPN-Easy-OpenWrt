@@ -107,9 +107,9 @@ function inFlightPromise(entry) {
 	if (!entry)
 		return null;
 
-	if (typeof entry.then === 'function')
-		return entry;
-
+	// state.inFlight[key] is only ever an {epoch, promise} entry (set by
+	// runExclusive) or null (set by clearInFlight); it is never a bare promise,
+	// so the entry always carries its promise here.
 	return entry.promise || null;
 }
 

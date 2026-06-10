@@ -81,6 +81,10 @@ Promise.resolve().then(async function() {
 
 	assert.equal(duplicatePromise, firstPromise, 'runExclusive reuses an in-flight request');
 	assert.equal(calls, 0, 'runExclusive installs the placeholder before invoking the factory');
+	// The in-flight slot is always an {epoch, promise} wrapper, never a bare
+	// promise (which is why inFlightPromise no longer needs a thenable branch).
+	assert.equal(typeof state.inFlight.status.then, 'undefined', 'in-flight slot holds a wrapper entry, not a bare promise');
+	assert.equal(typeof state.inFlight.status.promise.then, 'function', 'the wrapper entry carries the actual promise');
 
 	await Promise.resolve();
 	assert.equal(calls, 1, 'runExclusive invokes only the first factory for duplicate callers');
