@@ -56,6 +56,33 @@ function timingLog(location, event, data) {
 	}).catch(function() {});
 }
 
+// Always-on, same-origin record of when the on-screen Country Match indicator
+// transitions, so the change lands in the automatic diagnostics log (the timing
+// CGI mirrors country_match events to the system log, which diagnostics_log
+// exports). Unlike the opt-in timing log this is not gated, but it only fires on
+// a real indicator transition (manager-ui dedups), so the volume stays low.
+function postCountryMatchLog(info) {
+	if (typeof request === 'undefined' || typeof request.post !== 'function')
+		return;
+
+	const indicator = (info && info.indicator) || 'unknown';
+	const selected = (info && info.expected) || 'automatic';
+	const exit = (info && info.actual) || 'unknown';
+	const message = 'country match indicator -> ' + indicator +
+		' (selected=' + selected + ', exit=' + exit + ')';
+
+	request.post(TIMING_LOG_ENDPOINT, {
+		location: 'countryMatch',
+		event: 'country_match',
+		message: message,
+		data: { indicator: indicator, selected: selected, exit: exit },
+		timestamp: Date.now()
+	}, {
+		timeout: 5000,
+		credentials: true
+	}).catch(function() {});
+}
+
 function newApplyAttemptId(state) {
 	// Keep the counter on state so each manager instance has its own apply-id
 	// sequence, instead of a module-global shared across views.
@@ -2035,6 +2062,7 @@ return baseclass.extend({
 	updateDiagnosticsSummary: updateDiagnosticsSummary,
 	onCountryChanged: onCountryChanged,
 	onModeChanged: onModeChanged,
+	postCountryMatchLog: postCountryMatchLog,
 	handleRefreshServerCatalog: handleRefreshServerCatalog,
 	handleSaveApply: handleSaveApply
 });

@@ -47,6 +47,19 @@ if [ -z "$line" ]; then
 	exit 0
 fi
 
+# Mirror Country Match indicator transitions into the system log so the
+# automatic diagnostics export (logread / diagnostics_log) records them. Match
+# the stable event marker and log the human-readable message; no JSON parser is
+# needed, and the controlled message never contains a double quote.
+case "$line" in
+	*'"event":"country_match"'*)
+		cm_message="$(printf '%s' "$line" | sed -n 's/.*"message":"\([^"]*\)".*/\1/p')"
+		if [ -n "$cm_message" ] && command -v logger >/dev/null 2>&1; then
+			logger -t nordvpn-easy "luci: $cm_message"
+		fi
+		;;
+esac
+
 if [ -f "$LOG_FILE" ]; then
 	current="$(wc -c < "$LOG_FILE" 2>/dev/null || printf '0')"
 	case "$current" in

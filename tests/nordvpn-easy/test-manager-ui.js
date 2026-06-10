@@ -138,4 +138,40 @@ r = run({
 assert.equal(r.color, RED, 'apply still converging shows a mismatch');
 assert.equal(r.label, 'Mismatch (SE)', 'mismatch reports the actual exit country');
 
+// Transition logging: onCountryMatchChange fires only on a real change of the
+// indicator's meaning, and never on the first observation (which just seeds the
+// dedup key so a page reload does not spam the log).
+const changes = [];
+const persistent = {
+	appliedEnabled: true,
+	currentLocalStatus: activeStatus,
+	currentOperationStatus: 'idle',
+	applyTargetCountryCode: '',
+	appliedCountryCode: 'SE',
+	currentPublicCountry: 'SE',
+	saveApplyInProgress: false,
+	countryMatchLogKey: '',
+	onCountryMatchChange: function(info) { changes.push(info); }
+};
+registry[ids.COUNTRY_FIELD_ID] = makeSelect('');
+registry[ids.COUNTRY_MATCH_STATUS_ID] = makeStatusCell();
+
+managerUI.updateCountryMatchStatus(persistent);
+assert.equal(changes.length, 0, 'first observation seeds the dedup key without logging');
+
+managerUI.updateCountryMatchStatus(persistent);
+assert.equal(changes.length, 0, 'an unchanged indicator logs nothing');
+
+persistent.currentPublicCountry = 'DE';
+managerUI.updateCountryMatchStatus(persistent);
+assert.equal(changes.length, 1, 'a real transition fires the change callback once');
+assert.equal(changes[0].indicator, 'mismatch', 'transition payload carries the new indicator');
+assert.equal(changes[0].expected, 'SE', 'transition payload carries the selected country');
+assert.equal(changes[0].actual, 'DE', 'transition payload carries the exit country');
+
+persistent.appliedCountryCode = 'DE';
+managerUI.updateCountryMatchStatus(persistent);
+assert.equal(changes.length, 2, 'returning to a match logs the transition back');
+assert.equal(changes[1].indicator, 'match', 'transition back reports the match indicator');
+
 console.log('test-manager-ui.js: ok');

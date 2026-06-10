@@ -241,7 +241,7 @@ function preferredServerSummaryFromStatus(status) {
 	});
 }
 
-function updateCountryMatchStatus(state) {
+function decideCountryMatch(state) {
 	let busyAction;
 	const runtimeStatus = state.currentLocalStatus || {};
 	// Country Match compares the exit IP's country against the SAVED/applied
@@ -258,31 +258,55 @@ function updateCountryMatchStatus(state) {
 	const actualCountry = managerData.normalizeCountryCode(
 		state.currentPublicCountry || ''
 	);
+	const out = { expected: expectedCountry, actual: actualCountry };
 
-	if (!state.appliedEnabled || state.currentLocalStatus.runtime_disabled || state.currentLocalStatus.interface_disabled || isDisableRequested(state))
-		return setCountryMatchIndicator('inactive', _('Inactive'));
+	if (!state.appliedEnabled || runtimeStatus.runtime_disabled || runtimeStatus.interface_disabled || isDisableRequested(state))
+		return Object.assign(out, { indicator: 'inactive', label: _('Inactive') });
 
 	if (state.currentOperationStatus.indexOf('busy:') === 0) {
 		busyAction = state.currentOperationStatus.substring(5);
 
 		if (busyAction !== 'refresh_countries' && busyAction !== 'server_catalog' && !actualCountry)
-			return setCountryMatchIndicator('checking', _('Checking'));
+			return Object.assign(out, { indicator: 'checking', label: _('Checking') });
 	}
 	else if (state.currentOperationStatus === 'busy') {
 		if (!actualCountry)
-			return setCountryMatchIndicator('checking', _('Checking'));
+			return Object.assign(out, { indicator: 'checking', label: _('Checking') });
 	}
 
 	if (!expectedCountry)
-		return setCountryMatchIndicator('automatic', _('Automatic'));
+		return Object.assign(out, { indicator: 'automatic', label: _('Automatic') });
 
 	if (!actualCountry)
-		return setCountryMatchIndicator('unavailable', _('Unavailable'));
+		return Object.assign(out, { indicator: 'unavailable', label: _('Unavailable') });
 
 	if (actualCountry === expectedCountry)
-		return setCountryMatchIndicator('match', _('Match (%s)').format(actualCountry));
+		return Object.assign(out, { indicator: 'match', label: _('Match (%s)').format(actualCountry) });
 
-	setCountryMatchIndicator('mismatch', _('Mismatch (%s)').format(actualCountry));
+	return Object.assign(out, { indicator: 'mismatch', label: _('Mismatch (%s)').format(actualCountry) });
+}
+
+function updateCountryMatchStatus(state) {
+	const decision = decideCountryMatch(state);
+
+	setCountryMatchIndicator(decision.indicator, decision.label);
+
+	// Record an automatic diagnostics line only when the indicator's meaning
+	// actually changes (its state, the selected country, or the detected exit
+	// country). The first observation per page load just seeds the key so a
+	// reload does not spam the log. The POST itself lives in the owner via
+	// state.onCountryMatchChange so this UI module stays free of network code.
+	const key = decision.indicator + ':' + decision.expected + ':' + decision.actual;
+	if (state.countryMatchLogKey !== key) {
+		const seeded = !!state.countryMatchLogKey;
+		state.countryMatchLogKey = key;
+		if (seeded && typeof state.onCountryMatchChange === 'function')
+			state.onCountryMatchChange({
+				indicator: decision.indicator,
+				expected: decision.expected,
+				actual: decision.actual
+			});
+	}
 }
 
 function setManagerControlsDisabled(disabled) {

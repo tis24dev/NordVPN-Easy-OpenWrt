@@ -16,6 +16,8 @@
 const COUNTRIES_CACHE_PATH = '/tmp/nordvpn-easy-countries.json';
 const TOKEN_MASK_DISPLAY = '********';
 const state = managerStore.createState();
+// Mirror on-screen Country Match indicator transitions to the diagnostics log.
+state.onCountryMatchChange = managerActions.postCountryMatchLog;
 
 function refreshCountriesInBackground(selectEl, currentCountry) {
 	if (!selectEl)

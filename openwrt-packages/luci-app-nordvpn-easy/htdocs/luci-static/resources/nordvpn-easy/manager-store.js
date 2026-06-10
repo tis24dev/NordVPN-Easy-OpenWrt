@@ -21,6 +21,8 @@ function createState() {
 		currentPublicCountry: '',
 		appliedEnabled: false,
 		appliedCountryCode: '',
+		countryMatchLogKey: '',
+		onCountryMatchChange: null,
 		currentLocalStatus: managerData.parseLocalStatus('{}'),
 		currentLocalStatusFresh: false,
 		currentLocalStatusLastUpdated: 0,
