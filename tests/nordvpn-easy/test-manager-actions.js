@@ -2415,7 +2415,37 @@ function testForcedCatalogRefreshUsesADistinctSlot() {
 		'a forced catalog refresh uses a distinct exclusive slot from a non-forced fetch');
 }
 
+function testManualApplyConvergenceRequiresStation() {
+	const actions = loadManagerActionsModule({
+		managerData: {
+			normalizeCountryCode(v) { return String(v || '').trim().toUpperCase(); }
+		}
+	}).managerActions;
+
+	const base = {
+		current_server_country: 'IT',
+		current_server_station: 'it100.nordvpn.com',
+		connected: true,
+		vpn_status: 'active',
+		state: 'connected',
+		handshake_age_seconds: 30
+	};
+	const manualSaved = { enabled: true, country: 'IT', mode: 'manual', preferredStation: 'it100.nordvpn.com' };
+
+	assert.equal(actions.applyRuntimeConvergenceSucceeded(manualSaved, base, {}), true,
+		'manual apply converges when the current station equals the preferred station');
+
+	const otherStation = Object.assign({}, base, { current_server_station: 'it200.nordvpn.com' });
+	assert.equal(actions.applyRuntimeConvergenceSucceeded(manualSaved, otherStation, {}), false,
+		'manual apply does NOT converge while a same-country but different station is current');
+
+	const autoSaved = { enabled: true, country: 'IT', mode: 'auto', preferredStation: '' };
+	assert.equal(actions.applyRuntimeConvergenceSucceeded(autoSaved, otherStation, {}), true,
+		'auto apply converges on country regardless of the current station');
+}
+
 Promise.resolve().then(async function() {
+	testManualApplyConvergenceRequiresStation();
 	testForcedCatalogRefreshUsesADistinctSlot();
 	await testUpdateLocalStatusPreservesSnapshotOnFailedResponse();
 	await testUpdateLocalStatusMarksSnapshotsStaleOnRejectedExec();

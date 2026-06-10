@@ -436,11 +436,13 @@ function noteConnectApplyServerMarker(state, status) {
 }
 
 function savedConfigForApplyState(state) {
+	const mode = normalizeSelectionMode(state.appliedMode || 'auto');
+
 	return {
 		enabled: state.appliedEnabled !== false,
 		country: managerData.normalizeCountryCode(state.appliedCountryCode || ''),
-		mode: 'auto',
-		preferredStation: ''
+		mode: mode,
+		preferredStation: mode === 'manual' ? String(state.appliedPreferredStation || '') : ''
 	};
 }
 
@@ -456,6 +458,21 @@ function applyRuntimeCountryMatchesSaved(savedConfig, status) {
 	return serverCountry === savedCountry;
 }
 
+function applyRuntimeStationMatchesSaved(savedConfig, status) {
+	const runtimeStatus = status || {};
+	const mode = normalizeSelectionMode((savedConfig && savedConfig.mode) || 'auto');
+	const preferredStation = String((savedConfig && savedConfig.preferredStation) || '');
+
+	// Only a manual selection pins a specific station; an auto selection just has
+	// to land in the right country. Requiring the station match stops a
+	// same-country manual server switch (A -> B) from converging on the stale,
+	// still-connected A snapshot before B is actually up.
+	if (mode !== 'manual' || !preferredStation)
+		return true;
+
+	return String(runtimeStatus.current_server_station || '') === preferredStation;
+}
+
 function applyRuntimeLiveReady(savedConfig, status) {
 	const runtimeStatus = status || {};
 
@@ -463,6 +480,9 @@ function applyRuntimeLiveReady(savedConfig, status) {
 		return false;
 
 	if (!applyRuntimeCountryMatchesSaved(savedConfig, runtimeStatus))
+		return false;
+
+	if (!applyRuntimeStationMatchesSaved(savedConfig, runtimeStatus))
 		return false;
 
 	const vpnUp = runtimeStatus.connected === true ||
@@ -1858,6 +1878,10 @@ function rememberSavedRuntimeConfig(viewState, state, savedConfig) {
 	viewState.initialPreferredStation = savedConfig.preferredStation;
 	state.appliedEnabled = savedConfig.enabled;
 	state.appliedCountryCode = savedConfig.country;
+	state.appliedMode = normalizeSelectionMode(savedConfig.mode || 'auto');
+	state.appliedPreferredStation = state.appliedMode === 'manual'
+		? String(savedConfig.preferredStation || '')
+		: '';
 }
 
 function finishApplyCycle(state, options) {
@@ -2040,6 +2064,7 @@ function handleSaveApply(viewState, state, ev) {
 
 return baseclass.extend({
 	runApplyCycle: runApplyCycle,
+	applyRuntimeConvergenceSucceeded: applyRuntimeConvergenceSucceeded,
 	maybeRecoverOrphanedRuntime: maybeRecoverOrphanedRuntime,
 	maybeEnsureEnabledRuntime: maybeEnsureEnabledRuntime,
 	maybeAutoReconcileSelectionDrift: maybeAutoReconcileSelectionDrift,

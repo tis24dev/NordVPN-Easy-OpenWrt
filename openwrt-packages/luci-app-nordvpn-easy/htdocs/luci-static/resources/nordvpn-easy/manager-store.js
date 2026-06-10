@@ -21,6 +21,8 @@ function createState() {
 		currentPublicCountry: '',
 		appliedEnabled: false,
 		appliedCountryCode: '',
+		appliedMode: 'auto',
+		appliedPreferredStation: '',
 		countryMatchLogKey: '',
 		onCountryMatchChange: null,
 		applyTransitionActive: false,
