@@ -94,7 +94,9 @@ function run(state, dropdownCountry) {
 const GREEN = '#2ea043';
 const RED = '#cf222e';
 
-const activeStatus = { runtime_disabled: false, interface_disabled: false };
+const activeStatus = { runtime_disabled: false, interface_disabled: false, connected: true };
+// Enabled in config, but the tunnel is not actually up (disconnected/degraded).
+const downStatus = { runtime_disabled: false, interface_disabled: false, connected: false };
 
 // Core regression: the dropdown shows an unsaved 'DE', but the saved/applied
 // country is 'SE' and the exit IP geolocates to 'SE'. Country Match must read
@@ -137,6 +139,47 @@ r = run({
 }, 'DE');
 assert.equal(r.color, RED, 'apply still converging shows a mismatch');
 assert.equal(r.label, 'Mismatch (SE)', 'mismatch reports the actual exit country');
+
+// Enabled but the tunnel is down: a coincidental country match (the real ISP IP
+// happens to be in the saved country) must NOT show a reassuring green Match.
+r = run({
+	appliedEnabled: true,
+	currentLocalStatus: downStatus,
+	currentOperationStatus: 'idle',
+	applyTargetCountryCode: '',
+	appliedCountryCode: 'SE',
+	currentPublicCountry: 'SE',
+	saveApplyInProgress: false
+}, 'SE');
+assert.equal(r.color, RED, 'VPN down with a coincidental country match must not show green Match');
+assert.equal(r.label, 'No VPN (SE)', 'VPN down reports No VPN with the real exit country');
+
+// Enabled but down with a different country: also No VPN (not a plain mismatch).
+r = run({
+	appliedEnabled: true,
+	currentLocalStatus: downStatus,
+	currentOperationStatus: 'idle',
+	applyTargetCountryCode: '',
+	appliedCountryCode: 'SE',
+	currentPublicCountry: 'DE',
+	saveApplyInProgress: false
+}, 'SE');
+assert.equal(r.color, RED, 'VPN down with a different country also shows No VPN');
+assert.equal(r.label, 'No VPN (DE)', 'No VPN reports the real exit country');
+
+// During a converging Save & Apply the tunnel is transiently down by design;
+// keep tracking match/mismatch instead of flipping to No VPN.
+r = run({
+	appliedEnabled: true,
+	currentLocalStatus: downStatus,
+	currentOperationStatus: 'idle',
+	applyTargetCountryCode: 'SE',
+	appliedCountryCode: 'SE',
+	currentPublicCountry: 'SE',
+	saveApplyInProgress: true,
+	applyTransitionActive: true
+}, 'SE');
+assert.equal(r.label, 'Match (SE)', 'a converging apply with the tunnel transiently down does not flip to No VPN');
 
 // Transition logging: onCountryMatchChange fires only on a real change of the
 // indicator's meaning, and never on the first observation (which just seeds the

@@ -286,6 +286,19 @@ function decideCountryMatch(state) {
 	if (!actualCountry)
 		return Object.assign(out, { indicator: 'unavailable', label: _('Unavailable') });
 
+	// The VPN is enabled with a target country, but if the tunnel is not actually
+	// up the exit IP is the real ISP address: a country equality here is
+	// coincidental, not VPN protection, so do not show a reassuring Match. Skip
+	// this while busy or while a Save & Apply is converging (the tunnel is
+	// transiently down by design during the teardown).
+	const busy = String(state.currentOperationStatus || '') === 'busy' ||
+		String(state.currentOperationStatus || '').indexOf('busy:') === 0;
+	const vpnUp = runtimeStatus.connected === true ||
+		String(runtimeStatus.vpn_status || '') === 'active' ||
+		String(runtimeStatus.state || '') === 'connected';
+	if (!vpnUp && !busy && !state.applyTransitionActive)
+		return Object.assign(out, { indicator: 'novpn', label: _('No VPN (%s)').format(actualCountry) });
+
 	if (actualCountry === expectedCountry)
 		return Object.assign(out, { indicator: 'match', label: _('Match (%s)').format(actualCountry) });
 
