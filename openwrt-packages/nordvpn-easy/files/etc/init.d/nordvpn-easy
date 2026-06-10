@@ -777,18 +777,28 @@ connect() {
 	load_service_config || return 1
 	acquire_runtime_transaction_lock connect || return $?
 	log_service_info "connect requested; enabling runtime transactionally; $(nordvpn_easy_service_debug_summary 'cfg_')"
+
+	connect_apply_guard_begin
+	log_service_info "connect: preparing setup cache from UCI vpn_country=${cfg_vpn_country:-automatic}"
+	# Validate the request (render + validate the runtime config) BEFORE recording
+	# desired=enabled. An invalid config must not be persisted as enabled=1, or
+	# every cron retry would fail forever on the same bad config. A transient
+	# failure later (setup) still leaves enabled=1 so the cron check converges the
+	# runtime; only an unachievable request is rejected up front.
+	prepare_connect_setup_config_cache || {
+		connect_apply_result_finish 1
+		connect_apply_guard_end
+		return 1
+	}
+
 	uci set "${UCI_CONFIG}.${UCI_SECTION}.enabled=1" || {
 		log_service_error 'connect failed while setting enabled=1'
+		connect_apply_result_finish 1
+		connect_apply_guard_end
 		return 1
 	}
 	uci commit "$UCI_CONFIG" || {
 		log_service_error 'connect failed while committing enabled=1'
-		return 1
-	}
-
-	connect_apply_guard_begin
-	log_service_info "connect: preparing setup cache from UCI vpn_country=${cfg_vpn_country:-automatic}"
-	prepare_connect_setup_config_cache || {
 		connect_apply_result_finish 1
 		connect_apply_guard_end
 		return 1

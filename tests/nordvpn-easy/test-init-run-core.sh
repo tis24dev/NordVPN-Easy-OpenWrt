@@ -200,6 +200,28 @@ assert_eq '1' "$INSTALL_HOOKS_COUNT" 'successful connect installs hooks via inst
 	exit 1
 }
 
+# An invalid config is rejected BEFORE enabled=1 is persisted, so a bad config is
+# not recorded as desired-on and then fail every cron retry forever. A transient
+# failure after a valid config (the setup-fails case above) still records
+# enabled=1 so the cron check can converge the runtime.
+VALIDATION_MODE='fail'
+UCI_SET_VALUES=''
+UCI_COMMIT_COUNT=0
+SETUP_COUNT=0
+SETUP_RC=0
+INSTALL_HOOKS_COUNT=0
+RC=0
+connect || RC=$?
+assert_eq '1' "$RC" 'connect rejects an invalid config'
+assert_eq '0' "$SETUP_COUNT" 'connect does not provision an invalid config'
+case "$UCI_SET_VALUES" in
+	*nordvpn_easy.main.enabled=1\;*)
+		printf '%s\n' 'FAIL: connect must not persist enabled=1 for an invalid config' >&2
+		exit 1
+		;;
+esac
+VALIDATION_MODE='pass'
+
 cfg_enabled=1
 cfg_nordvpn_token='token-secret'
 cfg_vpn_if='wg0'
