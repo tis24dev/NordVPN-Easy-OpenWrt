@@ -40,7 +40,10 @@ fi
 
 uci -q commit rpcd 2>/dev/null || true
 uci -q commit uhttpd 2>/dev/null || true
-/etc/init.d/rpcd restart >/dev/null 2>&1 || true
-/etc/init.d/uhttpd restart >/dev/null 2>&1 || true
+# reload, not restart: this runs at install time while the admin is using LuCI,
+# and a restart of rpcd/uhttpd tears down the active HTTP/ubus session. reload
+# re-reads the bumped timeouts without dropping the listeners.
+/etc/init.d/rpcd reload >/dev/null 2>&1 || true
+/etc/init.d/uhttpd reload >/dev/null 2>&1 || true
 
 exit 0

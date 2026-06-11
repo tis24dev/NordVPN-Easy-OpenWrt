@@ -66,6 +66,12 @@ uci() {
 			;;
 		commit)
 			COMMIT_COUNT=$((COMMIT_COUNT + 1))
+			if [ "${COMMIT_SHOULD_FAIL:-0}" = '1' ]; then
+				return 1
+			fi
+			;;
+		revert)
+			REVERT_COUNT=$((REVERT_COUNT + 1))
 			;;
 		*)
 			[ "$quiet" -eq 1 ] || printf '%s\n' "unsupported uci command: $cmd" >&2
@@ -92,5 +98,16 @@ assert_eq "$NORDVPN_EASY_SCHEMA_VERSION" "$(cat "$(uci_path 'nordvpn_easy.main.c
 	exit 1
 }
 assert_eq '1' "$COMMIT_COUNT" 'single migration commit'
+
+# A commit failure during migration must revert the staged changes so a later,
+# unrelated uci commit cannot persist a half-applied config.
+COMMIT_SHOULD_FAIL=1
+REVERT_COUNT=0
+printf '%s' 'legacy-again' > "$(uci_path 'nordvpn_easy.main.nordvpn_basic_token')"
+migrate_rc=0
+nordvpn_easy_migrate_service_config nordvpn_easy main || migrate_rc=$?
+assert_eq '1' "$migrate_rc" 'migration returns failure when the commit fails'
+assert_eq '1' "$REVERT_COUNT" 'a failed migration reverts its staged changes'
+COMMIT_SHOULD_FAIL=0
 
 printf '%s\n' 'test-service-config.sh: ok'

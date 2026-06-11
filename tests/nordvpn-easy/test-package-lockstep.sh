@@ -62,16 +62,33 @@ extract_make_var() {
 	sed -n "s/^${var_name}:=//p" "$file_path" | head -n 1
 }
 
+# Collect the ${BACKEND_FILES}/... sources a single release job pre-places into
+# the luci-app tree. Job keys sit at a 2-space indent under jobs:, so the body
+# runs from "  <job>:" to the next 2-space key.
+job_preplace_sources() {
+	awk -v job="  $1:" '
+		$0 == job { injob = 1; next }
+		injob && /^  [A-Za-z]/ { exit }
+		injob {
+			s = $0
+			while (match(s, "\\$\\{BACKEND_FILES\\}/[A-Za-z0-9._/-]+")) {
+				print substr(s, RSTART, RLENGTH)
+				s = substr(s, RSTART + RLENGTH)
+			}
+		}
+	' "$2" | sort -u
+}
+
 backend_version="$(extract_make_var 'NORDVPN_EASY_DEFAULT_VERSION' "$BACKEND_MAKEFILE")"
 luci_version="$(extract_make_var 'NORDVPN_EASY_DEFAULT_VERSION' "$LUCI_MAKEFILE")"
 backend_release="$(extract_make_var 'NORDVPN_EASY_DEFAULT_RELEASE' "$BACKEND_MAKEFILE")"
 luci_release="$(extract_make_var 'NORDVPN_EASY_DEFAULT_RELEASE' "$LUCI_MAKEFILE")"
-luci_init_source="\$(CURDIR)/../nordvpn-easy/files/etc/init.d/nordvpn-easy"
-luci_core_source="\$(CURDIR)/../nordvpn-easy/files/usr/libexec/nordvpn-easy/core.sh"
-luci_migrator_source="\$(CURDIR)/../nordvpn-easy/files/usr/libexec/nordvpn-easy/migrate-config.sh"
-luci_lib_source="\$(CURDIR)/../nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/."
-luci_rpcd_source="\$(CURDIR)/../nordvpn-easy/files/usr/libexec/rpcd/nordvpn.easy"
-luci_template_source="\$(CURDIR)/../nordvpn-easy/files/usr/share/nordvpn-easy/defaults/nordvpn_easy"
+release_preplace_publicip="\${BACKEND_FILES}/usr/libexec/nordvpn-easy/public-ip-poll.sh"
+release_preplace_ucidefaults="\${BACKEND_FILES}/etc/uci-defaults/99-nordvpn-easy-rpcd-timeout"
+release_apk_publicip="\${VERIFY_DIR}/usr/libexec/nordvpn-easy/public-ip-poll.sh"
+release_ipk_publicip="\${VERIFY_DIR}/data/usr/libexec/nordvpn-easy/public-ip-poll.sh"
+release_apk_ucidefaults="\${VERIFY_DIR}/etc/uci-defaults/99-nordvpn-easy-rpcd-timeout"
+release_ipk_ucidefaults="\${VERIFY_DIR}/data/etc/uci-defaults/99-nordvpn-easy-rpcd-timeout"
 backend_rpcd_install="\$(INSTALL_BIN) ./files/usr/libexec/rpcd/nordvpn.easy \$(1)/usr/libexec/rpcd/nordvpn.easy"
 backend_migrator_install="\$(INSTALL_BIN) ./files/usr/libexec/nordvpn-easy/migrate-config.sh \$(1)/usr/libexec/nordvpn-easy/migrate-config.sh"
 backend_template_install="\$(INSTALL_CONF) ./files/usr/share/nordvpn-easy/defaults/nordvpn_easy \$(1)/usr/share/nordvpn-easy/defaults/nordvpn_easy"
@@ -116,6 +133,18 @@ migrator_runtime_path='/usr/libexec/nordvpn-easy/migrate-config.sh'
 assert_eq "$backend_version" "$luci_version" 'backend and LuCI packages share default version'
 assert_eq "$backend_release" "$luci_release" 'backend and LuCI packages share default release'
 
+# The luci-app bundles the backend into its own payload, so it must NOT depend
+# on the separate nordvpn-easy package: that dependency would force a
+# conflicting co-install on the shared backend files. Intentional omission
+# (bug-audit #25); see the comment above LUCI_DEPENDS in the LuCI Makefile.
+luci_depends_line="$(grep '^LUCI_DEPENDS:=' "$LUCI_MAKEFILE" || true)"
+case "$luci_depends_line" in
+	*+nordvpn-easy*)
+		printf '%s\n' 'FAIL: luci-app must not depend on +nordvpn-easy (backend is bundled; the dep would conflict on shared files)' >&2
+		exit 1
+		;;
+esac
+
 [ -f "$RPCD_SCRIPT" ] || {
 	printf '%s\n' 'FAIL: backend rpcd plugin must exist in package source' >&2
 	exit 1
@@ -146,41 +175,10 @@ assert_eq "$backend_release" "$luci_release" 'backend and LuCI packages share de
 	exit 1
 }
 
-grep -F "$luci_init_source" "$LUCI_MAKEFILE" >/dev/null 2>&1 || {
-	printf '%s\n' 'FAIL: LuCI package must install init script from backend package source' >&2
-	exit 1
-}
-
-grep -F "$luci_core_source" "$LUCI_MAKEFILE" >/dev/null 2>&1 || {
-	printf '%s\n' 'FAIL: LuCI package must install core script from backend package source' >&2
-	exit 1
-}
-
-grep -F "$luci_migrator_source" "$LUCI_MAKEFILE" >/dev/null 2>&1 || {
-	printf '%s\n' 'FAIL: LuCI package must install config migrator from backend package source' >&2
-	exit 1
-}
-
-grep -F "$luci_lib_source" "$LUCI_MAKEFILE" >/dev/null 2>&1 || {
-	printf '%s\n' 'FAIL: LuCI package must copy backend library directory from backend package source' >&2
-	exit 1
-}
-
-dollar_pattern='[$]'
-grep -E "${dollar_pattern}${dollar_pattern}+lib" "$LUCI_MAKEFILE" >/dev/null 2>&1 && {
-	printf '%s\n' 'FAIL: LuCI package must not use shell-variable library install loops; OpenWrt expands them differently across build phases' >&2
-	exit 1
-}
-
-grep -F "$luci_rpcd_source" "$LUCI_MAKEFILE" >/dev/null 2>&1 || {
-	printf '%s\n' 'FAIL: LuCI package must install rpcd plugin from backend package source' >&2
-	exit 1
-}
-
-grep -F "$luci_template_source" "$LUCI_MAKEFILE" >/dev/null 2>&1 || {
-	printf '%s\n' 'FAIL: LuCI package must install config template from backend package source' >&2
-	exit 1
-}
+# Backend files are no longer pre-placed via a (dead) Build/Prepare define in
+# the LuCI Makefile; the release workflow is the single source of truth for the
+# manual-upload bundle and is verified below, so we no longer assert backend
+# source paths inside the LuCI Makefile.
 
 grep -F "$backend_rpcd_install" "$BACKEND_MAKEFILE" >/dev/null 2>&1 || {
 	printf '%s\n' 'FAIL: backend package must install rpcd plugin with executable permissions' >&2
@@ -217,6 +215,37 @@ grep -F "$release_preplace_template" "$RELEASE_WORKFLOW" >/dev/null 2>&1 || {
 	exit 1
 }
 
+grep -F "$release_preplace_publicip" "$RELEASE_WORKFLOW" >/dev/null 2>&1 || {
+	printf '%s\n' 'FAIL: OPKG compatibility pre-place must copy the public IP poll script' >&2
+	exit 1
+}
+
+grep -F "$release_preplace_ucidefaults" "$RELEASE_WORKFLOW" >/dev/null 2>&1 || {
+	printf '%s\n' 'FAIL: OPKG compatibility pre-place must copy the rpcd timeout uci-default' >&2
+	exit 1
+}
+
+# The grep checks above only prove the pre-place exists *somewhere* in the
+# workflow. build-apk once lacked it entirely (bug-audit #24) so the tagged APK
+# release built a backend-less package and failed verification, undetected
+# because no PR job builds the packages. Assert the pre-place exists in EACH
+# build job and that both stage the same backend file set (kept in lockstep).
+apk_preplace_sources="$(job_preplace_sources 'build-apk' "$RELEASE_WORKFLOW")"
+opkg_preplace_sources="$(job_preplace_sources 'build-opkg' "$RELEASE_WORKFLOW")"
+
+[ -n "$apk_preplace_sources" ] || {
+	printf '%s\n' 'FAIL: build-apk job must pre-place the bundled backend (no backend sources found)' >&2
+	exit 1
+}
+
+[ -n "$opkg_preplace_sources" ] || {
+	printf '%s\n' 'FAIL: build-opkg job must pre-place the bundled backend (no backend sources found)' >&2
+	exit 1
+}
+
+assert_eq "$opkg_preplace_sources" "$apk_preplace_sources" \
+	'build-apk and build-opkg must pre-place the same backend files (kept in lockstep)'
+
 for release_payload in \
 	"$release_apk_rpcd" \
 	"$release_ipk_rpcd" \
@@ -228,6 +257,10 @@ for release_payload in \
 	"$release_ipk_config_context" \
 	"$release_apk_runtime" \
 	"$release_ipk_runtime" \
+	"$release_apk_publicip" \
+	"$release_ipk_publicip" \
+	"$release_apk_ucidefaults" \
+	"$release_ipk_ucidefaults" \
 	"$release_apk_postrm" \
 	"$release_ipk_postrm"
 do

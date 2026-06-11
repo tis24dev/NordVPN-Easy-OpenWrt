@@ -186,6 +186,46 @@ jobs:
           cp -R openwrt-packages/nordvpn-easy \
             "${SDK_DIR}/package/nordvpn-easy"
 
+      - name: Pre-place bundled backend files into the luci-app package
+        run: |
+          set -euo pipefail
+          SDK_DIR="$(realpath "$SDK_DIR")"
+
+          # The luci-app bundles the backend for manual-upload installs, but its
+          # Makefile pulls nothing in (luci.mk invokes no per-package
+          # Build/Prepare), so the backend files are pre-placed into the luci-app
+          # root/ tree here. build-apk and build-opkg MUST keep this in sync;
+          # tests/nordvpn-easy/test-package-lockstep.sh enforces it.
+          LUCI_ROOT="${SDK_DIR}/package/luci-app-nordvpn-easy/root"
+          BACKEND_FILES="openwrt-packages/nordvpn-easy/files"
+
+          install -d -m0755 "${LUCI_ROOT}/etc/init.d"
+          install -m0755 "${BACKEND_FILES}/etc/init.d/nordvpn-easy" \
+            "${LUCI_ROOT}/etc/init.d/nordvpn-easy"
+
+          install -d -m0755 "${LUCI_ROOT}/usr/libexec/nordvpn-easy"
+          install -m0755 "${BACKEND_FILES}/usr/libexec/nordvpn-easy/core.sh" \
+            "${LUCI_ROOT}/usr/libexec/nordvpn-easy/core.sh"
+          install -m0755 "${BACKEND_FILES}/usr/libexec/nordvpn-easy/migrate-config.sh" \
+            "${LUCI_ROOT}/usr/libexec/nordvpn-easy/migrate-config.sh"
+          install -m0755 "${BACKEND_FILES}/usr/libexec/nordvpn-easy/public-ip-poll.sh" \
+            "${LUCI_ROOT}/usr/libexec/nordvpn-easy/public-ip-poll.sh"
+          install -d -m0755 "${LUCI_ROOT}/usr/libexec/nordvpn-easy/lib"
+          cp -R "${BACKEND_FILES}/usr/libexec/nordvpn-easy/lib/." \
+            "${LUCI_ROOT}/usr/libexec/nordvpn-easy/lib/"
+
+          install -d -m0755 "${LUCI_ROOT}/usr/libexec/rpcd"
+          install -m0755 "${BACKEND_FILES}/usr/libexec/rpcd/nordvpn.easy" \
+            "${LUCI_ROOT}/usr/libexec/rpcd/nordvpn.easy"
+
+          install -d -m0755 "${LUCI_ROOT}/etc/uci-defaults"
+          install -m0755 "${BACKEND_FILES}/etc/uci-defaults/99-nordvpn-easy-rpcd-timeout" \
+            "${LUCI_ROOT}/etc/uci-defaults/99-nordvpn-easy-rpcd-timeout"
+
+          install -d -m0755 "${LUCI_ROOT}/usr/share/nordvpn-easy/defaults"
+          install -m0644 "${BACKEND_FILES}/usr/share/nordvpn-easy/defaults/nordvpn_easy" \
+            "${LUCI_ROOT}/usr/share/nordvpn-easy/defaults/nordvpn_easy"
+
       - name: Initialize OpenWrt SDK configuration
         run: |
           set -euo pipefail
@@ -216,6 +256,7 @@ jobs:
       - name: Prepare APK signing key
         env:
           APK_SIGNING_PRIVATE_KEY: ${{ secrets.APK_SIGNING_PRIVATE_KEY }}
+          APK_SIGNING_PUBLIC_KEY: ${{ secrets.APK_SIGNING_PUBLIC_KEY }}
         run: |
           set -euo pipefail
           SIGNING_DIR=".build/signing"
@@ -229,10 +270,30 @@ jobs:
             exit 1
           fi
 
+          if [ -z "${APK_SIGNING_PUBLIC_KEY:-}" ]; then
+            echo "::error::Missing APK_SIGNING_PUBLIC_KEY environment secret"
+            exit 1
+          fi
+
           mkdir -p "$SIGNING_ROOT" dist
           umask 077
           printf '%s\n' "$APK_SIGNING_PRIVATE_KEY" > "$SIGNING_KEY_PATH"
           openssl ec -in "$SIGNING_KEY_PATH" -pubout -out "$SIGNING_PUBLIC_KEY_PATH"
+
+          # Pin the signing identity: the public key derived from the private key
+          # must match APK_SIGNING_PUBLIC_KEY, so an unexpected private key cannot
+          # silently ship packages under a different identity. Compare canonical
+          # DER (ignores PEM header/whitespace) instead of the raw text.
+          printf '%s\n' "$APK_SIGNING_PUBLIC_KEY" > "${SIGNING_ROOT}/expected-public-key.pem"
+          openssl pkey -pubin -in "$SIGNING_PUBLIC_KEY_PATH" -outform DER -out "${SIGNING_ROOT}/derived.der" 2>/dev/null || {
+            echo "::error::Could not parse the public key derived from APK_SIGNING_PRIVATE_KEY"; exit 1; }
+          openssl pkey -pubin -in "${SIGNING_ROOT}/expected-public-key.pem" -outform DER -out "${SIGNING_ROOT}/expected.der" 2>/dev/null || {
+            echo "::error::APK_SIGNING_PUBLIC_KEY is not a valid public key"; exit 1; }
+          if ! cmp -s "${SIGNING_ROOT}/derived.der" "${SIGNING_ROOT}/expected.der"; then
+            echo "::error::Derived APK public key does not match APK_SIGNING_PUBLIC_KEY (private/public key mismatch)"
+            exit 1
+          fi
+
           cp "$SIGNING_PUBLIC_KEY_PATH" "$PUBLIC_KEY_ASSET_PATH"
 
           echo "APK_SIGNING_ROOT=$(realpath "$SIGNING_ROOT")" >> "$GITHUB_ENV"
@@ -324,7 +385,9 @@ jobs:
             "${VERIFY_DIR}/usr/libexec/nordvpn-easy/migrate-config.sh" \
             "${VERIFY_DIR}/usr/libexec/nordvpn-easy/lib/config-context.sh" \
             "${VERIFY_DIR}/usr/libexec/nordvpn-easy/lib/runtime.sh" \
+            "${VERIFY_DIR}/usr/libexec/nordvpn-easy/public-ip-poll.sh" \
             "${VERIFY_DIR}/usr/libexec/rpcd/nordvpn.easy" \
+            "${VERIFY_DIR}/etc/uci-defaults/99-nordvpn-easy-rpcd-timeout" \
             "${VERIFY_DIR}/usr/share/nordvpn-easy/defaults/nordvpn_easy" \
             "${VERIFY_DIR}/www/luci-static/resources/view/nordvpn-easy/config.js"
           do
@@ -538,13 +601,16 @@ jobs:
           cp -R openwrt-packages/nordvpn-easy \
             "${SDK_DIR}/package/nordvpn-easy"
 
-      - name: Pre-place backend files for OpenWrt 23.05 compatibility
+      - name: Pre-place bundled backend files into the luci-app package
         run: |
           set -euo pipefail
           SDK_DIR="$(realpath "$SDK_DIR")"
 
-          # OpenWrt 23.05 luci.mk does not call Build/Prepare/$(PKG_NAME),
-          # so backend files must be pre-placed in the luci-app root/ tree.
+          # The luci-app bundles the backend for manual-upload installs, but its
+          # Makefile pulls nothing in (luci.mk invokes no per-package
+          # Build/Prepare), so the backend files are pre-placed into the luci-app
+          # root/ tree here. build-apk and build-opkg MUST keep this in sync;
+          # tests/nordvpn-easy/test-package-lockstep.sh enforces it.
           LUCI_ROOT="${SDK_DIR}/package/luci-app-nordvpn-easy/root"
           BACKEND_FILES="openwrt-packages/nordvpn-easy/files"
 
@@ -557,6 +623,8 @@ jobs:
             "${LUCI_ROOT}/usr/libexec/nordvpn-easy/core.sh"
           install -m0755 "${BACKEND_FILES}/usr/libexec/nordvpn-easy/migrate-config.sh" \
             "${LUCI_ROOT}/usr/libexec/nordvpn-easy/migrate-config.sh"
+          install -m0755 "${BACKEND_FILES}/usr/libexec/nordvpn-easy/public-ip-poll.sh" \
+            "${LUCI_ROOT}/usr/libexec/nordvpn-easy/public-ip-poll.sh"
           install -d -m0755 "${LUCI_ROOT}/usr/libexec/nordvpn-easy/lib"
           cp -R "${BACKEND_FILES}/usr/libexec/nordvpn-easy/lib/." \
             "${LUCI_ROOT}/usr/libexec/nordvpn-easy/lib/"
@@ -564,6 +632,10 @@ jobs:
           install -d -m0755 "${LUCI_ROOT}/usr/libexec/rpcd"
           install -m0755 "${BACKEND_FILES}/usr/libexec/rpcd/nordvpn.easy" \
             "${LUCI_ROOT}/usr/libexec/rpcd/nordvpn.easy"
+
+          install -d -m0755 "${LUCI_ROOT}/etc/uci-defaults"
+          install -m0755 "${BACKEND_FILES}/etc/uci-defaults/99-nordvpn-easy-rpcd-timeout" \
+            "${LUCI_ROOT}/etc/uci-defaults/99-nordvpn-easy-rpcd-timeout"
 
           install -d -m0755 "${LUCI_ROOT}/usr/share/nordvpn-easy/defaults"
           install -m0644 "${BACKEND_FILES}/usr/share/nordvpn-easy/defaults/nordvpn_easy" \
@@ -599,7 +671,10 @@ jobs:
       - name: Prepare usign signing key
         env:
           USIGN_PRIVATE_KEY: ${{ secrets.USIGN_PRIVATE_KEY }}
-          USIGN_PUBLIC_KEY: ${{ secrets.USIGN_PUBBLIC_KEY }}
+          # Accept the corrected secret name, falling back to the historical
+          # misspelling so renaming USIGN_PUBBLIC_KEY -> USIGN_PUBLIC_KEY on GitHub
+          # needs no release downtime; drop the fallback once renamed.
+          USIGN_PUBLIC_KEY: ${{ secrets.USIGN_PUBLIC_KEY || secrets.USIGN_PUBBLIC_KEY }}
         run: |
           set -euo pipefail
           SDK_DIR="$(realpath "$SDK_DIR")"
@@ -696,7 +771,9 @@ jobs:
             "${VERIFY_DIR}/data/usr/libexec/nordvpn-easy/migrate-config.sh" \
             "${VERIFY_DIR}/data/usr/libexec/nordvpn-easy/lib/config-context.sh" \
             "${VERIFY_DIR}/data/usr/libexec/nordvpn-easy/lib/runtime.sh" \
+            "${VERIFY_DIR}/data/usr/libexec/nordvpn-easy/public-ip-poll.sh" \
             "${VERIFY_DIR}/data/usr/libexec/rpcd/nordvpn.easy" \
+            "${VERIFY_DIR}/data/etc/uci-defaults/99-nordvpn-easy-rpcd-timeout" \
             "${VERIFY_DIR}/data/usr/share/nordvpn-easy/defaults/nordvpn_easy" \
             "${VERIFY_DIR}/data/www/luci-static/resources/view/nordvpn-easy/config.js"
           do

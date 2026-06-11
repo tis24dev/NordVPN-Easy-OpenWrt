@@ -64,6 +64,7 @@ if (!String.prototype.format) {
 function buildServiceModule(initialRpctimeout) {
 	const source = fs.readFileSync(servicePath, 'utf8');
 	const calls = [];
+	const declares = [];
 	const responses = [];
 	const context = {
 		baseclass: {
@@ -74,6 +75,7 @@ function buildServiceModule(initialRpctimeout) {
 		managerData: managerData,
 		rpc: {
 			declare(spec) {
+				declares.push(spec);
 				return function() {
 					const args = Array.prototype.slice.call(arguments);
 					const response = responses.length ? responses.shift() : {
@@ -83,7 +85,7 @@ function buildServiceModule(initialRpctimeout) {
 						stderr: ''
 					};
 
-					calls.push({ spec: spec, args: args });
+					calls.push({ spec: spec, args: args, rpctimeout: context.L.env.rpctimeout });
 					if (response instanceof Error)
 						return Promise.reject(response);
 
@@ -130,6 +132,7 @@ function buildServiceModule(initialRpctimeout) {
 	return {
 		service: service,
 		calls: calls,
+		declares: declares,
 		responses: responses,
 		getRpctimeout() {
 			return context.L.env.rpctimeout;
@@ -146,14 +149,37 @@ function loadServiceModule(initialRpctimeout) {
 	return {
 		service: built.service,
 		calls: built.calls,
+		declares: built.declares,
 		responses: built.responses,
 		getRpctimeout: built.getRpctimeout,
 		setRpctimeout: built.setRpctimeout
 	};
 }
 
+function testAclGrantsEveryDeclaredMethod() {
+	const built = loadServiceModule();
+	const declaredMethods = built.declares
+		.filter(function(spec) { return spec && spec.object === 'nordvpn.easy'; })
+		.map(function(spec) { return spec.method; });
+
+	assert.ok(declaredMethods.length > 0, 'service.js declares at least one nordvpn.easy method');
+
+	const aclPath = path.join(__dirname, '..', '..', 'openwrt-packages', 'luci-app-nordvpn-easy', 'root', 'usr', 'share', 'rpcd', 'acl.d', 'luci-app-nordvpn-easy.json');
+	const acl = JSON.parse(fs.readFileSync(aclPath, 'utf8'));
+	const grant = acl['luci-app-nordvpn-easy'] || {};
+	const grantedUbus = function(scope) {
+		return (grant[scope] && grant[scope].ubus && grant[scope].ubus['nordvpn.easy']) || [];
+	};
+	const granted = grantedUbus('read').concat(grantedUbus('write'));
+
+	const missing = declaredMethods.filter(function(method) { return granted.indexOf(method) === -1; });
+	assert.deepEqual(missing, [], 'every nordvpn.easy method the frontend declares must be granted by the rpcd ACL (missing: ' + JSON.stringify(missing) + ')');
+}
+
 Promise.resolve().then(async function() {
+	testAclGrantsEveryDeclaredMethod();
 	const lowTimeout = loadServiceModule(20);
+	assert.equal(lowTimeout.getRpctimeout(), 20, 'loading service.js does not globally raise LuCI RPC timeout');
 	lowTimeout.service.ensureLuCiRpcTimeout();
 	assert.equal(lowTimeout.getRpctimeout(), 180, 'ensureLuCiRpcTimeout raises LuCI global RPC timeout');
 
@@ -169,6 +195,7 @@ Promise.resolve().then(async function() {
 	assert.equal(catalogResult.code, 0, 'server_catalog returns normalized success result');
 	assert.equal(catalogCall.spec.object, 'nordvpn.easy', 'server_catalog uses nordvpn.easy ubus object');
 	assert.equal(catalogCall.spec.method, 'server_catalog', 'server_catalog uses the dedicated ubus method');
+	assert.equal(catalogCall.rpctimeout, 90, 'server_catalog raises the LuCI global timeout only for that catalog call');
 	assert.deepEqual(catalogCall.args, [ 'UY', true ], 'server_catalog forwards country and force args');
 	assert.deepEqual(catalogPayload.args, [ 'UY', true ], 'server_catalog preserves rpc payload in stdout');
 
@@ -188,12 +215,35 @@ Promise.resolve().then(async function() {
 	const connectCall = loaded.calls[loaded.calls.length - 1];
 	assert.equal(connectResult.code, 0, 'connect returns normalized success result');
 	assert.equal(connectCall.spec.method, 'connect', 'connect uses the dedicated ubus method');
+	assert.equal(connectCall.rpctimeout, 120, 'connect uses the runtime LuCI global timeout');
 
-	await assert.rejects(
-		loaded.service.execService('reconcile'),
-		/Unsupported NordVPN Easy action: reconcile/,
-		'legacy reconcile is not exposed from the LuCI service client'
-	);
+	const startConnectResult = await loaded.service.execService('start_connect');
+	const startConnectCall = loaded.calls[loaded.calls.length - 1];
+	assert.equal(startConnectResult.code, 0, 'start_connect returns normalized success result');
+	assert.equal(startConnectCall.spec.method, 'start_connect', 'start_connect uses the dedicated ubus method');
+	assert.equal(startConnectCall.spec.timeout, 15, 'start_connect uses a short rpc timeout');
+	assert.equal(startConnectCall.rpctimeout, 15, 'start_connect also applies the short LuCI global timeout');
+
+	const beginApplyResult = await loaded.service.execService('begin_connect_apply');
+	const beginApplyCall = loaded.calls[loaded.calls.length - 1];
+	assert.equal(beginApplyResult.code, 0, 'begin_connect_apply returns normalized success result');
+	assert.equal(beginApplyCall.spec.method, 'begin_connect_apply', 'begin_connect_apply uses the dedicated ubus method');
+	assert.equal(beginApplyCall.spec.timeout, 15, 'begin_connect_apply uses a short rpc timeout');
+	assert.equal(beginApplyCall.rpctimeout, 15, 'begin_connect_apply also applies the short LuCI global timeout');
+
+	const abortApplyResult = await loaded.service.execService('abort_connect_apply');
+	const abortApplyCall = loaded.calls[loaded.calls.length - 1];
+	assert.equal(abortApplyResult.code, 0, 'abort_connect_apply returns normalized success result');
+	assert.equal(abortApplyCall.spec.method, 'abort_connect_apply', 'abort_connect_apply uses the dedicated ubus method');
+	assert.equal(abortApplyCall.spec.timeout, 15, 'abort_connect_apply uses a short rpc timeout');
+	assert.equal(abortApplyCall.rpctimeout, 15, 'abort_connect_apply also applies the short LuCI global timeout');
+
+	const reconcileResult = await loaded.service.execService('reconcile');
+	const reconcileCall = loaded.calls[loaded.calls.length - 1];
+	assert.equal(reconcileResult.code, 0, 'reconcile returns normalized success result');
+	assert.equal(reconcileCall.spec.method, 'reconcile', 'reconcile uses the dedicated ubus method');
+	assert.equal(reconcileCall.spec.timeout, 120, 'reconcile uses the runtime rpc timeout');
+	assert.equal(reconcileCall.rpctimeout, 120, 'reconcile applies the runtime LuCI global timeout');
 
 	const diagnosticsResult = await loaded.service.execService('diagnostics_summary');
 	const diagnosticsCall = loaded.calls[loaded.calls.length - 1];
@@ -202,6 +252,7 @@ Promise.resolve().then(async function() {
 	assert.equal(diagnosticsResult.code, 0, 'diagnostics_summary returns normalized success result');
 	assert.equal(diagnosticsCall.spec.object, 'nordvpn.easy', 'diagnostics_summary uses nordvpn.easy ubus object');
 	assert.equal(diagnosticsCall.spec.method, 'diagnostics_summary', 'diagnostics_summary uses the dedicated ubus method');
+	assert.equal(diagnosticsCall.rpctimeout, 180, 'diagnostics_summary applies the diagnostics LuCI global timeout');
 	assert.deepEqual(diagnosticsCall.args, [], 'diagnostics_summary forwards no args');
 	assert.deepEqual(diagnosticsPayload.args, [], 'diagnostics_summary preserves rpc payload in stdout');
 

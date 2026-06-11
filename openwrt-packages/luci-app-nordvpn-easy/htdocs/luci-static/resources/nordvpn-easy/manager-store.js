@@ -21,6 +21,13 @@ function createState() {
 		currentPublicCountry: '',
 		appliedEnabled: false,
 		appliedCountryCode: '',
+		appliedMode: 'auto',
+		appliedPreferredStation: '',
+		countryMatchLogKey: '',
+		onCountryMatchChange: null,
+		applyTransitionActive: false,
+		applyTargetEnabled: null,
+		applyTargetCountryCode: '',
 		currentLocalStatus: managerData.parseLocalStatus('{}'),
 		currentLocalStatusFresh: false,
 		currentLocalStatusLastUpdated: 0,
@@ -33,7 +40,6 @@ function createState() {
 		lastAutoReconcileFailureAt: 0,
 		saveApplyInProgress: false,
 		runtimeActionCooldownUntil: 0,
-		pollingSuspended: false,
 		pollersStarted: false,
 		lastError: '',
 		inFlight: {
@@ -90,14 +96,6 @@ function syncPhase(state) {
 	return setPhase(state, derivePhase(state));
 }
 
-function suspendPolling(state) {
-	state.pollingSuspended = true;
-}
-
-function resumePolling(state) {
-	state.pollingSuspended = false;
-}
-
 function ensureInFlightState(state, key) {
 	if (!state.inFlight)
 		state.inFlight = {};
@@ -113,9 +111,9 @@ function inFlightPromise(entry) {
 	if (!entry)
 		return null;
 
-	if (typeof entry.then === 'function')
-		return entry;
-
+	// state.inFlight[key] is only ever an {epoch, promise} entry (set by
+	// runExclusive) or null (set by clearInFlight); it is never a bare promise,
+	// so the entry always carries its promise here.
 	return entry.promise || null;
 }
 
@@ -168,8 +166,6 @@ return baseclass.extend({
 	setError: setError,
 	clearError: clearError,
 	syncPhase: syncPhase,
-	suspendPolling: suspendPolling,
-	resumePolling: resumePolling,
 	clearInFlight: clearInFlight,
 	runExclusive: runExclusive
 });

@@ -27,6 +27,7 @@ extract_function() {
 }
 
 eval "$(extract_function validate_cron_schedule)"
+eval "$(extract_function normalize_cron_minute_field)"
 eval "$(extract_function normalize_cron_schedule)"
 
 CRON_VALIDATION_ERROR=''
@@ -35,10 +36,18 @@ assert_eq '' "${CRON_VALIDATION_ERROR:-}" 'wildcard schedule accepted'
 assert_eq '*/5 * * * *' "$(normalize_cron_schedule '* * * * *')" 'wildcard schedule normalized to 5-minute minimum'
 assert_eq '*/5 * * * *' "$(normalize_cron_schedule '*/4 * * * *')" 'fast stepped schedule normalized to 5-minute minimum'
 assert_eq '*/10 * * * *' "$(normalize_cron_schedule '*/10 * * * *')" '10-minute schedule preserved'
+assert_eq '*/5 * * * *' "$(normalize_cron_schedule '0-4 * * * *')" 'dense minute range throttled to 5-minute floor'
+assert_eq '*/5 * * * *' "$(normalize_cron_schedule '0,1,2,3,4 * * * *')" 'dense minute list throttled to 5-minute floor'
+assert_eq '0,15,30,45 * * * *' "$(normalize_cron_schedule '0,15,30,45 * * * *')" 'sparse minute list preserved'
+assert_eq '*/10 5 * * 1' "$(normalize_cron_schedule '*/10 5 * * 1')" 'non-minute fields preserved'
 
 CRON_VALIDATION_ERROR=''
 validate_cron_schedule '1,2,5-7 * * * *'
 assert_eq '' "${CRON_VALIDATION_ERROR:-}" 'lists and ranges accepted'
+
+CRON_VALIDATION_ERROR=''
+validate_cron_schedule '0-30/5 * * * *'
+assert_eq '' "${CRON_VALIDATION_ERROR:-}" 'range with step accepted'
 
 CRON_VALIDATION_ERROR=''
 if validate_cron_schedule '50-10 * * * *'; then
@@ -93,6 +102,27 @@ case "$CRON_VALIDATION_ERROR" in
 		;;
 	*)
 		printf '%s\n' "FAIL: expected multiline diagnostic, got: ${CRON_VALIDATION_ERROR:-empty}" >&2
+		exit 1
+		;;
+esac
+
+# The generated cron command must skip when a connect-apply transaction is in
+# progress (so cron 'check' cannot interleave the client-driven Save & Apply
+# window) and stay busy-tolerant otherwise.
+eval "$(extract_function write_desired_cron_hook_to)"
+SERVICE_NAME='nordvpn-easy'
+CONNECT_APPLY_GUARD='/tmp/run/nordvpn-easy/connect-apply-guard'
+cfg_enabled=1
+cfg_check_cron_schedule='*/10 * * * *'
+CRON_OUT="$(mktemp)"
+write_desired_cron_hook_to "$CRON_OUT" 1
+CRON_LINE="$(cat "$CRON_OUT")"
+rm -f "$CRON_OUT"
+case "$CRON_LINE" in
+	*"[ -f $CONNECT_APPLY_GUARD ] ||"*"NORDVPN_EASY_BUSY_IS_OK=1 /etc/init.d/$SERVICE_NAME check"*)
+		;;
+	*)
+		printf '%s\n' "FAIL: cron command should skip on the connect-apply guard and stay busy-tolerant: $CRON_LINE" >&2
 		exit 1
 		;;
 esac

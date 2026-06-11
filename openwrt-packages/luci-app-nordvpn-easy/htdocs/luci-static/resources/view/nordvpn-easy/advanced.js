@@ -11,18 +11,33 @@
 const SERVER_CATALOG_CACHE_PATH = '/tmp/nordvpn-easy-servers.json';
 
 function runAction(action, runtimeBusy) {
-	if (runtimeBusy && [ 'setup', 'check', 'rotate', 'install_hooks' ].indexOf(action) !== -1) {
-		service.notifyInfo(_('NordVPN Easy is applying another runtime operation. This action was skipped.'));
-		return Promise.resolve();
-	}
+	const isMutating = [ 'setup', 'check', 'rotate', 'install_hooks' ].indexOf(action) !== -1;
 
-	return service.runAction(action).then(function(result) {
-		if (!result.success) {
-			service.notifyError(service.resultToError(result));
+	// Re-query the live runtime status at click time rather than trusting the
+	// render-time snapshot, so an action dispatched from a long-open page is
+	// gated on current state (the backend remains the final guard). Fall back to
+	// the render-time snapshot if the live query yields nothing.
+	const busyCheck = isMutating
+		? L.resolveDefault(service.execService('status_json'), null).then(function(res) {
+			const payload = service.parseExecJsonResponse(res, null);
+			return (payload == null) ? !!runtimeBusy : managerData.runtimeStatusIsBusy(payload);
+		})
+		: Promise.resolve(false);
+
+	return busyCheck.then(function(busy) {
+		if (busy) {
+			service.notifyInfo(_('NordVPN Easy is applying another runtime operation. This action was skipped.'));
 			return;
 		}
 
-		service.notifyInfo(result.message);
+		return service.runAction(action).then(function(result) {
+			if (!result.success) {
+				service.notifyError(service.resultToError(result));
+				return;
+			}
+
+			service.notifyInfo(result.message);
+		});
 	});
 }
 
@@ -99,19 +114,23 @@ return view.extend({
 		o = s.option(form.Value, 'wan_if', _('WAN Interface'));
 		o.placeholder = 'wan';
 		o.rmempty = false;
+		o.datatype = 'uciname';
 
 		o = s.option(form.Value, 'vpn_if', _('VPN Interface'));
 		o.placeholder = 'wg0';
 		o.rmempty = false;
+		o.datatype = 'uciname';
 
 		o = s.option(form.Value, 'vpn_addr', _('VPN Address'));
 		o.placeholder = '10.5.0.2/32';
 		o.rmempty = true;
-		o.description = _('Optional. Local VPN interface address.');
+		o.datatype = 'cidr4';
+		o.description = _('Optional. Local VPN interface address in CIDR form.');
 
 		o = s.option(form.Value, 'vpn_port', _('VPN Port'));
 		o.placeholder = '51820';
 		o.rmempty = true;
+		o.datatype = 'port';
 		o.description = _('Optional. Backend VPN server port.');
 
 		o = s.option(form.Value, 'wireguard_persistent_keepalive', _('WireGuard Keepalive'));
@@ -158,10 +177,12 @@ return view.extend({
 		o = s.option(form.Value, 'vpn_dns1', _('DNS 1'));
 		o.placeholder = '103.86.99.99';
 		o.rmempty = true;
+		o.datatype = 'ipaddr';
 
 		o = s.option(form.Value, 'vpn_dns2', _('DNS 2'));
 		o.placeholder = '103.86.96.96';
 		o.rmempty = true;
+		o.datatype = 'ipaddr';
 
 		s = m.section(form.NamedSection, 'main', 'nordvpn_easy', _('Fallback Recovery'));
 		s.anonymous = true;
@@ -209,6 +230,57 @@ return view.extend({
 		o.placeholder = '*/10 * * * *';
 		o.rmempty = true;
 		o.description = _('Leave empty to disable cron-based checks. Recommended values are 5 minutes or slower.');
+		o.validate = function(_section_id, value) {
+			const schedule = String(value || '').trim();
+
+			if (!schedule)
+				return true;
+
+			const fields = schedule.split(/\s+/);
+			if (fields.length !== 5)
+				return _('Cron schedule must have exactly 5 fields (minute hour day-of-month month day-of-week).');
+
+			// Mirror the init service's validate_cron_schedule: accept *, */n, a,
+			// a-b and a-b/n in comma lists, but enforce the same per-field numeric
+			// bounds and step limits so the UI rejects exactly what the backend
+			// would (minute 0-59, hour 0-23, day 1-31, month 1-12, weekday 0-7).
+			const maxv = [ 59, 23, 31, 12, 7 ];
+			const minv = [ 0, 0, 1, 1, 0 ];
+			const invalid = function(field) {
+				return _('Cron field "%s" is not a valid cron expression.').format(field);
+			};
+			for (let i = 0; i < fields.length; i++) {
+				const items = fields[i].split(',');
+				for (let k = 0; k < items.length; k++) {
+					let base = items[k];
+					if (base === '')
+						return invalid(fields[i]);
+					const slash = base.indexOf('/');
+					if (slash >= 0) {
+						const stepStr = base.slice(slash + 1);
+						base = base.slice(0, slash);
+						if (!/^[0-9]+$/.test(stepStr) || Number(stepStr) < 1 || Number(stepStr) > maxv[i])
+							return invalid(fields[i]);
+					}
+					if (base === '*')
+						continue;
+					const range = base.match(/^([0-9]+)-([0-9]+)$/);
+					if (range) {
+						const a = Number(range[1]), b = Number(range[2]);
+						if (a < minv[i] || a > maxv[i] || b < minv[i] || b > maxv[i] || a > b)
+							return invalid(fields[i]);
+					} else if (/^[0-9]+$/.test(base)) {
+						const n = Number(base);
+						if (n < minv[i] || n > maxv[i])
+							return invalid(fields[i]);
+					} else {
+						return invalid(fields[i]);
+					}
+				}
+			}
+
+			return true;
+		};
 
 		o = s.option(form.Flag, 'enable_hotplug', _('Enable Hotplug Checks'));
 		o.default = '1';
@@ -220,10 +292,10 @@ return view.extend({
 		o.rmempty = false;
 		o.description = _('Minimum seconds between hotplug-triggered health checks.');
 
-		o = s.option(form.Flag, 'kill_switch_enabled', _('Enable Kill Switch'));
-		o.default = '0';
+		o = s.option(form.Flag, 'kill_switch_enabled', _('Kill Switch'));
+		o.default = '1';
 		o.rmempty = false;
-		o.description = _('Advanced guardrail for future routing/firewall policy enforcement. Default is off.');
+		o.description = _('On (default): while the VPN is enabled, LAN traffic is forced through the tunnel and is blocked if the tunnel drops, so nothing leaks to the bare WAN (IPv6 is always blocked, since NordLynx is IPv4-only). Turn off to allow the LAN to fall back to the unprotected WAN when the tunnel is down.');
 
 		o = s.option(form.Value, 'failure_retry_delay', _('Failure Retry Delay'));
 		o.placeholder = '6';

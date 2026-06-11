@@ -94,11 +94,25 @@ EOF
 		nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "could not commit network configuration while tearing down $VPN_IF"
 		return 1
 	}
+	nordvpn_easy_harden_secret_config_perms network
 
-	"${NORDVPN_EASY_NETWORK_INIT:-/etc/init.d/network}" reload >/dev/null 2>&1 || {
-		log 'ERROR: NETWORK RELOAD FAILED DURING VPN TEARDOWN'
-		return 1
-	}
+	if ! "${NORDVPN_EASY_NETWORK_INIT:-/etc/init.d/network}" reload >/dev/null 2>&1; then
+		log 'WARNING: NETWORK RELOAD FAILED DURING VPN TEARDOWN; retrying then restarting network'
+		sleep "${INTERFACE_RESTART_DELAY:-2}"
+		"${NORDVPN_EASY_NETWORK_INIT:-/etc/init.d/network}" reload >/dev/null 2>&1 ||
+			"${NORDVPN_EASY_NETWORK_INIT:-/etc/init.d/network}" restart >/dev/null 2>&1 || true
+
+		# UCI no longer references the interface; make sure the kernel device is
+		# gone so a failed reload cannot leave a live wg device behind with its
+		# config stripped (a split runtime/config state).
+		if nordvpn_easy_vpn_link_is_present; then
+			ip link del "$VPN_IF" 2>/dev/null || true
+		fi
+		if nordvpn_easy_vpn_link_is_present; then
+			nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "VPN interface $VPN_IF is still present after teardown reload/restart fallback"
+			return 1
+		fi
+	fi
 
 	log "apply: VPN interface $VPN_IF removed from runtime and UCI"
 	nordvpn_easy_log_vpn_interface_state 'after-teardown'
@@ -107,14 +121,20 @@ EOF
 nordvpn_easy_default_route_uses_vpn() {
 	local vpn_if="${1:-$VPN_IF}"
 
-	ip -4 route show default 2>/dev/null | grep -q "dev ${vpn_if}[[:space:]]"
+	# Check both families: a broken tunnel can hold the IPv6 default route too,
+	# which an IPv4-only check would miss and leave auto-recovery blind.
+	ip -4 route show default 2>/dev/null | grep -q "dev ${vpn_if}[[:space:]]" && return 0
+	ip -6 route show default 2>/dev/null | grep -q "dev ${vpn_if}[[:space:]]"
 }
 
 nordvpn_easy_wg_handshake_epoch() {
 	local vpn_if="${1:-$VPN_IF}"
 	local epoch=''
 
-	epoch="$(wg show "$vpn_if" latest-handshakes 2>/dev/null | awk 'NR==1 { print $2 }')"
+	epoch="$(wg show "$vpn_if" latest-handshakes 2>/dev/null | awk '
+		$2 ~ /^[0-9]+$/ && $2 > max { max = $2 }
+		END { if (max != "") print max }
+	')"
 	case "$epoch" in
 		''|*[!0-9]*)
 			printf '%s\n' '0'
@@ -148,11 +168,107 @@ nordvpn_easy_ping_interface() {
 	ping -q -c 1 -W 5 "$(pick_ping_ip)" -I "$1" >/dev/null 2>&1
 }
 
+nordvpn_easy_bring_up_vpn_interface() {
+	local vpn_if="${1:-$VPN_IF}"
+	local network_init="${NORDVPN_EASY_NETWORK_INIT:-/etc/init.d/network}"
+
+	[ -n "$vpn_if" ] || return 1
+
+	log "apply: reloading network and bringing up $vpn_if"
+	"$network_init" reload || {
+		log 'ERROR: NETWORK RELOAD FAILED'
+		return 1
+	}
+
+	if ifup "$vpn_if" >/dev/null 2>&1; then
+		return 0
+	fi
+
+	log "apply: ifup $vpn_if failed; falling back to full network restart"
+	"$network_init" restart || {
+		log 'ERROR: NETWORK RESTART FAILED'
+		return 1
+	}
+	return 0
+}
+
+nordvpn_easy_wait_for_vpn_handshake() {
+	local vpn_if="${1:-$VPN_IF}"
+	local wait_timeout="${2:-0}"
+	local wait_context="${3:-runtime validation}"
+	local start_ts='0'
+	local now_ts='0'
+	local deadline='0'
+	local elapsed='unknown'
+	local handshake_epoch='0'
+
+	case "$wait_timeout" in
+		''|*[!0-9]*)
+			return 1
+			;;
+	esac
+
+	[ "$wait_timeout" -gt 0 ] || return 1
+	command -v wg >/dev/null 2>&1 || return 1
+
+	start_ts="$(date +%s 2>/dev/null || printf '%s' '0')"
+	case "$start_ts" in
+		''|*[!0-9]*)
+			start_ts='0'
+			;;
+		*)
+			deadline=$((start_ts + wait_timeout))
+			;;
+	esac
+
+	log "apply: waiting up to ${wait_timeout}s for WireGuard handshake on $vpn_if after ${wait_context}"
+
+	while :; do
+		handshake_epoch="$(nordvpn_easy_wg_handshake_epoch "$vpn_if")"
+		if nordvpn_easy_handshake_epoch_indicates_connection "$handshake_epoch"; then
+			now_ts="$(date +%s 2>/dev/null || printf '%s' '0')"
+			case "$now_ts" in
+				''|*[!0-9]*)
+					elapsed='unknown'
+					;;
+				*)
+					if [ "$start_ts" -gt 0 ]; then
+						elapsed=$((now_ts - start_ts))
+						[ "$elapsed" -lt 0 ] && elapsed=0
+					fi
+					;;
+			esac
+			log "apply: WireGuard handshake validated on $vpn_if after ${elapsed}s"
+			return 0
+		fi
+
+		if [ "$deadline" -gt 0 ]; then
+			now_ts="$(date +%s 2>/dev/null || printf '%s' '0')"
+			case "$now_ts" in
+				''|*[!0-9]*)
+					break
+					;;
+				*)
+					[ "$now_ts" -ge "$deadline" ] && break
+					;;
+			esac
+		else
+			wait_timeout=$((wait_timeout - 1))
+			[ "$wait_timeout" -le 0 ] && break
+		fi
+
+		sleep 1
+	done
+
+	return 1
+}
+
 nordvpn_easy_wait_for_vpn_connectivity() {
 	local vpn_if="${1:-$VPN_IF}"
 	local wait_timeout="${2:-$POST_RESTART_DELAY}"
 	local wait_context="${3:-runtime validation}"
 	local wait_timeout_label=''
+	local handshake_wait_max=''
 	local start_ts='0'
 	local now_ts='0'
 	local elapsed='unknown'
@@ -180,6 +296,30 @@ nordvpn_easy_wait_for_vpn_connectivity() {
 
 	if [ "$start_ts" -gt 0 ]; then
 		deadline=$((start_ts + wait_timeout))
+	fi
+
+	handshake_wait_max="${NORDVPN_EASY_HANDSHAKE_WAIT_MAX:-25}"
+	case "$handshake_wait_max" in
+		''|*[!0-9]*)
+			handshake_wait_max='25'
+			;;
+	esac
+	if [ "$wait_timeout" -lt "$handshake_wait_max" ]; then
+		handshake_wait_max="$wait_timeout"
+	fi
+
+	if [ "$handshake_wait_max" -gt 0 ] &&
+		nordvpn_easy_wait_for_vpn_handshake "$vpn_if" "$handshake_wait_max" "$wait_context"; then
+		# A fresh handshake means the tunnel established (keys exchanged), but it
+		# does not prove the 0.0.0.0/0 route and firewall path actually carry
+		# traffic. Confirm real connectivity through the interface before declaring
+		# it ready; if routing has not settled yet, fall through to the probe loop
+		# instead of falsely reporting connected on the handshake alone.
+		if nordvpn_easy_ping_interface "$vpn_if"; then
+			log "apply: VPN handshake and connectivity validated on $vpn_if after ${wait_context}"
+			return 0
+		fi
+		log "apply: $vpn_if handshake is up but traffic is not routing yet; verifying connectivity"
 	fi
 
 	log "apply: waiting up to ${wait_timeout}s for VPN connectivity on $vpn_if after ${wait_context}"
@@ -365,71 +505,110 @@ nordvpn_easy_apply_wireguard_transport_settings() {
 	fi
 }
 
-nordvpn_easy_ensure_vpn_in_wan_zone() {
-	WAN_ZONE=$(find_firewall_zone_section "$WAN_IF") || {
+NORDVPN_EASY_FW_ZONE_SECTION="${NORDVPN_EASY_FW_ZONE_SECTION:-nordvpn_vpn}"
+NORDVPN_EASY_FW_ZONE_NAME="${NORDVPN_EASY_FW_ZONE_NAME:-nordvpn}"
+
+nordvpn_easy_lan_zones_forwarding_to() {
+	# Echo the source zone names that forward to the given destination zone name
+	# (the LAN-side zones whose internet egress must be steered through the VPN).
+	local dest_zone="$1" section dest src
+	[ -n "$dest_zone" ] || return 0
+	for section in $(uci show firewall 2>/dev/null | awk -F= '$2=="forwarding"{print $1}'); do
+		dest="$(uci -q get "${section}.dest" 2>/dev/null)"
+		[ "$dest" = "$dest_zone" ] || continue
+		src="$(uci -q get "${section}.src" 2>/dev/null)"
+		case "$src" in ''|"$NORDVPN_EASY_FW_ZONE_NAME") continue ;; esac
+		printf '%s\n' "$src"
+	done | sort -u
+}
+
+nordvpn_easy_ensure_vpn_firewall() {
+	local wan_zone_section wan_zone_name kill_switch mtu_fix_value lan_zone idx=0
+	local fw_zone znet
+
+	wan_zone_section="$(nordvpn_easy_find_firewall_zone_section "$WAN_IF")" || {
 		log "ERROR: FIREWALL ZONE FOR $WAN_IF NOT FOUND"
 		return 1
 	}
+	wan_zone_name="$(uci -q get "${wan_zone_section}.name" 2>/dev/null)"
+	[ -n "$wan_zone_name" ] || {
+		log "ERROR: WAN FIREWALL ZONE $wan_zone_section HAS NO NAME"
+		return 1
+	}
 
-	FIREWALL_CHANGED=0
+	kill_switch=0
+	[ "${KILL_SWITCH_ENABLED:-1}" = '1' ] && kill_switch=1
+	mtu_fix_value=0
+	[ "${FIREWALL_MTU_FIX:-1}" = '1' ] && mtu_fix_value=1
 
-	for FIREWALL_SECTION in $(uci show firewall | awk -F= '$2=="zone"{ print $1 }'); do
-		[ "$FIREWALL_SECTION" = "$WAN_ZONE" ] && continue
-
-		ZONE_NETWORKS=$(uci -q get "${FIREWALL_SECTION}.network" 2>/dev/null)
-		for ZONE_NETWORK in $ZONE_NETWORKS; do
-			[ "$ZONE_NETWORK" = "$VPN_IF" ] || continue
-			uci -q del_list "${FIREWALL_SECTION}.network"="$VPN_IF"
-			FIREWALL_CHANGED=1
-			break
+	# Rebuild the app-owned firewall objects from a clean slate (idempotent), then
+	# move VPN_IF out of every other zone (it used to live in the WAN zone).
+	nordvpn_easy_remove_app_firewall_sections
+	for fw_zone in $(uci show firewall 2>/dev/null | awk -F= '$2=="zone"{print $1}'); do
+		for znet in $(uci -q get "${fw_zone}.network" 2>/dev/null); do
+			[ "$znet" = "$VPN_IF" ] && uci -q del_list "${fw_zone}.network"="$VPN_IF"
 		done
 	done
 
-	ZONE_HAS_VPN=0
-	ZONE_NETWORKS=$(uci -q get "${WAN_ZONE}.network" 2>/dev/null)
+	# Dedicated VPN zone: keeping wg0 out of the WAN zone is what lets the kill
+	# switch drop lan->WAN without also dropping the legitimate lan->wg0 traffic.
+	uci set "firewall.${NORDVPN_EASY_FW_ZONE_SECTION}=zone"
+	uci set "firewall.${NORDVPN_EASY_FW_ZONE_SECTION}.name=${NORDVPN_EASY_FW_ZONE_NAME}"
+	uci set "firewall.${NORDVPN_EASY_FW_ZONE_SECTION}.network=${VPN_IF}"
+	uci set "firewall.${NORDVPN_EASY_FW_ZONE_SECTION}.masq=1"
+	uci set "firewall.${NORDVPN_EASY_FW_ZONE_SECTION}.mtu_fix=${mtu_fix_value}"
+	uci set "firewall.${NORDVPN_EASY_FW_ZONE_SECTION}.input=REJECT"
+	uci set "firewall.${NORDVPN_EASY_FW_ZONE_SECTION}.output=ACCEPT"
+	uci set "firewall.${NORDVPN_EASY_FW_ZONE_SECTION}.forward=REJECT"
 
-	for ZONE_NETWORK in $ZONE_NETWORKS; do
-		[ "$ZONE_NETWORK" = "$VPN_IF" ] && {
-			ZONE_HAS_VPN=1
-			break
-		}
+	# For every LAN-side zone that forwards to WAN: allow it to the VPN zone,
+	# always drop its IPv6 to WAN (NordLynx is IPv4-only, so IPv6 can only leak),
+	# and -- when the kill switch is strict -- drop its IPv4 to WAN so a dropped
+	# tunnel cannot fall back to the bare WAN and leak. When the tunnel is up the
+	# default route is via wg0 (the VPN zone) so this never matches.
+	for lan_zone in $(nordvpn_easy_lan_zones_forwarding_to "$wan_zone_name"); do
+		idx=$((idx + 1))
+
+		uci set "firewall.nordvpn_fwd_${idx}=forwarding"
+		uci set "firewall.nordvpn_fwd_${idx}.src=${lan_zone}"
+		uci set "firewall.nordvpn_fwd_${idx}.dest=${NORDVPN_EASY_FW_ZONE_NAME}"
+
+		uci set "firewall.nordvpn_ks6_${idx}=rule"
+		uci set "firewall.nordvpn_ks6_${idx}.name=nordvpn-killswitch-v6-${idx}"
+		uci set "firewall.nordvpn_ks6_${idx}.src=${lan_zone}"
+		uci set "firewall.nordvpn_ks6_${idx}.dest=${wan_zone_name}"
+		uci set "firewall.nordvpn_ks6_${idx}.family=ipv6"
+		uci set "firewall.nordvpn_ks6_${idx}.proto=all"
+		uci set "firewall.nordvpn_ks6_${idx}.target=DROP"
+
+		[ "$kill_switch" = '1' ] || continue
+		uci set "firewall.nordvpn_ks4_${idx}=rule"
+		uci set "firewall.nordvpn_ks4_${idx}.name=nordvpn-killswitch-v4-${idx}"
+		uci set "firewall.nordvpn_ks4_${idx}.src=${lan_zone}"
+		uci set "firewall.nordvpn_ks4_${idx}.dest=${wan_zone_name}"
+		uci set "firewall.nordvpn_ks4_${idx}.family=ipv4"
+		uci set "firewall.nordvpn_ks4_${idx}.proto=all"
+		uci set "firewall.nordvpn_ks4_${idx}.target=DROP"
 	done
-
-	if [ "$ZONE_HAS_VPN" -ne 1 ]; then
-		uci add_list "${WAN_ZONE}.network"="$VPN_IF"
-		FIREWALL_CHANGED=1
-	fi
-
-	CURRENT_MTU_FIX=$(uci -q get "${WAN_ZONE}.mtu_fix" 2>/dev/null || true)
-	if [ "${FIREWALL_MTU_FIX:-1}" = '1' ]; then
-		if [ "$CURRENT_MTU_FIX" != '1' ]; then
-			uci set "${WAN_ZONE}.mtu_fix=1"
-			FIREWALL_CHANGED=1
-		fi
-	elif [ "$CURRENT_MTU_FIX" != '0' ]; then
-		uci set "${WAN_ZONE}.mtu_fix=0"
-		FIREWALL_CHANGED=1
-	fi
-
-	if [ "$FIREWALL_CHANGED" -ne 1 ]; then
-		log "runtime: firewall zone for $WAN_IF already contains $VPN_IF with mtu_fix=${CURRENT_MTU_FIX:-unset}"
-		return 0
-	fi
 
 	uci commit firewall || {
 		log 'ERROR: COULD NOT COMMIT FIREWALL CONFIGURATION'
 		return 1
 	}
 
-	/etc/init.d/firewall restart || {
-		log 'ERROR: FIREWALL RESTART FAILED'
+	# reload, not restart: restart flushes conntrack and drops every forwarded
+	# session (including the admin's LuCI/SSH); reload applies the ruleset in place.
+	"${NORDVPN_EASY_FIREWALL_INIT:-/etc/init.d/firewall}" reload || {
+		log 'ERROR: FIREWALL RELOAD FAILED'
 		return 1
 	}
 
-	log "runtime: firewall updated so zone for $WAN_IF includes $VPN_IF with mtu_fix=${FIREWALL_MTU_FIX:-1}"
+	log "runtime: VPN firewall zone ${NORDVPN_EASY_FW_ZONE_NAME} ready for ${VPN_IF} (kill_switch=${kill_switch}, mtu_fix=${mtu_fix_value})"
 }
 
 nordvpn_easy_set_vpn_server_in_uci() {
+	local public_key="$3"
+
 	[ -n "$1" ] || {
 		log 'ERROR: VPN SERVER HOSTNAME IS EMPTY'
 		return 1
@@ -438,10 +617,25 @@ nordvpn_easy_set_vpn_server_in_uci() {
 		log "ERROR: VPN SERVER STATION IS EMPTY FOR $1"
 		return 1
 	}
-	[ -n "$3" ] || {
+	[ -n "$public_key" ] || {
 		log "ERROR: VPN PUBLIC KEY IS EMPTY FOR $1"
 		return 1
 	}
+
+	# Reject a corrupted or spoofed peer before committing it: a WireGuard public
+	# key is 32 bytes => 43 base64 chars plus '=' padding, and the endpoint host
+	# must be a plain DNS name. A bad key otherwise only surfaced as a generic
+	# no-handshake failure much later.
+	if ! nordvpn_easy_valid_wireguard_key "$public_key"; then
+		log "ERROR: VPN PUBLIC KEY FOR $1 IS NOT A VALID WIREGUARD KEY (length=${#public_key}, want 44 base64 chars)"
+		return 1
+	fi
+	case "$1" in
+		*[!A-Za-z0-9.-]*)
+			log "ERROR: VPN ENDPOINT HOST $1 CONTAINS INVALID CHARACTERS"
+			return 1
+			;;
+	esac
 
 	uci set "network.${VPN_IF}server.description"="$1"
 	uci set "network.${VPN_IF}server.endpoint_host"="$1"
@@ -454,4 +648,3 @@ nordvpn_easy_set_vpn_server_in_uci() {
 	nordvpn_easy_apply_wireguard_transport_settings "${VPN_IF}server" || return 1
 	log "apply: prepared VPN peer update for server $1 ($2)"
 }
-

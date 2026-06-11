@@ -4,6 +4,7 @@ NORDVPN_EASY_RUN_DIR="${NORDVPN_EASY_RUN_DIR:-/tmp/run/nordvpn-easy}"
 NORDVPN_EASY_STATUS_CACHE="${NORDVPN_EASY_STATUS_CACHE:-$NORDVPN_EASY_RUN_DIR/status.json}"
 NORDVPN_EASY_PUBLIC_IP_CACHE="${NORDVPN_EASY_PUBLIC_IP_CACHE:-$NORDVPN_EASY_RUN_DIR/public_ip}"
 NORDVPN_EASY_PUBLIC_COUNTRY_CACHE="${NORDVPN_EASY_PUBLIC_COUNTRY_CACHE:-$NORDVPN_EASY_RUN_DIR/public_country}"
+NORDVPN_EASY_PUBLIC_VERIFICATION_CACHE="${NORDVPN_EASY_PUBLIC_VERIFICATION_CACHE:-$NORDVPN_EASY_RUN_DIR/public_verification}"
 NORDVPN_EASY_LAST_ERROR_CACHE="${NORDVPN_EASY_LAST_ERROR_CACHE:-$NORDVPN_EASY_RUN_DIR/last_error}"
 NORDVPN_EASY_ENTERPRISE_STATE_CACHE="${NORDVPN_EASY_ENTERPRISE_STATE_CACHE:-$NORDVPN_EASY_RUN_DIR/enterprise_state_last}"
 NORDVPN_EASY_DIAGNOSTICS_HISTORY="${NORDVPN_EASY_DIAGNOSTICS_HISTORY:-$NORDVPN_EASY_RUN_DIR/diagnostics_history.log}"
@@ -80,29 +81,6 @@ nordvpn_easy_humanize_handshake_age() {
 	nordvpn_easy_format_relative_age "$diff"
 }
 
-nordvpn_easy_handshake_epoch_indicates_connection() {
-	local epoch="$1"
-	local now diff
-
-	case "$epoch" in
-		''|*[!0-9]*)
-			return 1
-			;;
-	esac
-
-	[ "$epoch" -gt 0 ] || return 1
-	now="$(date +%s 2>/dev/null)"
-	case "$now" in
-		''|*[!0-9]*)
-			return 1
-			;;
-	esac
-
-	diff=$((now - epoch))
-	[ "$diff" -lt 0 ] && diff=0
-	[ "$diff" -le 7200 ]
-}
-
 nordvpn_easy_format_human_bytes() {
 	local bytes="$1"
 
@@ -131,18 +109,28 @@ nordvpn_easy_format_human_bytes() {
 }
 
 nordvpn_easy_parse_wg_dump_peer() {
+	# Line 1 of `wg show dump` is the interface; lines 2+ are peers. Rather than
+	# hard-coding the first peer (NR==2), pick the peer with the newest handshake
+	# so a leftover/extra peer cannot shadow the active server, and emit the N/A
+	# sentinel when there are no peer lines at all.
 	printf '%s\n' "$1" | awk '
-		NR == 2 {
-			endpoint = ($3 != "" && $3 != "(none)") ? $3 : "N/A"
-			handshake = ($5 ~ /^[0-9]+$/) ? $5 : 0
-			rx = ($6 ~ /^[0-9]+$/) ? $6 : 0
-			tx = ($7 ~ /^[0-9]+$/) ? $7 : 0
-			printf "%s\t%s\t%s\t%s\n", endpoint, handshake, rx, tx
-			found = 1
-			exit
+		NR == 1 { next }
+		NF == 0 { next }
+		{
+			hs = ($5 ~ /^[0-9]+$/) ? $5 : 0
+			if (!found || hs > best_hs) {
+				best_hs = hs
+				endpoint = ($3 != "" && $3 != "(none)") ? $3 : "N/A"
+				handshake = hs
+				rx = ($6 ~ /^[0-9]+$/) ? $6 : 0
+				tx = ($7 ~ /^[0-9]+$/) ? $7 : 0
+				found = 1
+			}
 		}
 		END {
-			if (!found)
+			if (found)
+				printf "%s\t%s\t%s\t%s\n", endpoint, handshake, rx, tx
+			else
 				printf "N/A\t0\t0\t0\n"
 		}
 		'
@@ -273,12 +261,8 @@ nordvpn_easy_enterprise_state_value() {
 			return 0
 		fi
 
-		if nordvpn_easy_truthy "$runtime_configured"; then
-			printf '%s\n' 'degraded'
-			return 0
-		fi
-
-		printf '%s\n' 'idle'
+		# enabled=1 must never surface as idle while the tunnel is down
+		printf '%s\n' 'degraded'
 		return 0
 	fi
 
@@ -419,6 +403,7 @@ nordvpn_easy_vpn_status_value() {
 	local desired_enabled="${1:-${DESIRED_ENABLED:-0}}"
 	local vpn_if="${2:-$VPN_IF}"
 	local operation="${3:-}"
+	local handshake_epoch='0'
 
 	[ -n "$operation" ] || operation="$(nordvpn_easy_operation_status_value "${LOCK_DIR:-/tmp/nordvpn-easy.lock}")"
 
@@ -451,6 +436,13 @@ nordvpn_easy_vpn_status_value() {
 		return 0
 	fi
 
+	handshake_epoch="$(nordvpn_easy_wg_handshake_epoch "$vpn_if")"
+	if nordvpn_easy_handshake_epoch_indicates_connection "$handshake_epoch" &&
+		ip link show dev "$vpn_if" >/dev/null 2>&1; then
+		printf '%s\n' 'active'
+		return 0
+	fi
+
 	if command -v ifstatus >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
 		if ifstatus "$vpn_if" 2>/dev/null | jq -er '.up == true' >/dev/null 2>&1; then
 			printf '%s\n' 'active'
@@ -458,16 +450,16 @@ nordvpn_easy_vpn_status_value() {
 		fi
 	fi
 
-	if ip link show dev "$vpn_if" >/dev/null 2>&1; then
-		printf '%s\n' 'active'
-		return 0
-	fi
-
+	# A present interface alone does not mean the VPN session is alive: during a
+	# teardown the wg device can still exist (even with a sub-180s handshake) while
+	# traffic is already going out unprotected. Only a fresh handshake or a netifd
+	# 'up' interface (both handled above) counts as 'active'; otherwise report the
+	# honest transitional/inactive state for the operation in flight.
 	case "$operation" in
-		busy:setup|busy:check|busy:rotate)
+		busy:setup|busy:check|busy:rotate|busy:reconnect|busy:reconcile)
 			printf '%s\n' 'starting'
 			;;
-		busy:disable_runtime)
+		busy:stop_vpn|busy:disable_runtime)
 			printf '%s\n' 'stopping'
 			;;
 		*)
@@ -514,7 +506,16 @@ nordvpn_easy_emit_status_json() {
 	local public_ip_detected_at_iso=''
 	local public_ip_source=''
 	local public_country_cached=''
+	local public_verification_status='unknown'
+	local public_verification_checked_at='0'
 	local last_error=''
+	local connect_apply_pending='false'
+	local connect_apply_finished='false'
+	local connect_apply_success='false'
+	local connect_apply_rc='0'
+	local connect_apply_country=''
+	local connect_apply_started_at='0'
+	local connect_apply_finished_at='0'
 
 	nordvpn_easy_load_lock_metadata "${LOCK_DIR:-/tmp/nordvpn-easy.lock}"
 	operation="$(nordvpn_easy_operation_status_from_loaded_lock)"
@@ -577,6 +578,22 @@ nordvpn_easy_emit_status_json() {
 			;;
 	esac
 	[ -r "$NORDVPN_EASY_PUBLIC_COUNTRY_CACHE" ] && public_country_cached="$(sed -n '1p' "$NORDVPN_EASY_PUBLIC_COUNTRY_CACHE" 2>/dev/null)"
+	if [ -r "$NORDVPN_EASY_PUBLIC_VERIFICATION_CACHE" ]; then
+		public_verification_status="$(sed -n 's/^status=//p' "$NORDVPN_EASY_PUBLIC_VERIFICATION_CACHE" 2>/dev/null | sed -n '1p')"
+		public_verification_checked_at="$(sed -n 's/^checked_at=//p' "$NORDVPN_EASY_PUBLIC_VERIFICATION_CACHE" 2>/dev/null | sed -n '1p')"
+	fi
+	case "$public_verification_status" in
+		ok|pending|failed|mismatch|unknown)
+			;;
+		*)
+			public_verification_status='unknown'
+			;;
+	esac
+	case "$public_verification_checked_at" in
+		''|*[!0-9]*)
+			public_verification_checked_at='0'
+			;;
+	esac
 	[ -r "$NORDVPN_EASY_LAST_ERROR_CACHE" ] && last_error="$(sed -n '1p' "$NORDVPN_EASY_LAST_ERROR_CACHE" 2>/dev/null)"
 
 	case "$wireguard_keepalive" in
@@ -589,6 +606,54 @@ nordvpn_easy_emit_status_json() {
 			wireguard_keepalive='15'
 			;;
 	esac
+
+	if nordvpn_easy_connect_apply_result_read "${NORDVPN_EASY_CONNECT_APPLY_RESULT:-/tmp/run/nordvpn-easy/connect-apply-result}"; then
+		connect_apply_country="$(printf '%s' "${CONNECT_APPLY_COUNTRY:-}" | tr 'a-z' 'A-Z')"
+		case "${CONNECT_APPLY_STARTED_AT:-}" in
+			''|*[!0-9]*)
+				connect_apply_started_at='0'
+				;;
+			*)
+				connect_apply_started_at="$CONNECT_APPLY_STARTED_AT"
+				;;
+		esac
+		case "${CONNECT_APPLY_FINISHED_AT:-}" in
+			''|*[!0-9]*)
+				connect_apply_finished_at='0'
+				;;
+			*)
+				connect_apply_finished_at="$CONNECT_APPLY_FINISHED_AT"
+				;;
+		esac
+		case "${CONNECT_APPLY_STATE:-}" in
+			pending)
+				connect_apply_pending='true'
+				;;
+			success)
+				connect_apply_pending='false'
+				connect_apply_finished='true'
+				connect_apply_success='true'
+				connect_apply_rc='0'
+				;;
+			failed)
+				connect_apply_pending='false'
+				connect_apply_finished='true'
+				connect_apply_success='false'
+				case "${CONNECT_APPLY_RC:-}" in
+					''|*[!0-9]*)
+						connect_apply_rc='1'
+						;;
+					*)
+						connect_apply_rc="$CONNECT_APPLY_RC"
+						;;
+				esac
+				;;
+		esac
+	fi
+
+	if [ -f "${NORDVPN_EASY_CONNECT_APPLY_GUARD:-/tmp/run/nordvpn-easy/connect-apply-guard}" ]; then
+		connect_apply_pending='true'
+	fi
 
 	cat <<EOF
 {
@@ -627,6 +692,8 @@ nordvpn_easy_emit_status_json() {
   "public_ip_detected_at_iso": "$(nordvpn_easy_json_escape "$public_ip_detected_at_iso")",
   "public_ip_source": "$(nordvpn_easy_json_escape "$public_ip_source")",
   "public_country_cached": "$(nordvpn_easy_json_escape "$public_country_cached")",
+  "public_verification_status": "$(nordvpn_easy_json_escape "$public_verification_status")",
+  "public_verification_checked_at": $public_verification_checked_at,
   "last_error": "$(nordvpn_easy_json_escape "$last_error")",
   "current_server_hostname": "$(nordvpn_easy_json_escape "$current_hostname")",
   "current_server_station": "$(nordvpn_easy_json_escape "$current_station")",
@@ -634,7 +701,14 @@ nordvpn_easy_emit_status_json() {
   "current_server_country": "$(nordvpn_easy_json_escape "$current_country")",
   "current_server_load": "$(nordvpn_easy_json_escape "$current_load")",
   "preferred_server_hostname": "$(nordvpn_easy_json_escape "$preferred_hostname")",
-  "preferred_server_station": "$(nordvpn_easy_json_escape "$preferred_station")"
+  "preferred_server_station": "$(nordvpn_easy_json_escape "$preferred_station")",
+  "connect_apply_pending": $connect_apply_pending,
+  "connect_apply_finished": $connect_apply_finished,
+  "connect_apply_success": $connect_apply_success,
+  "connect_apply_rc": $connect_apply_rc,
+  "connect_apply_country": "$(nordvpn_easy_json_escape "$connect_apply_country")",
+  "connect_apply_started_at": $connect_apply_started_at,
+  "connect_apply_finished_at": $connect_apply_finished_at
 }
 EOF
 }

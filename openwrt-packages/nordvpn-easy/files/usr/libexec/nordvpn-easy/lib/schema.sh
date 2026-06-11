@@ -164,10 +164,10 @@ nordvpn_easy_default() {
 		check_cron_schedule) printf '%s\n' '' ;;
 		enable_hotplug) printf '%s\n' '1' ;;
 		hotplug_debounce_seconds) printf '%s\n' '30' ;;
-		kill_switch_enabled) printf '%s\n' '0' ;;
+		kill_switch_enabled) printf '%s\n' '1' ;;
 		failure_retry_delay) printf '%s\n' '6' ;;
 		interface_restart_delay) printf '%s\n' '10' ;;
-		post_restart_delay) printf '%s\n' '60' ;;
+		post_restart_delay) printf '%s\n' '30' ;;
 		config_schema_version) printf '%s\n' "$NORDVPN_EASY_SCHEMA_VERSION" ;;
 		*)
 			return 1
@@ -238,6 +238,59 @@ nordvpn_easy_normalize_bool() {
 	esac
 }
 
+nordvpn_easy_strip_leading_zeros() {
+	local digits="$1"
+
+	while [ "${#digits}" -gt 1 ]; do
+		case "$digits" in
+			0*) digits="${digits#0}" ;;
+			*) break ;;
+		esac
+	done
+	printf '%s\n' "$digits"
+}
+
+nordvpn_easy_is_valid_ipv4() {
+	local ip="$1"
+	local octet
+	local IFS='.'
+
+	case "$ip" in
+		''|*[!0-9.]*) return 1 ;;
+	esac
+
+	# shellcheck disable=SC2086
+	set -- $ip
+	[ "$#" -eq 4 ] || return 1
+	for octet in "$@"; do
+		case "$octet" in
+			''|*[!0-9]*) return 1 ;;
+		esac
+		[ "$octet" -le 255 ] || return 1
+	done
+	return 0
+}
+
+nordvpn_easy_is_valid_ipv4_cidr() {
+	local value="$1"
+	local prefix
+
+	case "$value" in
+		*/*)
+			prefix="${value#*/}"
+			value="${value%%/*}"
+			case "$prefix" in
+				''|*[!0-9]*) return 1 ;;
+			esac
+			[ "$prefix" -le 32 ] || return 1
+			;;
+		*)
+			return 1
+			;;
+	esac
+	nordvpn_easy_is_valid_ipv4 "$value"
+}
+
 nordvpn_easy_normalize_value() {
 	local option="$1"
 	local value="$2"
@@ -254,13 +307,77 @@ nordvpn_easy_normalize_value() {
 		return 0
 	fi
 
+	# Validate network-shaped options at the schema boundary so an invalid value
+	# is defaulted here rather than reaching netifd and breaking bring-up.
+	case "$option" in
+		vpn_port)
+			case "$value" in
+				''|*[!0-9]*)
+					printf '%s\n' "$default_value"
+					return 0
+					;;
+			esac
+			value="$(nordvpn_easy_strip_leading_zeros "$value")"
+			if [ "$value" -ge 1 ] && [ "$value" -le 65535 ]; then
+				printf '%s\n' "$value"
+			else
+				printf '%s\n' "$default_value"
+			fi
+			return 0
+			;;
+		vpn_addr)
+			if nordvpn_easy_is_valid_ipv4_cidr "$value"; then
+				printf '%s\n' "$value"
+			else
+				printf '%s\n' "$default_value"
+			fi
+			return 0
+			;;
+		vpn_dns1|vpn_dns2)
+			if [ -z "$value" ] || nordvpn_easy_is_valid_ipv4 "$value"; then
+				printf '%s\n' "$value"
+			else
+				printf '%s\n' "$default_value"
+			fi
+			return 0
+			;;
+		vpn_country)
+			case "$value" in
+				'')
+					printf '%s\n' ''
+					;;
+				[A-Za-z][A-Za-z])
+					value="$(printf '%s' "$value" | tr 'a-z' 'A-Z')"
+					printf '%s\n' "$value"
+					;;
+				*)
+					printf '%s\n' "$default_value"
+					;;
+			esac
+			return 0
+			;;
+		check_cron_schedule)
+			# Reject a multi-line / control-char schedule that would corrupt the
+			# cron file; the init service validates the cron shape before install.
+			case "$value" in
+				*[!\ 0-9*/,-]*)
+					printf '%s\n' "$default_value"
+					;;
+				*)
+					printf '%s\n' "$value"
+					;;
+			esac
+			return 0
+			;;
+	esac
+
 	if nordvpn_easy_is_uint_option "$option"; then
 		case "$value" in
 			''|*[!0-9]*)
 				printf '%s\n' "$default_value"
 				;;
 			*)
-				printf '%s\n' "$value"
+				printf '%s\n' "$(nordvpn_easy_strip_leading_zeros "$value")"
 				;;
 		esac
 		return 0
@@ -298,12 +415,19 @@ nordvpn_easy_normalize_value() {
 					;;
 			esac
 			;;
-		wan_if|vpn_if|vpn_addr)
-			if [ -n "$value" ]; then
-				printf '%s\n' "$value"
-			else
-				printf '%s\n' "$default_value"
-			fi
+		wan_if|vpn_if)
+			# These become UCI section names (network.${IF}, firewall lookups), so
+			# restrict them to the UCI identifier charset. A value with any other
+			# character (dot, slash, space, ...) would address the wrong section or
+			# break the uci command, so fall back to the safe default.
+			case "$value" in
+				''|*[!A-Za-z0-9_]*)
+					printf '%s\n' "$default_value"
+					;;
+				*)
+					printf '%s\n' "$value"
+					;;
+			esac
 			;;
 		server_selection_mode)
 			case "$value" in

@@ -65,6 +65,11 @@ DIAG_API_COUNTRIES_CACHE_AGE_SECONDS='unknown'
 DIAG_LAST_ERROR=''
 DIAG_OPERATION_LOCK_STATE='none'
 DIAG_OPERATION_LOCK_ACTION=''
+DIAG_CONNECT_APPLY_PENDING='no'
+DIAG_RUNTIME_CONFIGURED='unknown'
+DIAG_PUBLIC_VERIFICATION_STATUS='unknown'
+DIAG_PUBLIC_VERIFICATION_CHECKED_AT='0'
+DIAG_PUBLIC_VERIFICATION_MESSAGE=''
 
 # Findings
 DIAG_PRIMARY_FINDING_CODE='none'
@@ -128,6 +133,11 @@ nordvpn_easy_diagnostics_reset_state() {
 	DIAG_LAST_ERROR=''
 	DIAG_OPERATION_LOCK_STATE='none'
 	DIAG_OPERATION_LOCK_ACTION=''
+	DIAG_CONNECT_APPLY_PENDING='no'
+	DIAG_RUNTIME_CONFIGURED='unknown'
+	DIAG_PUBLIC_VERIFICATION_STATUS='unknown'
+	DIAG_PUBLIC_VERIFICATION_CHECKED_AT='0'
+	DIAG_PUBLIC_VERIFICATION_MESSAGE=''
 	DIAG_PRIMARY_FINDING_CODE='none'
 	DIAG_PRIMARY_FINDING_MESSAGE='none detected'
 	DIAG_PRIMARY_FINDING_ACTION=''
@@ -246,6 +256,9 @@ nordvpn_easy_diagnostics_resolve_wan_nameserver() {
 	' /tmp/resolv.conf.d/resolv.conf.auto 2>/dev/null
 }
 
+# Single source of truth for finding priority and severity. add_finding records
+# the computed values into each finding so the JSON builder (build_findings_json)
+# never re-derives them. Lower priority number wins as the primary finding.
 nordvpn_easy_diagnostics_finding_priority() {
 	case "$1" in
 		routing.blackhole_default_via_vpn) printf '%s\n' '10' ;;
@@ -253,6 +266,7 @@ nordvpn_easy_diagnostics_finding_priority() {
 		connectivity.dns_failure) printf '%s\n' '30' ;;
 		operational.kill_switch_active) printf '%s\n' '40' ;;
 		runtime.endpoint_unreachable) printf '%s\n' '50' ;;
+		operational.apply_incomplete) printf '%s\n' '55' ;;
 		runtime.link_down) printf '%s\n' '60' ;;
 		runtime.no_peers) printf '%s\n' '70' ;;
 		runtime.no_handshake) printf '%s\n' '80' ;;
@@ -263,7 +277,9 @@ nordvpn_easy_diagnostics_finding_priority() {
 		config.not_wireguard) printf '%s\n' '130' ;;
 		service.enabled_mismatch) printf '%s\n' '140' ;;
 		selection.drift) printf '%s\n' '150' ;;
+		selection.public_country_mismatch) printf '%s\n' '155' ;;
 		operational.api_cache_missing) printf '%s\n' '160' ;;
+		operational.public_verification_failed) printf '%s\n' '165' ;;
 		operational.last_error) printf '%s\n' '170' ;;
 		*) printf '%s\n' '900' ;;
 	esac
@@ -318,7 +334,14 @@ nordvpn_easy_diagnostics_add_finding() {
 	local message="$2"
 	local action="$3"
 	local priority='900'
+	local severity='warning'
 	local current_priority='900'
+
+	# Findings are stored as tab/newline-delimited records; a tab or newline in
+	# an interpolated value (station name, last_error, endpoint host) would shift
+	# fields or split a record. Collapse them to spaces before building the row.
+	message="$(printf '%s' "$message" | tr '\t\r\n' '   ')"
+	action="$(printf '%s' "$action" | tr '\t\r\n' '   ')"
 
 	case "$DIAG_FINDINGS_CODES" in
 		''|none)
@@ -330,6 +353,7 @@ nordvpn_easy_diagnostics_add_finding() {
 	esac
 
 	priority="$(nordvpn_easy_diagnostics_finding_priority "$code")"
+	severity="$(nordvpn_easy_diagnostics_finding_severity "$code")"
 	if [ "$DIAG_PRIMARY_FINDING_CODE" != 'none' ]; then
 		current_priority="$(nordvpn_easy_diagnostics_finding_priority "$DIAG_PRIMARY_FINDING_CODE")"
 	fi
@@ -339,29 +363,32 @@ nordvpn_easy_diagnostics_add_finding() {
 		DIAG_PRIMARY_FINDING_MESSAGE="$message"
 		DIAG_PRIMARY_FINDING_ACTION="$action"
 		DIAG_PRIMARY_FINDING_PRIORITY="$priority"
-		DIAG_PRIMARY_FINDING_SEVERITY="$(nordvpn_easy_diagnostics_finding_severity "$code")"
+		DIAG_PRIMARY_FINDING_SEVERITY="$severity"
 	fi
 
-	DIAG_FINDINGS_RECORDS="${DIAG_FINDINGS_RECORDS}${code}	${message}	${action}
+	DIAG_FINDINGS_RECORDS="${DIAG_FINDINGS_RECORDS}${code}	${message}	${action}	${priority}	${severity}
 "
 }
 
 nordvpn_easy_diagnostics_finalize_primary_finding() {
-	local code='' message='' action='' priority=''
+	local code='' message='' action='' priority='' severity=''
 	local best_priority='9999'
 
 	[ -n "$DIAG_FINDINGS_RECORDS" ] || return 0
 
-	while IFS="$(printf '\t')" read -r code message action; do
+	while IFS="$(printf '\t')" read -r code message action priority severity; do
 		[ -n "$code" ] || continue
-		priority="$(nordvpn_easy_diagnostics_finding_priority "$code")"
+		case "$priority" in
+			''|*[!0-9]*) priority='900' ;;
+		esac
+		[ -n "$severity" ] || severity='warning'
 		if [ "$priority" -lt "$best_priority" ]; then
 			best_priority="$priority"
 			DIAG_PRIMARY_FINDING_CODE="$code"
 			DIAG_PRIMARY_FINDING_MESSAGE="$message"
 			DIAG_PRIMARY_FINDING_ACTION="$action"
 			DIAG_PRIMARY_FINDING_PRIORITY="$priority"
-			DIAG_PRIMARY_FINDING_SEVERITY="$(nordvpn_easy_diagnostics_finding_severity "$code")"
+			DIAG_PRIMARY_FINDING_SEVERITY="$severity"
 		fi
 	done <<EOF
 $(printf '%s' "$DIAG_FINDINGS_RECORDS")
@@ -374,42 +401,20 @@ nordvpn_easy_diagnostics_build_findings_json() {
 		return 0
 	fi
 
+	# Priority and severity are computed once by the shell case (the single
+	# source of truth) and stored in fields 4 and 5 of each record; jq only
+	# extracts them here instead of re-deriving the mapping.
 	printf '%s' "$DIAG_FINDINGS_RECORDS" | jq -R -s '
 		split("\n")
 		| map(select(length > 0))
 		| map(split("\t"))
-		| map(select(length >= 3))
+		| map(select(length >= 5))
 		| map({
 			code: .[0],
 			message: .[1],
 			action: .[2],
-			priority: (
-				.[0] as $c |
-				if $c == "routing.blackhole_default_via_vpn" then 10
-				elif $c == "connectivity.wan_down" then 20
-				elif $c == "connectivity.dns_failure" then 30
-				elif $c == "operational.kill_switch_active" then 40
-				elif $c == "runtime.endpoint_unreachable" then 50
-				elif $c == "runtime.link_down" then 60
-				elif $c == "runtime.no_peers" then 70
-				elif $c == "runtime.no_handshake" then 80
-				elif $c == "runtime.stuck_tunnel" then 90
-				elif $c == "config.interface_incomplete" then 100
-				elif $c == "config.peer_missing" then 110
-				elif $c == "config.peer_incomplete" then 120
-				elif $c == "config.not_wireguard" then 130
-				elif $c == "service.enabled_mismatch" then 140
-				elif $c == "selection.drift" then 150
-				elif $c == "operational.api_cache_missing" then 160
-				elif $c == "operational.last_error" then 170
-				else 900
-				end
-			),
-			severity: (
-				if (.[0] | test("^routing\\.|^connectivity\\.|^runtime\\.(endpoint_unreachable|link_down|no_peers|no_handshake|stuck_tunnel)$|^operational\\.kill_switch_active$")) then "critical"
-				else "warning"
-				end
-			)
+			priority: (.[3] | tonumber? // 900),
+			severity: (.[4] // "warning")
 		})
 		| sort_by(.priority)
 	'
@@ -509,6 +514,9 @@ nordvpn_easy_emit_diagnostics_summary_json() {
 		--arg last_error "$DIAG_LAST_ERROR" \
 		--arg operation_lock_state "$DIAG_OPERATION_LOCK_STATE" \
 		--arg operation_lock_action "${DIAG_OPERATION_LOCK_ACTION:-}" \
+		--arg public_verification_status "$DIAG_PUBLIC_VERIFICATION_STATUS" \
+		--argjson public_verification_checked_at "${DIAG_PUBLIC_VERIFICATION_CHECKED_AT:-0}" \
+		--arg public_verification_message "$DIAG_PUBLIC_VERIFICATION_MESSAGE" \
 		--arg service_enabled_mismatch "$DIAG_SERVICE_ENABLED_MISMATCH" \
 		--argjson kill_switch_enabled "$([ "$DIAG_KILL_SWITCH_ENABLED" = '1' ] && printf '%s' 'true' || printf '%s' 'false')" \
 		'{
@@ -543,6 +551,8 @@ nordvpn_easy_emit_diagnostics_summary_json() {
 				vpn_endpoint_host: (if ($vpn_endpoint_host | length) > 0 then $vpn_endpoint_host else null end),
 				vpn_endpoint_reachable: $vpn_endpoint_reachable,
 				dns_api_nordvpn_com: $dns_api_nordvpn_com,
+				public_verification_status: $public_verification_status,
+				public_verification_checked_at: $public_verification_checked_at,
 				api_server_list_cache: $api_server_list_cache,
 				diagnostics_probe_duration_ms: $diagnostics_probe_duration_ms
 			},
@@ -554,7 +564,10 @@ nordvpn_easy_emit_diagnostics_summary_json() {
 				server_list_cache_state: $api_server_list_cache,
 				countries_cache_path: "/tmp/nordvpn-easy-countries.json",
 				countries_cache_state: $api_countries_cache,
-				countries_cache_age_seconds: $api_countries_cache_age_seconds
+				countries_cache_age_seconds: $api_countries_cache_age_seconds,
+				public_verification_status: $public_verification_status,
+				public_verification_checked_at: $public_verification_checked_at,
+				public_verification_message: $public_verification_message
 			},
 			primary_finding: {
 				code: $primary_code,
@@ -622,7 +635,7 @@ nordvpn_easy_diagnostics_collect_config() {
 				DIAG_MISSING_REQUIRED="$(nordvpn_easy_diagnostics_csv_append "$DIAG_MISSING_REQUIRED" "$value")"
 			fi
 		done
-		DIAG_CURRENT_SERVER_COUNTRY="$(uci -q get "network.${DIAG_PEER_SECTION}.nordvpn_country_code" 2>/dev/null | tr '[:lower:]' '[:upper:]' || true)"
+		DIAG_CURRENT_SERVER_COUNTRY="$(uci -q get "network.${DIAG_PEER_SECTION}.nordvpn_country_code" 2>/dev/null | tr 'a-z' 'A-Z' || true)"
 		DIAG_CURRENT_STATION="$(uci -q get "network.${DIAG_PEER_SECTION}.nordvpn_station" 2>/dev/null || true)"
 		DIAG_ROUTE_ALLOWED_IPS="$(uci -q get "network.${DIAG_PEER_SECTION}.route_allowed_ips" 2>/dev/null || true)"
 		if [ "$DIAG_ROUTE_ALLOWED_IPS" = '1' ] &&
@@ -634,7 +647,7 @@ nordvpn_easy_diagnostics_collect_config() {
 	fi
 
 	DIAG_SELECTION_MODE="$(uci -q get 'nordvpn_easy.main.server_selection_mode' 2>/dev/null || printf '%s' 'auto')"
-	DIAG_SELECTED_COUNTRY="$(uci -q get 'nordvpn_easy.main.vpn_country' 2>/dev/null | tr '[:lower:]' '[:upper:]' || true)"
+	DIAG_SELECTED_COUNTRY="$(uci -q get 'nordvpn_easy.main.vpn_country' 2>/dev/null | tr 'a-z' 'A-Z' || true)"
 	DIAG_PREFERRED_STATION="$(uci -q get 'nordvpn_easy.main.preferred_server_station' 2>/dev/null || true)"
 	DIAG_SERVICE_ENABLED="$(uci -q get 'nordvpn_easy.main.enabled' 2>/dev/null || printf '%s' '0')"
 	case "$DIAG_SERVICE_ENABLED" in
@@ -703,11 +716,21 @@ nordvpn_easy_diagnostics_collect_runtime() {
 		runtime_configured='yes'
 	fi
 
+	DIAG_RUNTIME_CONFIGURED="$runtime_configured"
+
 	if command -v nordvpn_easy_load_lock_metadata >/dev/null 2>&1; then
 		nordvpn_easy_load_lock_metadata "${LOCK_DIR:-/tmp/nordvpn-easy.lock}"
 		operation="$(nordvpn_easy_operation_status_from_loaded_lock 2>/dev/null || printf '%s' 'idle')"
 		DIAG_OPERATION_LOCK_STATE="${OPERATION_LOCK_STATE:-none}"
 		DIAG_OPERATION_LOCK_ACTION="${OPERATION_LOCK_ACTION:-}"
+	fi
+
+	if [ -f "${NORDVPN_EASY_CONNECT_APPLY_GUARD:-/tmp/run/nordvpn-easy/connect-apply-guard}" ]; then
+		DIAG_CONNECT_APPLY_PENDING='yes'
+	elif command -v nordvpn_easy_connect_apply_result_read >/dev/null 2>&1 &&
+		nordvpn_easy_connect_apply_result_read "${NORDVPN_EASY_CONNECT_APPLY_RESULT:-/tmp/run/nordvpn-easy/connect-apply-result}" &&
+		[ "${CONNECT_APPLY_STATE:-}" = 'pending' ]; then
+		DIAG_CONNECT_APPLY_PENDING='yes'
 	fi
 
 	if command -v nordvpn_easy_vpn_status_value >/dev/null 2>&1; then
@@ -756,6 +779,56 @@ nordvpn_easy_diagnostics_collect_caches() {
 	if [ -r "${NORDVPN_EASY_LAST_ERROR_CACHE:-/tmp/run/nordvpn-easy/last_error}" ]; then
 		DIAG_LAST_ERROR="$(sed -n '1p' "${NORDVPN_EASY_LAST_ERROR_CACHE:-/tmp/run/nordvpn-easy/last_error}" 2>/dev/null | tr -d '\r')"
 	fi
+
+	if [ -r "${NORDVPN_EASY_PUBLIC_VERIFICATION_CACHE:-/tmp/run/nordvpn-easy/public_verification}" ]; then
+		DIAG_PUBLIC_VERIFICATION_STATUS="$(sed -n 's/^status=//p' "${NORDVPN_EASY_PUBLIC_VERIFICATION_CACHE:-/tmp/run/nordvpn-easy/public_verification}" 2>/dev/null | sed -n '1p')"
+		DIAG_PUBLIC_VERIFICATION_CHECKED_AT="$(sed -n 's/^checked_at=//p' "${NORDVPN_EASY_PUBLIC_VERIFICATION_CACHE:-/tmp/run/nordvpn-easy/public_verification}" 2>/dev/null | sed -n '1p')"
+		DIAG_PUBLIC_VERIFICATION_MESSAGE="$(sed -n 's/^message=//p' "${NORDVPN_EASY_PUBLIC_VERIFICATION_CACHE:-/tmp/run/nordvpn-easy/public_verification}" 2>/dev/null | sed -n '1p')"
+	fi
+	case "$DIAG_PUBLIC_VERIFICATION_STATUS" in
+		ok|pending|failed|mismatch|unknown)
+			;;
+		*)
+			DIAG_PUBLIC_VERIFICATION_STATUS='unknown'
+			;;
+	esac
+	case "$DIAG_PUBLIC_VERIFICATION_CHECKED_AT" in
+		''|*[!0-9]*)
+			DIAG_PUBLIC_VERIFICATION_CHECKED_AT='0'
+			;;
+	esac
+}
+
+nordvpn_easy_diagnostics_runtime_transition_active() {
+	[ "$DIAG_CONNECT_APPLY_PENDING" = 'yes' ] && return 0
+
+	case "${DIAG_OPERATION_LOCK_STATE:-none}:${DIAG_OPERATION_LOCK_ACTION:-}" in
+		held:setup|held:stop_vpn|held:start_connect|held:reconnect|held:reconcile|stale_recovered:setup|stale_recovered:stop_vpn|stale_recovered:start_connect|stale_recovered:reconnect|stale_recovered:reconcile)
+			return 0
+			;;
+	esac
+
+	return 1
+}
+
+nordvpn_easy_diagnostics_now_ms() {
+	local ms=''
+
+	# /proc/uptime carries centisecond resolution; date +%s only whole seconds,
+	# which quantised the probe duration to multiples of 1000 (usually 0).
+	if [ -r /proc/uptime ]; then
+		ms="$(awk '{ printf "%d", $1 * 1000; exit }' /proc/uptime 2>/dev/null)"
+	fi
+	case "$ms" in
+		''|*[!0-9]*)
+			ms="$(date +%s 2>/dev/null || printf '%s' '0')"
+			case "$ms" in
+				''|*[!0-9]*) ms='0' ;;
+				*) ms=$((ms * 1000)) ;;
+			esac
+			;;
+	esac
+	printf '%s\n' "$ms"
 }
 
 nordvpn_easy_diagnostics_run_active_probes() {
@@ -774,7 +847,7 @@ nordvpn_easy_diagnostics_run_active_probes() {
 	DIAG_VPN_ENDPOINT_REACHABLE='skipped'
 	DIAG_VPN_ENDPOINT_HOST="$(nordvpn_easy_diagnostics_endpoint_host "$DIAG_WG_ENDPOINT" 2>/dev/null || true)"
 
-	probe_start="$(date +%s 2>/dev/null || printf '%s' '0')"
+	probe_start="$(nordvpn_easy_diagnostics_now_ms)"
 	DIAG_WAN_DEVICE=''
 	if command -v nordvpn_easy_resolve_wan_device >/dev/null 2>&1; then
 		WAN_IF="$DIAG_WAN_IF"
@@ -791,15 +864,18 @@ nordvpn_easy_diagnostics_run_active_probes() {
 	fi
 
 	wan_ns="$(nordvpn_easy_diagnostics_resolve_wan_nameserver)"
-	if [ -n "$wan_ns" ] && command -v nslookup >/dev/null 2>&1; then
+	if ! command -v nslookup >/dev/null 2>&1; then
+		# A missing resolver tool is not a DNS failure; do not fabricate a
+		# critical connectivity.dns_failure finding on stripped images.
+		DIAG_DNS_API_NORDVPN_COM='skipped'
+	elif [ -n "$wan_ns" ]; then
 		dns_out="$(nslookup api.nordvpn.com "$wan_ns" 2>/dev/null | awk '/^Address [0-9]+: / { print $3; exit }')"
 		if [ -n "$dns_out" ]; then
 			DIAG_DNS_API_NORDVPN_COM='ok'
 		else
 			DIAG_DNS_API_NORDVPN_COM='failed'
 		fi
-	elif command -v nslookup >/dev/null 2>&1 &&
-		nslookup api.nordvpn.com 2>/dev/null | awk '/^Address [0-9]+: / { print $3; exit }' | grep -q '.'; then
+	elif nslookup api.nordvpn.com 2>/dev/null | awk '/^Address [0-9]+: / { print $3; exit }' | grep -q '.'; then
 		DIAG_DNS_API_NORDVPN_COM='ok'
 	else
 		DIAG_DNS_API_NORDVPN_COM='failed'
@@ -816,9 +892,9 @@ nordvpn_easy_diagnostics_run_active_probes() {
 		fi
 	fi
 
-	probe_end="$(date +%s 2>/dev/null || printf '%s' '0')"
+	probe_end="$(nordvpn_easy_diagnostics_now_ms)"
 	case "$probe_start" in
-		''|*[!0-9]*|0)
+		''|*[!0-9]*)
 			DIAG_PROBE_DURATION_MS='0'
 			;;
 		*)
@@ -827,7 +903,11 @@ nordvpn_easy_diagnostics_run_active_probes() {
 					DIAG_PROBE_DURATION_MS='0'
 					;;
 				*)
-					DIAG_PROBE_DURATION_MS=$(( (probe_end - probe_start) * 1000 ))
+					if [ "$probe_end" -ge "$probe_start" ]; then
+						DIAG_PROBE_DURATION_MS=$(( probe_end - probe_start ))
+					else
+						DIAG_PROBE_DURATION_MS='0'
+					fi
 					;;
 			esac
 			;;
@@ -840,21 +920,22 @@ nordvpn_easy_diagnostics_compute_findings() {
 	DIAG_PRIMARY_FINDING_ACTION=''
 	DIAG_FINDINGS_CODES='none'
 
-	if [ -n "$DIAG_MISSING_INTERFACE" ]; then
+	if [ -n "$DIAG_MISSING_INTERFACE" ] && ! nordvpn_easy_diagnostics_runtime_transition_active; then
 		nordvpn_easy_diagnostics_add_finding \
 			'config.interface_incomplete' \
 			"wireguard interface is incomplete (${DIAG_MISSING_INTERFACE})" \
 			'Complete the WireGuard interface keys in Network settings, then run Connect'
 	fi
 
-	if [ "$DIAG_PEER_SECTION_FOUND" != 'yes' ]; then
+	if [ "$DIAG_PEER_SECTION_FOUND" != 'yes' ] && ! nordvpn_easy_diagnostics_runtime_transition_active; then
 		nordvpn_easy_diagnostics_add_finding \
 			'config.peer_missing' \
 			'wireguard interface exists but peer section is missing' \
 			'Run Connect or Setup to create the WireGuard peer section'
 	fi
 
-	if [ -n "$DIAG_MISSING_REQUIRED" ] && [ "$DIAG_MISSING_REQUIRED" != 'peer_section' ]; then
+	if [ -n "$DIAG_MISSING_REQUIRED" ] && [ "$DIAG_MISSING_REQUIRED" != 'peer_section' ] &&
+		! nordvpn_easy_diagnostics_runtime_transition_active; then
 		nordvpn_easy_diagnostics_add_finding \
 			'config.peer_incomplete' \
 			"wireguard peer section is incomplete (${DIAG_MISSING_REQUIRED})" \
@@ -893,8 +974,8 @@ nordvpn_easy_diagnostics_compute_findings() {
 	if [ "$DIAG_KILL_SWITCH_ENABLED" = '1' ] && [ "$DIAG_WG_CONNECTED" != 'yes' ]; then
 		nordvpn_easy_diagnostics_add_finding \
 			'operational.kill_switch_active' \
-			'Kill switch is enabled while the VPN tunnel is not connected' \
-			'Restore VPN connectivity or disable kill switch if all traffic is blocked'
+			'Kill switch is blocking LAN internet traffic because the VPN tunnel is down' \
+			'Restore VPN connectivity, or turn off the kill switch to allow the LAN to fall back to the unprotected WAN'
 	fi
 
 	if [ "$DIAG_DESIRED_ENABLED" = '1' ] && [ "$DIAG_WAN_PING" = 'no' ]; then
@@ -950,14 +1031,36 @@ nordvpn_easy_diagnostics_compute_findings() {
 			'Run Setup or restart the VPN interface from LuCI'
 	fi
 
-	if [ "$DIAG_LINK_PRESENT" = 'no' ] && [ "$DIAG_DESIRED_ENABLED" = '1' ]; then
+	if [ "$DIAG_PUBLIC_VERIFICATION_STATUS" = 'failed' ]; then
+		nordvpn_easy_diagnostics_add_finding \
+			'operational.public_verification_failed' \
+			"${DIAG_PUBLIC_VERIFICATION_MESSAGE:-Public IP/country check failed}" \
+			'Review Public IP status; the WireGuard tunnel may still be connected'
+	fi
+
+	if [ "$DIAG_PUBLIC_VERIFICATION_STATUS" = 'mismatch' ]; then
+		nordvpn_easy_diagnostics_add_finding \
+			'selection.public_country_mismatch' \
+			"${DIAG_PUBLIC_VERIFICATION_MESSAGE:-Public IP country does not match selected country}" \
+			'Try Refresh Public IP, reconnect, or choose another server'
+	fi
+
+	if [ "$DIAG_DESIRED_ENABLED" = '1' ] && [ "$DIAG_RUNTIME_CONFIGURED" = 'no' ] &&
+		[ "$DIAG_LINK_PRESENT" = 'no' ] && ! nordvpn_easy_diagnostics_runtime_transition_active; then
+		nordvpn_easy_diagnostics_add_finding \
+			'operational.apply_incomplete' \
+			'VPN is enabled but runtime was not configured after the last apply' \
+			'Run Save & Apply again or wait for automatic recovery'
+	elif [ "$DIAG_LINK_PRESENT" = 'no' ] && [ "$DIAG_DESIRED_ENABLED" = '1' ] &&
+		! nordvpn_easy_diagnostics_runtime_transition_active; then
 		nordvpn_easy_diagnostics_add_finding \
 			'runtime.link_down' \
 			'WireGuard link is not present while VPN is enabled' \
 			'Run Connect or check network.wg0.disabled in UCI'
 	fi
 
-	if [ "$DIAG_VPN_PROTO" != 'wireguard' ] && [ "$DIAG_DESIRED_ENABLED" = '1' ]; then
+	if [ "$DIAG_VPN_PROTO" != 'wireguard' ] && [ "$DIAG_DESIRED_ENABLED" = '1' ] &&
+		! nordvpn_easy_diagnostics_runtime_transition_active; then
 		nordvpn_easy_diagnostics_add_finding \
 			'config.not_wireguard' \
 			'VPN interface is not configured as WireGuard' \
@@ -1033,6 +1136,7 @@ nordvpn_easy_diagnostics_print_health_summary() {
 	printf 'vpn_status=%s\n' "$DIAG_VPN_STATUS"
 	printf 'desired_enabled=%s\n' "$DIAG_DESIRED_ENABLED"
 	printf 'service_enabled_mismatch=%s\n' "$DIAG_SERVICE_ENABLED_MISMATCH"
+	printf 'connect_apply_pending=%s\n' "$DIAG_CONNECT_APPLY_PENDING"
 	printf 'default_route_device=%s\n' "$DIAG_DEFAULT_ROUTE_DEVICE"
 	printf 'default_route_via_vpn=%s\n' "$DIAG_DEFAULT_ROUTE_VIA_VPN"
 	printf 'route_allowed_ips=%s\n' "${DIAG_ROUTE_ALLOWED_IPS:-unset}"
@@ -1081,6 +1185,10 @@ nordvpn_easy_diagnostics_print_runtime_caches() {
 	printf 'last_error=%s\n' "$DIAG_LAST_ERROR"
 	printf 'operation_lock_state=%s\n' "$DIAG_OPERATION_LOCK_STATE"
 	printf 'operation_lock_action=%s\n' "${DIAG_OPERATION_LOCK_ACTION:-none}"
+	printf 'connect_apply_pending=%s\n' "$DIAG_CONNECT_APPLY_PENDING"
+	printf 'public_verification_status=%s\n' "$DIAG_PUBLIC_VERIFICATION_STATUS"
+	printf 'public_verification_checked_at=%s\n' "$DIAG_PUBLIC_VERIFICATION_CHECKED_AT"
+	printf 'public_verification_message=%s\n' "$DIAG_PUBLIC_VERIFICATION_MESSAGE"
 	printf 'server_list_cache_path=%s\n' "${SERVER_LIST_FILE:-/tmp/nordvpn.json}"
 	printf 'server_list_cache_state=%s\n' "$DIAG_API_SERVER_LIST_CACHE"
 	printf 'countries_cache_path=%s\n' "${COUNTRIES_CACHE_FILE:-/tmp/nordvpn-easy-countries.json}"

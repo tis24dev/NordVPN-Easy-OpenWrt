@@ -1,6 +1,6 @@
 include $(TOPDIR)/rules.mk
 
-NORDVPN_EASY_DEFAULT_VERSION:=0.1.3
+NORDVPN_EASY_DEFAULT_VERSION:=0.8.0
 NORDVPN_EASY_DEFAULT_RELEASE:=1
 NORDVPN_EASY_PACKAGE_MAINTAINER?=tis24dev
 NORDVPN_EASY_PACKAGE_URL?=https://github.com/tis24dev/NordVPN-Easy-OpenWrt
@@ -19,7 +19,7 @@ define Package/nordvpn-easy
   CATEGORY:=Network
   SUBMENU:=VPN
   TITLE:=NordVPN Easy backend service for OpenWrt
-  DEPENDS:=+ca-certificates +curl +jq +kmod-wireguard +wireguard-tools +rpcd
+  DEPENDS:=+ca-certificates +curl +jq +kmod-wireguard +wireguard-tools +firewall4 +rpcd
   PKGARCH:=all
   URL:=$(NORDVPN_EASY_PACKAGE_URL)
   MAINTAINER:=$(NORDVPN_EASY_PACKAGE_MAINTAINER)
@@ -93,6 +93,9 @@ if [ "$$MIGRATION_STATUS" -ne 0 ]; then
 	[ -n "$$MIGRATION_OUTPUT" ] && printf "%s\n" "$$MIGRATION_OUTPUT" >&2
 	exit "$$MIGRATION_STATUS"
 fi
+
+# /etc/config/nordvpn_easy holds the NordVPN account token; keep it root-only.
+chmod 0600 /etc/config/nordvpn_easy 2>/dev/null || true
 
 exit 0
 endef

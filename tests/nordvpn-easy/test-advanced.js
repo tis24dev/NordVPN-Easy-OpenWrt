@@ -431,6 +431,30 @@ async function testWireGuardTransportControlsValidateOperationalRanges() {
 	assert.match(String(mtuOption.validate('main', '1279')), /between 1280 and 1500/, 'low MTU is rejected');
 	assert.match(String(mtuOption.validate('main', '1501')), /between 1280 and 1500/, 'high MTU is rejected');
 	assert.equal(mtuFixOption.default, '1', 'MSS clamping defaults on');
+
+	const cronOption = harness.formHarness.findOption('check_cron_schedule');
+	assert.equal(cronOption.validate('main', ''), true, 'empty cron schedule disables cron');
+	assert.equal(cronOption.validate('main', '*/10 * * * *'), true, 'stepped cron schedule is valid');
+	assert.equal(cronOption.validate('main', '0-30/5 1,2 * * 1-5'), true, 'range/step/list cron schedule is valid');
+	assert.match(String(cronOption.validate('main', '*/10 * * *')), /exactly 5 fields/, 'cron schedule with too few fields is rejected');
+	assert.match(String(cronOption.validate('main', 'bad * * * *')), /not a valid cron expression/, 'cron field with invalid characters is rejected');
+	assert.equal(cronOption.validate('main', '59 23 31 12 7'), true, 'cron schedule at the per-field maxima is valid');
+	assert.match(String(cronOption.validate('main', '60 * * * *')), /not a valid cron expression/, 'minute above 59 is rejected (matches the init bounds)');
+	assert.match(String(cronOption.validate('main', '* 24 * * *')), /not a valid cron expression/, 'hour above 23 is rejected');
+	assert.match(String(cronOption.validate('main', '* * 0 * *')), /not a valid cron expression/, 'day-of-month below 1 is rejected');
+	assert.match(String(cronOption.validate('main', '* * * 13 *')), /not a valid cron expression/, 'month above 12 is rejected');
+	assert.match(String(cronOption.validate('main', '* * * * 8')), /not a valid cron expression/, 'weekday above 7 is rejected');
+	assert.match(String(cronOption.validate('main', '30-10 * * * *')), /not a valid cron expression/, 'inverted minute range is rejected');
+	assert.match(String(cronOption.validate('main', '*/99 * * * *')), /not a valid cron expression/, 'minute step above 59 is rejected');
+
+	const wanOption = harness.formHarness.findOption('wan_if');
+	const addrOption = harness.formHarness.findOption('vpn_addr');
+	const portOption = harness.formHarness.findOption('vpn_port');
+	const dnsOption = harness.formHarness.findOption('vpn_dns1');
+	assert.equal(wanOption.datatype, 'uciname', 'WAN interface uses the uciname datatype');
+	assert.equal(addrOption.datatype, 'cidr4', 'VPN address uses the cidr4 datatype');
+	assert.equal(portOption.datatype, 'port', 'VPN port uses the port datatype');
+	assert.equal(dnsOption.datatype, 'ipaddr', 'VPN DNS uses the ipaddr datatype');
 }
 
 async function testBusyRuntimeDisablesMutableActionsButKeepsHookRemovalAvailable() {

@@ -6,7 +6,7 @@
 
 # Use NORDVPN_TOKEN with the token you get from https://my.nordaccount.com/dashboard/nordvpn/access-tokens/
 
-LIB_DIR='/usr/libexec/nordvpn-easy/lib'
+LIB_DIR="${NORDVPN_EASY_LIB_DIR:-/usr/libexec/nordvpn-easy/lib}"
 CONFIG_CONTEXT_LIB="${LIB_DIR}/config-context.sh"
 CATALOG_LIB="${LIB_DIR}/catalog.sh"
 RUNTIME_LIB="${LIB_DIR}/runtime.sh"
@@ -35,6 +35,7 @@ SERVER_CATALOG_URL_BASE="${NORDVPN_API}/servers?filters[servers_technologies][id
 CREDENTIALS_URL="${NORDVPN_API}/users/services/credentials"
 LOCK_DIR='/tmp/nordvpn-easy.lock'
 NORDVPN_EASY_RC_BUSY="${NORDVPN_EASY_RC_BUSY:-75}"
+NORDVPN_EASY_RC_RUNTIME_DRIFT="${NORDVPN_EASY_RC_RUNTIME_DRIFT:-2}"
 RESOLVED_COUNTRY_ID=''
 RESOLVED_COUNTRY_NAME=''
 RESOLVED_COUNTRY_CODE=''
@@ -55,6 +56,7 @@ NORDVPN_EASY_RUN_DIR="${NORDVPN_EASY_RUN_DIR:-/tmp/run/nordvpn-easy}"
 NORDVPN_EASY_STATUS_CACHE="${NORDVPN_EASY_STATUS_CACHE:-$NORDVPN_EASY_RUN_DIR/status.json}"
 NORDVPN_EASY_PUBLIC_IP_CACHE="${NORDVPN_EASY_PUBLIC_IP_CACHE:-$NORDVPN_EASY_RUN_DIR/public_ip}"
 NORDVPN_EASY_PUBLIC_COUNTRY_CACHE="${NORDVPN_EASY_PUBLIC_COUNTRY_CACHE:-$NORDVPN_EASY_RUN_DIR/public_country}"
+NORDVPN_EASY_PUBLIC_VERIFICATION_CACHE="${NORDVPN_EASY_PUBLIC_VERIFICATION_CACHE:-$NORDVPN_EASY_RUN_DIR/public_verification}"
 NORDVPN_EASY_LAST_ERROR_CACHE="${NORDVPN_EASY_LAST_ERROR_CACHE:-$NORDVPN_EASY_RUN_DIR/last_error}"
 
 core_source_files() {
@@ -75,7 +77,9 @@ core_source_libs_for_action() {
       core_source_files "$RUNTIME_LIB" "$WIREGUARD_LIB" "$ACTIONS_LIB"
       ;;
     operation_status|vpn_status|status_json)
-      core_source_files "$RUNTIME_LIB"
+      # runtime.sh's vpn_status path calls nordvpn_easy_wg_handshake_epoch, which
+      # is defined in wireguard.sh; load it so status does not fail "not found".
+      core_source_files "$RUNTIME_LIB" "$WIREGUARD_LIB"
       ;;
     public_ip)
       core_source_files "$RUNTIME_LIB" "${LIB_DIR}/public-ip.sh"
@@ -427,12 +431,13 @@ get_private_key () {
   PRIVATE_KEY=$(printf '%s' "$CREDENTIALS_JSON" | jq -er '.nordlynx_private_key // empty' 2>/dev/null)
   credentials_response_bytes="$(printf '%s' "$CREDENTIALS_JSON" | wc -c | awk '{ print $1 }')"
   CREDENTIALS_JSON=''
-  [ -n "$PRIVATE_KEY" ] || {
+  if ! nordvpn_easy_valid_wireguard_key "$PRIVATE_KEY"; then
+    PRIVATE_KEY=''
     credentials_message="invalid NordLynx private key response received from NordVPN API (http_code=${NORDVPN_EASY_CREDENTIALS_HTTP_CODE:-000}, response_bytes=${credentials_response_bytes:-0})"
     nordvpn_easy_record_last_error "$credentials_message"
     nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "$credentials_message"
     return 1
-  }
+  fi
 
   log 'apply: NordLynx private key retrieved successfully'
 }
@@ -623,30 +628,41 @@ refresh_public_country_cache_for_current_ip () {
 }
 
 verify_public_country_selection () {
+  local expected_country=''
+
+  expected_country="$(printf '%s' "${RESOLVED_COUNTRY_CODE:-${VPN_COUNTRY:-}}" | tr 'a-z' 'A-Z')"
+  nordvpn_easy_public_verification_write 'pending' "$expected_country" '' 'public IP check running' >/dev/null 2>&1 || true
+
   update_public_ip_cache || {
-    log 'WARNING: COULD NOT RETRIEVE PUBLIC IP FOR COUNTRY VERIFICATION'
+    log 'WARNING: COULD NOT RETRIEVE PUBLIC IP FOR COUNTRY CHECK'
+    nordvpn_easy_public_verification_write 'failed' "$expected_country" '' 'could not retrieve public IP' >/dev/null 2>&1 || true
     return 0
   }
 
   refresh_public_country_cache_for_current_ip || {
-    log "WARNING: COULD NOT GEOLOCATE PUBLIC IP $PUBLIC_IP"
+    log "WARNING: COULD NOT LOOK UP COUNTRY FOR PUBLIC IP $PUBLIC_IP"
+    nordvpn_easy_public_verification_write 'failed' "$expected_country" '' "could not geolocate public IP $PUBLIC_IP" >/dev/null 2>&1 || true
     return 0
   }
 
   if [ -z "$VPN_COUNTRY" ]; then
-    log "Public IP verification: $PUBLIC_IP geolocates to $PUBLIC_COUNTRY with automatic country selection"
+    log "Public country check: $PUBLIC_IP geolocates to $PUBLIC_COUNTRY with automatic country selection"
+    nordvpn_easy_public_verification_write 'ok' '' "$PUBLIC_COUNTRY" 'public country check passed' >/dev/null 2>&1 || true
     return 0
   fi
 
   resolve_country_filter || {
-    log "WARNING: COULD NOT RESOLVE SELECTED COUNTRY '$VPN_COUNTRY' FOR PUBLIC IP VERIFICATION"
+    log "WARNING: COULD NOT RESOLVE SELECTED COUNTRY '$VPN_COUNTRY' FOR PUBLIC COUNTRY CHECK"
+    nordvpn_easy_public_verification_write 'failed' "$expected_country" "$PUBLIC_COUNTRY" "could not resolve selected country $VPN_COUNTRY" >/dev/null 2>&1 || true
     return 0
   }
 
   if [ "$PUBLIC_COUNTRY" = "$RESOLVED_COUNTRY_CODE" ]; then
-    log "Public IP verification passed: $PUBLIC_IP geolocates to $PUBLIC_COUNTRY and matches selected country $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
+    log "Public country check passed: $PUBLIC_IP geolocates to $PUBLIC_COUNTRY and matches selected country $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
+    nordvpn_easy_public_verification_write 'ok' "$RESOLVED_COUNTRY_CODE" "$PUBLIC_COUNTRY" 'public country check passed' >/dev/null 2>&1 || true
   else
-    log "WARNING: Public IP verification mismatch: $PUBLIC_IP geolocates to $PUBLIC_COUNTRY while selected country is $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
+    log "WARNING: Public country mismatch: $PUBLIC_IP geolocates to $PUBLIC_COUNTRY while selected country is $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
+    nordvpn_easy_public_verification_write 'mismatch' "$RESOLVED_COUNTRY_CODE" "$PUBLIC_COUNTRY" "public IP country $PUBLIC_COUNTRY does not match selected country $RESOLVED_COUNTRY_CODE" >/dev/null 2>&1 || true
   fi
 }
 
@@ -669,27 +685,29 @@ resolve_country_filter () {
       ((.code // "" | ascii_downcase) == ($query | ascii_downcase)) or
       ((.name // "" | ascii_downcase) == ($query | ascii_downcase))
     ) ][0] | [.id, .name, .code] | @tsv
-  ' "$COUNTRIES_CACHE_FILE" 2>/dev/null) || {
+  ' "$COUNTRIES_CACHE_FILE" 2>/dev/null) || COUNTRY_MATCH=''
+
+  IFS="$(printf '\t')" read -r RESOLVED_COUNTRY_ID RESOLVED_COUNTRY_NAME RESOLVED_COUNTRY_CODE <<EOF
+$COUNTRY_MATCH
+EOF
+
+  if [ -z "$RESOLVED_COUNTRY_ID" ]; then
+    # The country could not be resolved from the cache -- either it is absent
+    # from a readable cache (jq returns an empty row) or the cache could not be
+    # parsed (jq fails). In both cases a syntactically valid country code is
+    # still usable by filtering recommendations by code instead of the API
+    # country id, rather than failing the whole operation.
     if valid_country_code "$COUNTRY_QUERY"; then
       RESOLVED_COUNTRY_ID=''
       RESOLVED_COUNTRY_NAME='unknown in NordVPN country cache'
-      RESOLVED_COUNTRY_CODE=$(printf '%s' "$COUNTRY_QUERY" | tr '[:lower:]' '[:upper:]')
+      RESOLVED_COUNTRY_CODE=$(printf '%s' "$COUNTRY_QUERY" | tr 'a-z' 'A-Z')
       RESOLVED_COUNTRY_QUERY="$COUNTRY_QUERY"
       log "WARNING: COUNTRY '$RESOLVED_COUNTRY_CODE' is not in the NordVPN country cache; recommendations will be filtered by country code instead of API country id"
       return 0
     fi
     log "ERROR: COUNTRY '$COUNTRY_QUERY' NOT FOUND"
     return 1
-  }
-
-  IFS="$(printf '\t')" read -r RESOLVED_COUNTRY_ID RESOLVED_COUNTRY_NAME RESOLVED_COUNTRY_CODE <<EOF
-$COUNTRY_MATCH
-EOF
-
-  [ -n "$RESOLVED_COUNTRY_ID" ] || {
-    log "ERROR: COUNTRY '$COUNTRY_QUERY' NOT FOUND"
-    return 1
-  }
+  fi
 
   RESOLVED_COUNTRY_QUERY="$COUNTRY_QUERY"
   log "Filtering VPN servers by country: $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
@@ -888,8 +906,8 @@ find_firewall_zone_section () {
   nordvpn_easy_find_firewall_zone_section "$@"
 }
 
-ensure_vpn_in_wan_zone () {
-  nordvpn_easy_ensure_vpn_in_wan_zone "$@"
+ensure_vpn_firewall () {
+  nordvpn_easy_ensure_vpn_firewall "$@"
 }
 
 set_vpn_server_in_uci () {
@@ -906,6 +924,13 @@ reconcile_action () {
 
 provision_vpn () {
   nordvpn_easy_provision_vpn "$@"
+}
+
+# Atomic stop + fresh provision; used by the reconnect action and by the
+# reconcile reprovision fallback so both run within a single held lock.
+reprovision_vpn () {
+  nordvpn_easy_stop_vpn_for_server_change &&
+  provision_vpn connect_fresh
 }
 
 configure_vpn_interface () {
@@ -997,6 +1022,11 @@ fi
 
 if [ "$ACTION" = 'status_json' ]; then
   LOG_PHASE='runtime'
+  if [ -f "${NORDVPN_EASY_CONNECT_APPLY_GUARD:-/tmp/run/nordvpn-easy/connect-apply-guard}" ]; then
+    nordvpn_easy_emit_status_json
+    nordvpn_easy_write_status_cache >/dev/null 2>&1 || true
+    exit 0
+  fi
   if nordvpn_easy_write_status_cache >/dev/null 2>&1; then
     nordvpn_easy_emit_cached_status_json
   else
@@ -1070,27 +1100,52 @@ case "$ACTION" in
     ACTION_RC=$?
     ;;
   reconcile)
-    validate_setup_runtime &&
-    reconcile_action
-    ACTION_RC=$?
+    VALID_RC=0
+    validate_setup_runtime || VALID_RC=$?
+    if [ "$VALID_RC" -ne 0 ]; then
+      ACTION_RC="$VALID_RC"
+    else
+      reconcile_action
+      ACTION_RC=$?
+      if [ "$ACTION_RC" -eq "$NORDVPN_EASY_RC_RUNTIME_DRIFT" ]; then
+        log 'reconcile: runtime drift remained after reconcile action; reprovisioning (stop_vpn + connect_fresh) under the held lock'
+        reprovision_vpn
+        ACTION_RC=$?
+      fi
+    fi
     ;;
   stop_vpn)
-    validate_stop_runtime &&
-    nordvpn_easy_stop_vpn_for_server_change
-    ACTION_RC=$?
+    if validate_stop_runtime; then
+      if [ -f "${NORDVPN_EASY_CONNECT_APPLY_GUARD:-/tmp/run/nordvpn-easy/connect-apply-guard}" ] ||
+        [ "${NORDVPN_EASY_CONNECT_APPLY:-0}" = '1' ]; then
+        nordvpn_easy_stop_vpn_for_connect_apply
+      else
+        nordvpn_easy_stop_vpn_for_server_change
+      fi
+      ACTION_RC=$?
+    else
+      ACTION_RC=1
+    fi
     ;;
   reconnect)
     validate_setup_runtime &&
-    nordvpn_easy_stop_vpn_for_server_change &&
-    provision_vpn connect_fresh &&
+    reprovision_vpn &&
     log 'NordVPN reconnect completed (stop_vpn + connect_fresh)'
     ACTION_RC=$?
     ;;
   setup)
-    validate_setup_runtime &&
-    provision_vpn connect_fresh &&
-    log 'NordVPN configuration is ready'
-    ACTION_RC=$?
+    if validate_setup_runtime; then
+      if [ "${NORDVPN_EASY_CONNECT_APPLY:-0}" = '1' ]; then
+        provision_vpn connect_apply &&
+        log 'NordVPN configuration is ready (connect apply)'
+      else
+        provision_vpn connect_fresh &&
+        log 'NordVPN configuration is ready'
+      fi
+      ACTION_RC=$?
+    else
+      ACTION_RC=1
+    fi
     ;;
   rotate)
     rotate_action

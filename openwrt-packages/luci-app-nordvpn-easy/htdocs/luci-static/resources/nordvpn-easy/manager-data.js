@@ -37,6 +37,7 @@ function emptyServerCatalog() {
 		country_name: '',
 		cached_at: null,
 		cache_ttl: null,
+		generated_at: null,
 		servers: []
 	};
 }
@@ -98,6 +99,8 @@ function parseLocalStatus(raw) {
 		public_ip_detected_at_iso: String(status.public_ip_detected_at_iso || ''),
 		public_ip_source: String(status.public_ip_source || ''),
 		public_country_cached: normalizeCountryCode(status.public_country_cached || ''),
+		public_verification_status: String(status.public_verification_status || 'unknown'),
+		public_verification_checked_at: Number(status.public_verification_checked_at || 0),
 		last_error: String(status.last_error || ''),
 		current_server_hostname: String(status.current_server_hostname || ''),
 		current_server_station: String(status.current_server_station || ''),
@@ -105,7 +108,14 @@ function parseLocalStatus(raw) {
 		current_server_country: normalizeCountryCode(status.current_server_country || ''),
 		current_server_load: String(status.current_server_load || ''),
 		preferred_server_hostname: String(status.preferred_server_hostname || ''),
-		preferred_server_station: String(status.preferred_server_station || '')
+		preferred_server_station: String(status.preferred_server_station || ''),
+		connect_apply_pending: !!status.connect_apply_pending,
+		connect_apply_finished: !!status.connect_apply_finished,
+		connect_apply_success: !!status.connect_apply_success,
+		connect_apply_rc: Number(status.connect_apply_rc || 0),
+		connect_apply_country: normalizeCountryCode(status.connect_apply_country || ''),
+		connect_apply_started_at: Number(status.connect_apply_started_at || 0),
+		connect_apply_finished_at: Number(status.connect_apply_finished_at || 0)
 	};
 }
 
@@ -121,6 +131,7 @@ function parseServerCatalog(raw) {
 		country_name: String(catalog.country_name || ''),
 		cached_at: (catalog.cached_at != null && catalog.cached_at !== '') ? Number(catalog.cached_at) : null,
 		cache_ttl: (catalog.cache_ttl != null && catalog.cache_ttl !== '') ? Number(catalog.cache_ttl) : null,
+		generated_at: (catalog.generated_at != null && catalog.generated_at !== '') ? Number(catalog.generated_at) : null,
 		servers: Array.isArray(catalog.servers) ? catalog.servers.filter(function(server) {
 			return server && server.hostname && server.station && server.public_key;
 		}).map(function(server) {

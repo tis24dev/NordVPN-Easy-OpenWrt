@@ -1,6 +1,10 @@
 #!/bin/sh
 
-set -eu
+# set -u catches unset-variable bugs, but deliberately NOT set -e: the migration
+# must never abort partway through and leave the live config half-written. The
+# new config is built off to the side and swapped in with a single atomic rename
+# at the very end, and the few steps that must succeed are checked explicitly.
+set -u
 
 UCI_CONFIG="${NORDVPN_EASY_UCI_CONFIG:-nordvpn_easy}"
 UCI_SECTION="${NORDVPN_EASY_UCI_SECTION:-main}"
@@ -10,10 +14,10 @@ LEGACY_CONFIG_FILE="${NORDVPN_EASY_LEGACY_CONFIG_FILE:-${NORDVPN_EASY_OPKG_CONFI
 TEMPLATE_FILE="${NORDVPN_EASY_TEMPLATE_FILE:-/usr/share/nordvpn-easy/defaults/nordvpn_easy}"
 LIB_DIR="${NORDVPN_EASY_LIB_DIR:-/usr/libexec/nordvpn-easy/lib}"
 SCHEMA_LIB="${LIB_DIR}/schema.sh"
-TEMP_CONFIG=''
+BUILD_DIR=''
 
 cleanup() {
-	[ -n "$TEMP_CONFIG" ] && rm -f -- "$TEMP_CONFIG"
+	[ -n "$BUILD_DIR" ] && rm -rf -- "$BUILD_DIR"
 	return 0
 }
 
@@ -109,12 +113,22 @@ snapshot_existing_config() {
 	for option in $(nordvpn_easy_uci_options); do
 		old_value="$(read_snapshot_option "$option")"
 		normalized_value="$(nordvpn_easy_normalize_value "$option" "$old_value")"
+		if [ "$option" = 'post_restart_delay' ] && [ "$normalized_value" = '60' ]; then
+			normalized_value='30'
+		fi
 		eval "snapshot_${option}='$(nordvpn_easy_shell_quote "$normalized_value")'"
 	done
 }
 
-install_template_config() {
-	local config_dir
+# Build the fully migrated config off to the side and swap it into place with a
+# single atomic rename. The new config is assembled in a sibling workspace on the
+# same filesystem as the live config (so the final mv is an atomic rename, not a
+# cross-filesystem copy), with uci pointed at that workspace via an isolated
+# confdir/delta so the live config is never touched until the swap. A crash or an
+# unexpected value at any earlier point leaves the original config fully intact
+# instead of a template-only file with the user's settings lost.
+build_migrated_config() {
+	local config_dir delta_dir migrated option normalized_value
 
 	[ -r "$TEMPLATE_FILE" ] || {
 		printf '%s\n' "nordvpn-easy: missing config template $TEMPLATE_FILE" >&2
@@ -122,32 +136,66 @@ install_template_config() {
 	}
 
 	config_dir="$(dirname "$CONFIG_FILE")"
-	mkdir -p "$config_dir"
-	TEMP_CONFIG="${CONFIG_FILE}.nordvpn-easy.$$"
-	cp "$TEMPLATE_FILE" "$TEMP_CONFIG"
-	chmod 0600 "$TEMP_CONFIG"
-	mv "$TEMP_CONFIG" "$CONFIG_FILE"
-	TEMP_CONFIG=''
-}
+	mkdir -p "$config_dir" || return 1
 
-apply_snapshot_to_uci() {
-	local option normalized_value
+	BUILD_DIR="$(mktemp -d "${config_dir}/.nordvpn-easy-migrate.XXXXXX")" || {
+		BUILD_DIR=''
+		printf '%s\n' "nordvpn-easy: failed to create migration workspace" >&2
+		return 1
+	}
+	delta_dir="${BUILD_DIR}/delta"
+	migrated="${BUILD_DIR}/${UCI_CONFIG}"
+	mkdir -p "$delta_dir" || return 1
 
-	uci set "${UCI_CONFIG}.${UCI_SECTION}=nordvpn_easy"
+	cp "$TEMPLATE_FILE" "$migrated" || {
+		printf '%s\n' "nordvpn-easy: failed to seed migration workspace from template" >&2
+		return 1
+	}
+
+	uci -c "$BUILD_DIR" -t "$delta_dir" set "${UCI_CONFIG}.${UCI_SECTION}=nordvpn_easy" || {
+		printf '%s\n' "nordvpn-easy: failed to initialize migrated config section" >&2
+		return 1
+	}
+	# Best-effort per-option restore: a single unexpected value must not abort the
+	# whole migration (that is why set -e is off). Any option uci rejects simply
+	# keeps the template default in the built file.
 	for option in $(nordvpn_easy_uci_options); do
 		eval "normalized_value=\${snapshot_${option}-}"
 		normalized_value="$(nordvpn_easy_normalize_value "$option" "$normalized_value")"
-		uci set "${UCI_CONFIG}.${UCI_SECTION}.${option}=${normalized_value}"
+		uci -c "$BUILD_DIR" -t "$delta_dir" set "${UCI_CONFIG}.${UCI_SECTION}.${option}=${normalized_value}" ||
+			printf '%s\n' "nordvpn-easy: kept template default for option '$option'" >&2
 	done
 
-	uci -q delete "${UCI_CONFIG}.${UCI_SECTION}.nordvpn_basic_token" >/dev/null 2>&1 || true
-	uci -q commit "$UCI_CONFIG" || {
-		printf '%s\n' "nordvpn-easy: failed to commit migrated config" >&2
+	uci -c "$BUILD_DIR" -t "$delta_dir" -q delete "${UCI_CONFIG}.${UCI_SECTION}.nordvpn_basic_token" >/dev/null 2>&1 || true
+	uci -c "$BUILD_DIR" -t "$delta_dir" commit "$UCI_CONFIG" || {
+		printf '%s\n' "nordvpn-easy: failed to build migrated config" >&2
 		return 1
 	}
+
+	[ -s "$migrated" ] || {
+		printf '%s\n' "nordvpn-easy: built migrated config is empty; refusing to swap" >&2
+		return 1
+	}
+	chmod 0600 "$migrated" || return 1
+
+	mv "$migrated" "$CONFIG_FILE" || {
+		printf '%s\n' "nordvpn-easy: failed to swap migrated config into place" >&2
+		return 1
+	}
+
+	rm -rf -- "$BUILD_DIR"
+	BUILD_DIR=''
 }
 
+# Skip the migration entirely when the active config already carries the current
+# schema version: re-running it on every postinst would needlessly re-normalize
+# values and repeat one-time bumps (e.g. post_restart_delay 60 -> 30).
+if [ -r "$CONFIG_FILE" ] && active_option_exists 'config_schema_version' &&
+	[ "$(read_active_option 'config_schema_version')" = "$NORDVPN_EASY_SCHEMA_VERSION" ]; then
+	rm -f -- "$LEGACY_CONFIG_FILE"
+	exit 0
+fi
+
 snapshot_existing_config
-install_template_config
-apply_snapshot_to_uci
+build_migrated_config || exit 1
 rm -f -- "$LEGACY_CONFIG_FILE"

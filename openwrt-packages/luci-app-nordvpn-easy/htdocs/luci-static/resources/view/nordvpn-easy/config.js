@@ -16,6 +16,8 @@
 const COUNTRIES_CACHE_PATH = '/tmp/nordvpn-easy-countries.json';
 const TOKEN_MASK_DISPLAY = '********';
 const state = managerStore.createState();
+// Mirror on-screen Country Match indicator transitions to the diagnostics log.
+state.onCountryMatchChange = managerActions.postCountryMatchLog;
 
 function refreshCountriesInBackground(selectEl, currentCountry) {
 	if (!selectEl)
@@ -136,7 +138,17 @@ const TokenValue = form.Value.extend({
 		const existingValue = this.storedValue(section_id);
 		const normalizedValue = String(value != null ? value : '').trim();
 
-		if (!normalizedValue && !existingValue)
+		if (normalizedValue || existingValue)
+			return true;
+
+		// The token is only needed to bring the VPN up; the runtime skips it
+		// entirely while disabled. So require it only when this save would enable
+		// the VPN -- a disabled / pre-configured profile can be saved without one.
+		const enabledLookup = this.map.lookupOption('enabled', section_id);
+		const enabledOption = enabledLookup && enabledLookup[0];
+		const wantsEnabled = enabledOption ? enabledOption.formvalue(section_id) : null;
+
+		if (wantsEnabled === '1' || wantsEnabled === true)
 			return _('Required. NordVPN access token.');
 
 		return true;
@@ -242,6 +254,15 @@ const TokenValue = form.Value.extend({
 		state.currentDiagnosticsSummary = initialDiagnostics;
 		state.currentDiagnosticsSummaryFresh = initialDiagnosticsFresh;
 		state.serverCatalogIndex = managerData.buildServerCatalogIndex(state.currentServerCatalog);
+
+		// Defer the orphaned-runtime recovery out of render so render stays
+		// side-effect-free: maybeRecoverOrphanedRuntime can dispatch a reconcile
+		// RPC, and it must not run synchronously while the form is being built.
+		// Its runExclusive + enabledRuntimeRecoveryInFlight guards still serialize
+		// it against the status poller.
+		Promise.resolve().then(function() {
+			managerActions.maybeRecoverOrphanedRuntime(state);
+		});
 
 		m = new form.Map('nordvpn_easy', _('NordVPN Easy'),
 			_('Manage NordVPN Easy connection, manual server selection and runtime status.'));

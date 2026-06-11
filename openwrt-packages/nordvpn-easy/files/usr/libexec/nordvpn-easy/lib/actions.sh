@@ -5,6 +5,8 @@
 # refresh_countries_cache and get_private_key), so validate that sourcing
 # contract when these code paths execute.
 
+NORDVPN_EASY_RC_RUNTIME_DRIFT="${NORDVPN_EASY_RC_RUNTIME_DRIFT:-2}"
+
 nordvpn_easy_require_core_action_helpers() {
 	local helper
 
@@ -97,7 +99,7 @@ nordvpn_easy_find_preferred_server_in_catalog() {
 }
 
 nordvpn_easy_normalize_country_code() {
-	printf '%s' "${1:-}" | tr '[:lower:]' '[:upper:]'
+	printf '%s' "${1:-}" | tr 'a-z' 'A-Z'
 }
 
 nordvpn_easy_apply_preferred_server_from_catalog() {
@@ -126,6 +128,12 @@ nordvpn_easy_build_server_recommendations_url() {
 
 nordvpn_easy_server_list_cache_is_usable() {
 	[ -f "$SERVER_LIST_FILE" ] || return 1
+	# /tmp is world-writable, so a non-root process could pre-create a poisoned
+	# server list before the first fetch and have it trusted as a fallback for
+	# the endpoint + public key we then connect to. A cache the service wrote is
+	# always owned by us (atomic mv of a root-owned temp), so refuse anything not
+	# owned by the effective user.
+	[ -O "$SERVER_LIST_FILE" ] || return 1
 
 	jq -er --arg country "${RESOLVED_COUNTRY_CODE:-}" '
 		(type == "array") and
@@ -145,10 +153,15 @@ nordvpn_easy_clear_provision_caches() {
 	rm -f "${SERVER_CATALOG_FILE:-/tmp/nordvpn-easy-servers.json}" \
 		"${SERVER_CATALOG_TS_FILE:-/tmp/nordvpn-easy-servers.timestamp}" 2>/dev/null || true
 
+	nordvpn_easy_clear_connect_apply_caches
+	return 0
+}
+
+nordvpn_easy_clear_connect_apply_caches() {
 	rm -f "${NORDVPN_EASY_PUBLIC_IP_CACHE:-}" \
 		"${NORDVPN_EASY_PUBLIC_COUNTRY_CACHE:-}" \
+		"${NORDVPN_EASY_PUBLIC_VERIFICATION_CACHE:-}" \
 		"${NORDVPN_EASY_LAST_ERROR_CACHE:-}" 2>/dev/null || true
-
 	return 0
 }
 
@@ -223,20 +236,23 @@ nordvpn_easy_set_first_server_from_list() {
 	FIRST_SERVER=$(jq -r --arg exclude "$exclude" --arg want "${RESOLVED_COUNTRY_CODE:-}" '
 		[.[] |
 			select(($exclude == "") or ((.station // "") != $exclude)) |
-			select(($want == "") or ((.locations[0].country.code // "") == $want))
-		] | .[0] | [
-			.hostname,
-			.station,
-			([.technologies[]?
+			select(($want == "") or ((.locations[0].country.code // "") == $want)) |
+			. as $srv |
+			([$srv.technologies[]?
 				| select(.identifier == "wireguard_udp")
 				| .metadata[]?
 				| select(.name == "public_key")
 				| (.value // "")
-			][0] // ""),
-			(.locations[0].country.code // ""),
-			(.locations[0].country.city.name // ""),
-			((.load // 0) | tostring)
-		] | @tsv' "$SERVER_LIST_FILE" 2>/dev/null) || {
+			][0] // "") as $pubkey |
+			# Skip a recommendation with no usable WireGuard key (no wireguard_udp
+			# technology, so an empty public key) instead of selecting it and
+			# failing provisioning when a valid server is available further down.
+			select($pubkey != "") |
+			[ $srv.hostname, $srv.station, $pubkey,
+			  ($srv.locations[0].country.code // ""),
+			  ($srv.locations[0].country.city.name // ""),
+			  (($srv.load // 0) | tostring) ]
+		] | (.[0] // empty) | @tsv' "$SERVER_LIST_FILE" 2>/dev/null) || {
 		log 'ERROR: INVALID VPN SERVER LIST'
 		return 1
 	}
@@ -278,10 +294,11 @@ nordvpn_easy_apply_next_manual_server_from_catalog() {
 
 		log "Selected manual VPN server $host_name ($server_station) for rotation"
 		nordvpn_easy_set_vpn_server_in_uci "$host_name" "$server_station" "$public_key" "$country_code" "$city_name" "$server_load" || return 1
-		nordvpn_easy_set_server_preference_in_uci "$host_name" "$server_station"
-		uci commit nordvpn_easy || {
-			log 'WARNING: COULD NOT COMMIT MANUAL SERVER PREFERENCE AFTER ROTATION'
-		}
+		# Defer persisting the rotated server as the saved preference until
+		# connectivity is verified (see provision_vpn): a rotation onto a dead
+		# server must not overwrite the user's manual choice with a known-bad one.
+		NORDVPN_EASY_PENDING_PREFERENCE_HOSTNAME="$host_name"
+		NORDVPN_EASY_PENDING_PREFERENCE_STATION="$server_station"
 		PREFERRED_SERVER_HOSTNAME="$host_name"
 		PREFERRED_SERVER_STATION="$server_station"
 		return 0
@@ -353,10 +370,15 @@ nordvpn_easy_configure_vpn_interface() {
 	if [ "${NORDVPN_EASY_PROVISION_FETCH_DONE:-}" != '1' ]; then
 		nordvpn_easy_fetch_provision_prerequisites || return 1
 	fi
-	log "apply: ensuring firewall zone for ${WAN_IF:-unset} contains ${VPN_IF:-unset}"
-	nordvpn_easy_ensure_vpn_in_wan_zone || return 1
+	log "apply: ensuring VPN firewall zone for ${VPN_IF:-unset} (egress steered through the tunnel)"
+	nordvpn_easy_ensure_vpn_firewall || return 1
 
 	uci set "network.${VPN_IF}"='interface'
+	# Clear any soft-disable left by a previous disconnect (disable_vpn_runtime
+	# sets network.${VPN_IF}.disabled=1 and keeps the section); configuring the
+	# interface means we want it up, so a stale disabled flag must not survive a
+	# re-enable or the tunnel never comes up.
+	uci -q delete "network.${VPN_IF}.disabled" >/dev/null 2>&1 || true
 	uci set "network.${VPN_IF}.proto"='wireguard'
 	uci -q delete "network.${VPN_IF}.addresses" >/dev/null 2>&1 || true
 	uci add_list "network.${VPN_IF}.addresses"="$VPN_ADDR"
@@ -382,12 +404,9 @@ nordvpn_easy_configure_vpn_interface() {
 		nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" 'could not commit network configuration while creating the VPN interface'
 		return 1
 	}
+	nordvpn_easy_harden_secret_config_perms network
 
-	log "apply: restarting network to bring up $VPN_IF"
-	/etc/init.d/network restart || {
-		log 'ERROR: NETWORK RESTART FAILED'
-		return 1
-	}
+	nordvpn_easy_bring_up_vpn_interface "$VPN_IF" || return 1
 
 	log "apply: $VPN_IF created successfully"
 	nordvpn_easy_log_vpn_interface_state 'after-create'
@@ -398,6 +417,57 @@ nordvpn_easy_stop_vpn_for_server_change() {
 	nordvpn_easy_immediate_vpn_shutdown || return 1
 	nordvpn_easy_clear_provision_caches || return 1
 	nordvpn_easy_teardown_vpn || return 1
+	return 0
+}
+
+nordvpn_easy_stop_vpn_for_connect_apply() {
+	log 'apply: stopping VPN for connect apply (preserving reusable server recommendation cache)'
+	nordvpn_easy_immediate_vpn_shutdown || return 1
+	nordvpn_easy_clear_connect_apply_caches || return 1
+	nordvpn_easy_teardown_vpn || return 1
+	# Do not touch the connect-apply-result here: it is owned by the init
+	# connect_apply_guard_begin (which runs before this stop in the apply flow),
+	# clear_connect_apply_caches above does not remove it, and re-beginning it
+	# would just duplicate that owner.
+	return 0
+}
+
+nordvpn_easy_start_public_verification_background() {
+	local expected_country="${RESOLVED_COUNTRY_CODE:-${VPN_COUNTRY:-}}"
+
+	expected_country="$(printf '%s' "$expected_country" | tr 'a-z' 'A-Z')"
+	if command -v nordvpn_easy_public_verification_write >/dev/null 2>&1; then
+		nordvpn_easy_public_verification_write 'pending' "$expected_country" '' 'public IP check queued' >/dev/null 2>&1 || true
+	fi
+
+	if ! command -v nordvpn_easy_run_public_ip_check >/dev/null 2>&1; then
+		log 'apply: public IP background check skipped because public-ip helper is unavailable'
+		return 0
+	fi
+
+	(
+		NORDVPN_EASY_EXPECTED_PUBLIC_COUNTRY="$expected_country"
+		PUBLIC_LOOKUP_LOG_MODE='verbose'
+		nordvpn_easy_run_public_ip_check verbose >/dev/null 2>&1 || true
+	) &
+	log 'apply: public IP check queued in background after WireGuard readiness; country check will reuse the IP result'
+	return 0
+}
+
+nordvpn_easy_provision_vpn_connect_apply() {
+	log 'apply: provisioning VPN after connect apply stop (reusing server cache when valid for selected country)'
+	nordvpn_easy_fetch_provision_prerequisites || return 1
+	NORDVPN_EASY_PROVISION_FETCH_DONE=1
+	nordvpn_easy_configure_vpn_interface || return 1
+	unset NORDVPN_EASY_PROVISION_FETCH_DONE
+
+	if ! nordvpn_easy_wait_for_vpn_connectivity "$VPN_IF" "$POST_RESTART_DELAY" "provisioning $VPN_IF"; then
+		log 'apply: VPN connection is not OK after provisioning'
+		return 1
+	fi
+
+	nordvpn_easy_start_public_verification_background || true
+	log 'apply: VPN provisioning completed'
 	return 0
 }
 
@@ -415,7 +485,8 @@ nordvpn_easy_provision_vpn_connect_fresh() {
 		return 1
 	fi
 
-	verify_public_country_selection || return 1
+	verify_public_country_selection ||
+		log 'apply: public IP/country verification did not pass; leaving the tunnel up (status reflects the result)'
 	log 'apply: VPN provisioning completed'
 	return 0
 }
@@ -425,8 +496,24 @@ nordvpn_easy_provision_vpn_server_change() {
 	nordvpn_easy_provision_vpn_connect_fresh
 }
 
+nordvpn_easy_commit_pending_server_preference() {
+	[ -n "${NORDVPN_EASY_PENDING_PREFERENCE_STATION:-}" ] || return 0
+
+	nordvpn_easy_set_server_preference_in_uci \
+		"${NORDVPN_EASY_PENDING_PREFERENCE_HOSTNAME:-}" \
+		"$NORDVPN_EASY_PENDING_PREFERENCE_STATION"
+	uci commit nordvpn_easy ||
+		log 'WARNING: COULD NOT COMMIT ROTATED SERVER PREFERENCE AFTER VERIFICATION'
+	nordvpn_easy_harden_secret_config_perms nordvpn_easy
+	NORDVPN_EASY_PENDING_PREFERENCE_HOSTNAME=''
+	NORDVPN_EASY_PENDING_PREFERENCE_STATION=''
+}
+
 nordvpn_easy_provision_vpn() {
 	local mode="${1:-}"
+
+	NORDVPN_EASY_PENDING_PREFERENCE_HOSTNAME=''
+	NORDVPN_EASY_PENDING_PREFERENCE_STATION=''
 
 	nordvpn_easy_require_core_action_helpers refresh_countries_cache verify_public_country_selection || return 1
 	log "apply: provisioning VPN interface $VPN_IF (mode=${mode:-fresh}, selection=${SERVER_SELECTION_MODE:-auto}, country=${VPN_COUNTRY:-automatic})"
@@ -454,6 +541,11 @@ nordvpn_easy_provision_vpn() {
 		return $?
 	fi
 
+	if [ "$mode" = 'connect_apply' ]; then
+		nordvpn_easy_provision_vpn_connect_apply
+		return $?
+	fi
+
 	nordvpn_easy_fetch_provision_prerequisites || return 1
 	NORDVPN_EASY_PROVISION_FETCH_DONE=1
 	nordvpn_easy_teardown_vpn || return 1
@@ -465,14 +557,16 @@ nordvpn_easy_provision_vpn() {
 		return 1
 	fi
 
-	verify_public_country_selection || return 1
+	verify_public_country_selection ||
+		log 'apply: public IP/country verification did not pass; leaving the tunnel up (status reflects the result)'
+	nordvpn_easy_commit_pending_server_preference
 	log 'apply: VPN provisioning completed'
 }
 
 nordvpn_easy_reconcile_action() {
 	log 'apply: reconcile action started'
 	nordvpn_easy_provision_vpn || return 1
-	nordvpn_easy_check_once
+	nordvpn_easy_check_once || return "$NORDVPN_EASY_RC_RUNTIME_DRIFT"
 }
 
 nordvpn_easy_rotate_action() {
@@ -509,7 +603,21 @@ nordvpn_easy_check_once() {
 		return 0
 	fi
 
-	sleep "${FAILURE_RETRY_DELAY:-6}"
+	# Don't hold the execution lock idle through the retry wait: a user Save &
+	# Apply would be rejected RC_BUSY for the whole delay. When we actually hold
+	# the lock (run via core.sh), release it around the sleep and reacquire after;
+	# if another operation took over meanwhile, yield to it.
+	if [ "${LOCK_ACQUIRED:-0}" = '1' ]; then
+		nordvpn_easy_release_lock
+		sleep "${FAILURE_RETRY_DELAY:-6}"
+		if ! nordvpn_easy_acquire_lock; then
+			log 'healthcheck: another operation took over during the retry wait; yielding'
+			nordvpn_easy_check_once_finish
+			return 0
+		fi
+	else
+		sleep "${FAILURE_RETRY_DELAY:-6}"
+	fi
 
 	if nordvpn_easy_ping_interface "$VPN_IF"; then
 		log "healthcheck: VPN health-check passed on interface $VPN_IF after retry delay"

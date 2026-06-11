@@ -42,6 +42,33 @@ nordvpn_easy_log_blocker() {
 	nordvpn_easy_log_phase "$phase" "BLOCKER: $message"
 }
 
+nordvpn_easy_handshake_epoch_indicates_connection() {
+	local epoch="$1"
+	local now diff
+
+	case "$epoch" in
+		''|*[!0-9]*)
+			return 1
+			;;
+	esac
+
+	[ "$epoch" -gt 0 ] || return 1
+	now="$(date +%s 2>/dev/null)"
+	case "$now" in
+		''|*[!0-9]*)
+			return 1
+			;;
+	esac
+
+	diff=$((now - epoch))
+	[ "$diff" -lt 0 ] && diff=0
+	# A WireGuard session is only valid for REJECT_AFTER_TIME (180s); a handshake
+	# older than that means the tunnel is no longer actively connected. This also
+	# matches the LuCI 180s convergence threshold, so the status banner and the
+	# Save & Apply result agree instead of a long-dead tunnel reporting connected.
+	[ "$diff" -le 180 ]
+}
+
 nordvpn_easy_install_exit_trap() {
 	[ "${NORDVPN_EASY_EXIT_TRAP_INSTALLED:-0}" -eq 1 ] && return 0
 
@@ -84,6 +111,45 @@ nordvpn_easy_cleanup_temp_paths() {
 	IFS="$old_ifs"
 
 	NORDVPN_EASY_TEMP_PATHS=''
+}
+
+nordvpn_easy_valid_wireguard_key() {
+	# A WireGuard key (private NordLynx key or peer public key) is 32 raw bytes,
+	# i.e. 43 base64 characters plus a single '=' pad = 44 chars. Reject anything
+	# else so a corrupt/truncated API response is caught at retrieval instead of
+	# surfacing much later as a generic no-handshake failure.
+	local key="$1"
+
+	[ -n "$key" ] || return 1
+	case "$key" in
+		*[!A-Za-z0-9+/=]*) return 1 ;;
+	esac
+	case "$key" in
+		*=) ;;
+		*) return 1 ;;
+	esac
+	[ "${#key}" -eq 44 ] || return 1
+}
+
+nordvpn_easy_remove_app_firewall_sections() {
+	# Remove every firewall section this app owns (named nordvpn_*) so the VPN
+	# zone, lan->vpn forwarding and kill-switch rules can be rebuilt idempotently
+	# (provisioning) and fully cleaned up on disable (restoring plain LAN->WAN).
+	local section
+	for section in $(uci show firewall 2>/dev/null | sed -n 's/^firewall\.\(nordvpn_[A-Za-z0-9_]*\)=.*/\1/p' | sort -u); do
+		uci -q delete "firewall.${section}"
+	done
+}
+
+nordvpn_easy_teardown_vpn_firewall() {
+	# Tear the app's firewall objects down and reload, restoring plain LAN->WAN so
+	# a disabled VPN does not leave the kill switch blocking the user's internet.
+	nordvpn_easy_remove_app_firewall_sections
+	uci commit firewall 2>/dev/null || {
+		uci revert firewall >/dev/null 2>&1 || true
+		return 1
+	}
+	"${NORDVPN_EASY_FIREWALL_INIT:-/etc/init.d/firewall}" reload >/dev/null 2>&1 || return 1
 }
 
 nordvpn_easy_mktemp_dir() {
@@ -288,6 +354,142 @@ nordvpn_easy_release_lock() {
 	nordvpn_easy_log_phase 'runtime' "execution lock released at $LOCK_DIR"
 }
 
+nordvpn_easy_clear_stale_runtime_lock() {
+	local lock_dir="${1:-/tmp/nordvpn-easy.lock}"
+	local lock_pid_file="${lock_dir}/pid"
+	local lock_pid=''
+
+	[ -d "$lock_dir" ] || return 0
+
+	if [ ! -f "$lock_pid_file" ]; then
+		rm -rf "$lock_dir" 2>/dev/null || true
+		return 0
+	fi
+
+	lock_pid="$(cat "$lock_pid_file" 2>/dev/null)"
+	case "$lock_pid" in
+		''|*[!0-9]*)
+			rm -rf "$lock_dir" 2>/dev/null || true
+			return 0
+			;;
+	esac
+
+	if kill -0 "$lock_pid" 2>/dev/null; then
+		return 1
+	fi
+
+	rm -rf "$lock_dir" 2>/dev/null || true
+	return 0
+}
+
+_nordvpn_easy_connect_apply_result_get() {
+	local target="$1"
+	local key="$2"
+
+	[ -r "$target" ] || return 1
+	sed -n "s/^${key}=//p" "$target" 2>/dev/null | head -n1
+}
+
+nordvpn_easy_connect_apply_result_begin() {
+	local target="${1:-/tmp/run/nordvpn-easy/connect-apply-result}"
+	local target_dir tmp now_ts started_at existing_state existing_started_at
+
+	target_dir="$(dirname "$target")"
+	mkdir -p "$target_dir" 2>/dev/null || return 1
+	tmp="$(mktemp "${target_dir}/.connect-apply-result.XXXXXX" 2>/dev/null)" || return 1
+	now_ts="$(date +%s 2>/dev/null || printf '%s' '0')"
+
+	# Idempotent re-begin: the connect-apply lifecycle is begun by several owners
+	# (rpcd start_connect, init connect, core stop_vpn). If an apply is already
+	# pending, keep its original started_at so a second begin does not move the
+	# start time backwards/forwards and skew the client's convergence window.
+	started_at="$now_ts"
+	existing_state="$(_nordvpn_easy_connect_apply_result_get "$target" state 2>/dev/null || true)"
+	if [ "$existing_state" = 'pending' ]; then
+		existing_started_at="$(_nordvpn_easy_connect_apply_result_get "$target" started_at 2>/dev/null || true)"
+		case "$existing_started_at" in
+			''|*[!0-9]*) ;;
+			*) started_at="$existing_started_at" ;;
+		esac
+	fi
+
+	if ! cat > "$tmp" <<EOF
+state=pending
+rc=
+finished_at=
+country=
+started_at=$started_at
+EOF
+	then
+		rm -f "$tmp" 2>/dev/null || true
+		return 1
+	fi
+
+	mv "$tmp" "$target" || {
+		rm -f "$tmp" 2>/dev/null || true
+		return 1
+	}
+}
+
+nordvpn_easy_connect_apply_result_finish() {
+	local target="${1:-/tmp/run/nordvpn-easy/connect-apply-result}"
+	local rc="${2:-1}"
+	local country="${3:-}"
+	local target_dir tmp
+	local finished_at=''
+	local previous_started_at=''
+	local state='failed'
+
+	finished_at="$(date +%s 2>/dev/null || printf '%s' '0')"
+	[ "$rc" -eq 0 ] && state='success'
+	previous_started_at="$(_nordvpn_easy_connect_apply_result_get "$target" started_at 2>/dev/null)"
+
+	target_dir="$(dirname "$target")"
+	mkdir -p "$target_dir" 2>/dev/null || return 1
+	tmp="$(mktemp "${target_dir}/.connect-apply-result.XXXXXX" 2>/dev/null)" || return 1
+	if ! cat > "$tmp" <<EOF
+state=$state
+rc=$rc
+finished_at=$finished_at
+country=$(printf '%s' "$country" | tr 'a-z' 'A-Z')
+started_at=${previous_started_at:-$finished_at}
+EOF
+	then
+		rm -f "$tmp" 2>/dev/null || true
+		return 1
+	fi
+
+	mv "$tmp" "$target" || {
+		rm -f "$tmp" 2>/dev/null || true
+		return 1
+	}
+
+	if command -v nordvpn_easy_write_status_cache >/dev/null 2>&1; then
+		nordvpn_easy_write_status_cache >/dev/null 2>&1 || true
+	fi
+}
+
+# Sets: CONNECT_APPLY_STATE CONNECT_APPLY_RC CONNECT_APPLY_FINISHED_AT CONNECT_APPLY_COUNTRY CONNECT_APPLY_STARTED_AT
+nordvpn_easy_connect_apply_result_read() {
+	local target="${1:-/tmp/run/nordvpn-easy/connect-apply-result}"
+
+	CONNECT_APPLY_STATE=''
+	CONNECT_APPLY_RC=''
+	CONNECT_APPLY_FINISHED_AT=''
+	CONNECT_APPLY_COUNTRY=''
+	CONNECT_APPLY_STARTED_AT=''
+
+	[ -r "$target" ] || return 1
+
+	CONNECT_APPLY_STATE="$(_nordvpn_easy_connect_apply_result_get "$target" state)"
+	CONNECT_APPLY_RC="$(_nordvpn_easy_connect_apply_result_get "$target" rc)"
+	CONNECT_APPLY_FINISHED_AT="$(_nordvpn_easy_connect_apply_result_get "$target" finished_at)"
+	CONNECT_APPLY_COUNTRY="$(_nordvpn_easy_connect_apply_result_get "$target" country)"
+	CONNECT_APPLY_STARTED_AT="$(_nordvpn_easy_connect_apply_result_get "$target" started_at)"
+	[ -n "$CONNECT_APPLY_STATE" ] || return 1
+	return 0
+}
+
 nordvpn_easy_write_lock_metadata() {
 	local lock_dir="$1"
 	local lock_pid="$2"
@@ -312,6 +514,33 @@ nordvpn_easy_acquire_lock() {
 	local now_ts=0
 	local stale_reason='unknown'
 
+	# Adopt a lock a parent transaction already holds. The init service's
+	# acquire_runtime_transaction_lock takes the runtime lock once for the whole
+	# connect/reconnect/reconcile sequence and exports NORDVPN_EASY_LOCK_INHERITED
+	# so each child core.sh run shares that single lock instead of re-acquiring
+	# (and releasing) it between steps, which is what used to leave the runtime
+	# unprotected in the gaps. We only adopt when a live holder still owns the
+	# dir; we install the exit trap so temp paths are still cleaned, but leave
+	# LOCK_ACQUIRED=0 so this child never releases a lock it did not create.
+	if [ "${NORDVPN_EASY_LOCK_INHERITED:-0}" = '1' ]; then
+		lock_pid="$(cat "$lock_pid_file" 2>/dev/null)"
+		case "$lock_pid" in
+			''|*[!0-9]*)
+				;;
+			*)
+				if kill -0 "$lock_pid" 2>/dev/null; then
+					LOCK_ACQUIRED=0
+					nordvpn_easy_install_exit_trap
+					nordvpn_easy_log_phase 'runtime' "adopting inherited execution lock at $LOCK_DIR (holder pid=$lock_pid)"
+					return 0
+				fi
+				;;
+		esac
+		# The inherited lock vanished or its holder died: fall through and
+		# acquire/recover it directly so this run is never left unprotected.
+		nordvpn_easy_log_phase 'runtime' "inherited execution lock at $LOCK_DIR is no longer held; acquiring directly"
+	fi
+
 	now_ts="$(date +%s 2>/dev/null || printf '0')"
 	if mkdir "$LOCK_DIR" 2>/dev/null; then
 		if ! nordvpn_easy_write_lock_metadata "$LOCK_DIR" "$$" "${ACTION:-unknown}" "$now_ts" 'held'; then
@@ -334,8 +563,20 @@ nordvpn_easy_acquire_lock() {
 		lock_action="$(cat "$lock_action_file" 2>/dev/null)"
 		lock_started_at="$(cat "$lock_started_at_file" 2>/dev/null)"
 		lock_age="$(nordvpn_easy_lock_age_seconds "$LOCK_DIR" "$lock_started_at")"
-		nordvpn_easy_log_blocker 'runtime' "execution lock metadata is incomplete (missing pid metadata, action=${lock_action:-unknown}, age=${lock_age}s)"
-		return 2
+		# A lock dir with no pid file means a crash between mkdir and the
+		# metadata write -- a window of microseconds. Within a short grace
+		# period stay conservative (a creator may legitimately be mid-write) and
+		# report contention; once the dir has aged past it no live owner can
+		# ever appear, so fall through to recovery instead of leaving every
+		# future operation blocked while status reports the runtime as idle.
+		case "$lock_age" in
+			''|*[!0-9]*) lock_age=0 ;;
+		esac
+		if [ "$lock_age" -lt "${NORDVPN_EASY_LOCK_PIDLESS_GRACE:-30}" ]; then
+			nordvpn_easy_log_blocker 'runtime' "execution lock metadata is incomplete (missing pid metadata, action=${lock_action:-unknown}, age=${lock_age}s)"
+			return 2
+		fi
+		stale_reason="missing pid metadata (age=${lock_age}s; creator died mid-acquire)"
 	else
 		lock_pid="$(cat "$lock_pid_file" 2>/dev/null)"
 		case "$lock_pid" in
@@ -356,7 +597,26 @@ nordvpn_easy_acquire_lock() {
 	fi
 
 	nordvpn_easy_log_phase 'runtime' "recovering stale execution lock at $LOCK_DIR (reason: ${stale_reason})"
-	rm -rf "$LOCK_DIR" 2>/dev/null || return 1
+
+	# Atomically claim the stale dir by renaming it aside (mkdir/rename are the
+	# only atomic primitives here): only one recoverer wins the mv, and we never
+	# rm -rf a directory that a concurrent process may have just legitimately
+	# created. If the moved dir turns out to belong to a different, still-live
+	# PID, a real holder re-acquired during the window: restore it and yield.
+	local recover_dir="${LOCK_DIR}.recover.$$"
+	local moved_pid=''
+	rm -rf "$recover_dir" 2>/dev/null || true
+	if ! mv "$LOCK_DIR" "$recover_dir" 2>/dev/null; then
+		nordvpn_easy_log_blocker 'runtime' "lost race recovering stale lock at $LOCK_DIR"
+		return 2
+	fi
+	moved_pid="$(cat "${recover_dir}/pid" 2>/dev/null)"
+	if [ -n "$moved_pid" ] && [ "$moved_pid" != "$lock_pid" ] && kill -0 "$moved_pid" 2>/dev/null; then
+		mv "$recover_dir" "$LOCK_DIR" 2>/dev/null || rm -rf "$recover_dir" 2>/dev/null || true
+		nordvpn_easy_log_blocker 'runtime' "execution lock re-acquired by live PID $moved_pid during recovery; yielding"
+		return 2
+	fi
+	rm -rf "$recover_dir" 2>/dev/null || true
 
 	if ! mkdir "$LOCK_DIR" 2>/dev/null; then
 		if [ -d "$LOCK_DIR" ]; then
@@ -419,6 +679,25 @@ nordvpn_easy_sanitize_diagnostics_stream() {
 		-e 's/\(token:\)[^"[:space:]]*/\1***REDACTED***/g' \
 		-e 's/\(Authorization:[[:space:]]*Basic[[:space:]]\)[^"[:space:]]*/\1***REDACTED***/g' \
 		-e 's/\(Authorization:[[:space:]]*Bearer[[:space:]]\)[^"[:space:]]*/\1***REDACTED***/g'
+}
+
+# /etc/config/network holds the NordLynx private key and /etc/config/nordvpn_easy
+# holds the account token. Keep them readable by root only. uci commit preserves
+# an existing file's mode, so asserting 0600 after our own commits keeps the
+# secrets protected across subsequent commits (including LuCI's).
+nordvpn_easy_harden_secret_config_perms() {
+	local name=''
+
+	for name in "$@"; do
+		case "$name" in
+			network|nordvpn_easy) ;;
+			*) continue ;;
+		esac
+		[ -e "/etc/config/$name" ] || continue
+		chmod 0600 "/etc/config/$name" 2>/dev/null || true
+	done
+
+	return 0
 }
 
 nordvpn_easy_diagnostics_section() {

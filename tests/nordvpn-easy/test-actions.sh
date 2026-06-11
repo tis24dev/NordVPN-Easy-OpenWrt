@@ -125,6 +125,17 @@ nordvpn_easy_get_servers_list || {
 
 assert_eq '1' "$CURL_CALL_COUNT" 'server list refresh attempts API before cache fallback'
 assert_eq 'it123' "$(jq -r '.[0].station' "$SERVER_LIST_FILE")" 'server list cache is kept when API fails'
+
+# A cache not owned by us (e.g. pre-created by a non-root process in world-
+# writable /tmp) must not be trusted as a fallback. Only runnable as root.
+if [ "$(id -u 2>/dev/null)" = '0' ] && command -v chown >/dev/null 2>&1 && id nobody >/dev/null 2>&1; then
+	if chown nobody "$SERVER_LIST_FILE" 2>/dev/null; then
+		foreign_rejected=0
+		nordvpn_easy_get_servers_list >/dev/null 2>&1 || foreign_rejected=1
+		chown root "$SERVER_LIST_FILE" 2>/dev/null || true
+		assert_eq '1' "$foreign_rejected" 'a server-list cache not owned by us is refused as a fallback'
+	fi
+fi
 unset -f curl 2>/dev/null || true
 VPN_COUNTRY="$CACHED_VPN_COUNTRY"
 
@@ -137,6 +148,20 @@ ifdown() { IFDOWN_COUNT=$((IFDOWN_COUNT + 1)); }
 ifup() { IFUP_COUNT=$((IFUP_COUNT + 1)); }
 nordvpn_easy_wait_for_vpn_connectivity() { WAIT_COUNT=$((WAIT_COUNT + 1)); return 0; }
 verify_public_country_selection() { VERIFY_COUNT=$((VERIFY_COUNT + 1)); return 0; }
+
+FETCH_COUNT=0
+CONFIGURE_COUNT=0
+PUBLIC_VERIFICATION_WRITES=0
+nordvpn_easy_fetch_provision_prerequisites() { FETCH_COUNT=$((FETCH_COUNT + 1)); return 0; }
+nordvpn_easy_configure_vpn_interface() { CONFIGURE_COUNT=$((CONFIGURE_COUNT + 1)); return 0; }
+nordvpn_easy_public_verification_write() { PUBLIC_VERIFICATION_WRITES=$((PUBLIC_VERIFICATION_WRITES + 1)); return 0; }
+nordvpn_easy_provision_vpn_connect_apply
+
+assert_eq '1' "$FETCH_COUNT" 'connect_apply fetches provisioning prerequisites'
+assert_eq '1' "$CONFIGURE_COUNT" 'connect_apply configures WireGuard'
+assert_eq '1' "$WAIT_COUNT" 'connect_apply waits for WireGuard/runtime readiness'
+assert_eq '0' "$VERIFY_COUNT" 'connect_apply does not block on public IP verification'
+assert_eq '1' "$PUBLIC_VERIFICATION_WRITES" 'connect_apply marks public verification pending'
 
 uci() {
 	if [ "$1" = 'commit' ] && [ "$2" = 'network' ]; then
@@ -175,6 +200,26 @@ nordvpn_easy_set_first_server_from_list
 assert_eq 'it12.nordvpn.com|it123' "$LAST_SET_SERVER" 'first recommended server uses first list entry'
 assert_eq 'RIGHT-KEY' "$LAST_SET_PUBLIC_KEY" 'first recommended server uses WireGuard public key'
 
+# A first recommendation with no WireGuard key must be skipped in favour of the
+# next server that has one, instead of selecting it and failing provisioning.
+jq -n '[
+	{ "hostname": "it01.nordvpn.com", "station": "it001", "load": 10,
+	  "locations": [{ "country": { "code": "IT", "city": { "name": "Rome" } } }],
+	  "technologies": [{ "identifier": "openvpn_udp", "metadata": [{ "name": "public_key", "value": "NO-WG" }] }] },
+	{ "hostname": "it02.nordvpn.com", "station": "it002", "load": 20,
+	  "locations": [{ "country": { "code": "IT", "city": { "name": "Milan" } } }],
+	  "technologies": [{ "identifier": "wireguard_udp", "metadata": [{ "name": "public_key", "value": "VALID-WG-KEY" }] }] }
+]' > "$TMP_DIR/skip-invalid.json"
+SERVER_LIST_FILE="$TMP_DIR/skip-invalid.json"
+RESOLVED_COUNTRY_CODE=''
+NORDVPN_EASY_ROTATE_EXCLUDE_STATION=''
+NORDVPN_EASY_PROVISION_MODE=''
+LAST_SET_SERVER=''
+LAST_SET_PUBLIC_KEY=''
+nordvpn_easy_set_first_server_from_list
+assert_eq 'it02.nordvpn.com|it002' "$LAST_SET_SERVER" 'auto-selection skips a first server without a WireGuard key'
+assert_eq 'VALID-WG-KEY' "$LAST_SET_PUBLIC_KEY" 'auto-selection uses the first server that has a WireGuard key'
+
 SERVER_LIST_FILE="$TMP_DIR/recommendations.json"
 
 NORDVPN_EASY_ROTATE_EXCLUDE_STATION='it123'
@@ -192,53 +237,41 @@ RESOLVED_COUNTRY_NAME=''
 RESOLVED_COUNTRY_CODE=''
 RESOLVED_COUNTRY_QUERY=''
 
-valid_country_code() {
-	printf '%s' "$1" | grep -Eq '^[A-Z]{2}$'
+# Exercise the REAL resolve_country_filter / valid_country_code from core.sh
+# (extracted, not a drifting copy) so a production regression is caught here.
+CORE_SCRIPT="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/core.sh"
+PUBLIC_IP_LIB="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/public-ip.sh"
+extract_function() {
+	awk -v fn="$1" '
+		$0 ~ ("^" fn " ?\\(\\)") { capture = 1 }
+		capture { print }
+		capture && /^}/ { exit }
+	' "$2"
+}
+eval "$(extract_function nordvpn_easy_public_ip_valid_country_code "$PUBLIC_IP_LIB")"
+eval "$(extract_function valid_country_code "$CORE_SCRIPT")"
+eval "$(extract_function resolve_country_filter "$CORE_SCRIPT")"
+# The cache is pre-seeded above; stub the fetch + logging so resolution reads the
+# seeded cache directly and stays quiet.
+refresh_countries_cache() { return 0; }
+log() { :; }
+
+# A country present in the cache resolves to its API id.
+RESOLVED_COUNTRY_ID=''
+RESOLVED_COUNTRY_QUERY=''
+resolve_country_filter 'BZ' || {
+	printf '%s\n' 'FAIL: BZ should resolve from the country cache' >&2
+	exit 1
+}
+[ "$RESOLVED_COUNTRY_ID" = '22' ] && [ "$RESOLVED_COUNTRY_CODE" = 'BZ' ] || {
+	printf '%s\n' "FAIL: BZ should resolve to id 22 (got id=${RESOLVED_COUNTRY_ID:-unset})" >&2
+	exit 1
 }
 
-resolve_country_filter() {
-	COUNTRY_QUERY="${1:-$VPN_COUNTRY}"
-
-	[ -z "$COUNTRY_QUERY" ] && return 0
-	if [ -n "$RESOLVED_COUNTRY_ID" ] && [ "$RESOLVED_COUNTRY_QUERY" = "$COUNTRY_QUERY" ]; then
-		return 0
-	fi
-
-	COUNTRY_MATCH=$(jq -er --arg query "$COUNTRY_QUERY" '
-		[ .[] | select(
-			((.id | tostring) == $query) or
-			((.code // "" | ascii_downcase) == ($query | ascii_downcase)) or
-			((.name // "" | ascii_downcase) == ($query | ascii_downcase))
-		) ][0] | [.id, .name, .code] | @tsv
-	' "$COUNTRIES_CACHE_FILE" 2>/dev/null) || {
-		if valid_country_code "$COUNTRY_QUERY"; then
-			RESOLVED_COUNTRY_ID=''
-			RESOLVED_COUNTRY_NAME='unknown in NordVPN country cache'
-			RESOLVED_COUNTRY_CODE=$(printf '%s' "$COUNTRY_QUERY" | tr '[:lower:]' '[:upper:]')
-			RESOLVED_COUNTRY_QUERY="$COUNTRY_QUERY"
-			return 0
-		fi
-		return 1
-	}
-
-	IFS="$(printf '\t')" read -r RESOLVED_COUNTRY_ID RESOLVED_COUNTRY_NAME RESOLVED_COUNTRY_CODE <<EOF
-$COUNTRY_MATCH
-EOF
-
-	[ -n "$RESOLVED_COUNTRY_ID" ] || {
-		if valid_country_code "$COUNTRY_QUERY"; then
-			RESOLVED_COUNTRY_ID=''
-			RESOLVED_COUNTRY_NAME='unknown in NordVPN country cache'
-			RESOLVED_COUNTRY_CODE=$(printf '%s' "$COUNTRY_QUERY" | tr '[:lower:]' '[:upper:]')
-			RESOLVED_COUNTRY_QUERY="$COUNTRY_QUERY"
-			return 0
-		fi
-		return 1
-	}
-	RESOLVED_COUNTRY_QUERY="$COUNTRY_QUERY"
-	return 0
-}
-
+# A valid country code absent from a readable cache soft-resolves (filter by
+# code) instead of failing the whole operation.
+RESOLVED_COUNTRY_ID=''
+RESOLVED_COUNTRY_QUERY=''
 resolve_country_filter 'EC' || {
 	printf '%s\n' 'FAIL: EC should soft-resolve when missing from country cache' >&2
 	exit 1
@@ -247,6 +280,32 @@ resolve_country_filter 'EC' || {
 	printf '%s\n' 'FAIL: soft resolve should keep EC code without API country id' >&2
 	exit 1
 }
+
+# An unparseable cache also soft-resolves a valid code (jq fails, not empty).
+printf '%s' 'not json{' > "$COUNTRIES_CACHE_FILE"
+RESOLVED_COUNTRY_ID=''
+RESOLVED_COUNTRY_QUERY=''
+resolve_country_filter 'EC' || {
+	printf '%s\n' 'FAIL: EC should soft-resolve when the country cache is unparseable' >&2
+	exit 1
+}
+[ -z "$RESOLVED_COUNTRY_ID" ] && [ "$RESOLVED_COUNTRY_CODE" = 'EC' ] || {
+	printf '%s\n' 'FAIL: soft resolve should keep EC code when the cache is unparseable' >&2
+	exit 1
+}
+
+# An invalid (not two-letter-uppercase) query is a hard not-found.
+RESOLVED_COUNTRY_ID=''
+RESOLVED_COUNTRY_QUERY=''
+invalid_rc=0
+resolve_country_filter 'zz' || invalid_rc=$?
+[ "$invalid_rc" -ne 0 ] || {
+	printf '%s\n' 'FAIL: an invalid country query must not resolve' >&2
+	exit 1
+}
+
+# Restore a valid cache for the remaining tests.
+jq -n '[{ "id": 22, "name": "Belize", "code": "BZ" }]' > "$COUNTRIES_CACHE_FILE"
 
 RESOLVED_COUNTRY_CODE='IT'
 nordvpn_easy_set_first_server_from_list || {

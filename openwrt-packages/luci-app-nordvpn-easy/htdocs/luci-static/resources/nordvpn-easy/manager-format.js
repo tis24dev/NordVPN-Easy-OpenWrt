@@ -79,13 +79,17 @@ function formatRelativeAge(seconds) {
 	return _('%s ago').format(parts.slice(0, 2).join(', '));
 }
 
-function formatRelativeTimestamp(epochSeconds) {
+function formatRelativeTimestamp(epochSeconds, nowSeconds) {
 	const ts = Number(epochSeconds || 0);
 
 	if (!ts)
 		return '';
 
-	return formatRelativeAge((Date.now() / 1000) - ts);
+	// Prefer a server-supplied "now" (the router's generated_at) so the age stays
+	// correct on RTC-less routers whose clock differs from the browser.
+	const now = (Number(nowSeconds) > 0) ? Number(nowSeconds) : (Date.now() / 1000);
+
+	return formatRelativeAge(now - ts);
 }
 
 return baseclass.extend({

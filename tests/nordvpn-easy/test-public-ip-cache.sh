@@ -6,6 +6,13 @@ ROOT_DIR="$(CDPATH='' cd -- "$(dirname "$0")/../.." && pwd)"
 COMMON_LIB="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/common.sh"
 RUNTIME_LIB="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/runtime.sh"
 PUBLIC_IP_LIB="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/public-ip.sh"
+TMP_DIR="$(mktemp -d)"
+
+cleanup() {
+	rm -rf "$TMP_DIR"
+}
+
+trap cleanup EXIT HUP INT TERM
 
 # shellcheck disable=SC1090
 . "$COMMON_LIB"
@@ -94,5 +101,99 @@ PUBLIC_IP_DETECTED_AT='1770000001'
 SNAPSHOT_JSON="$(emit_public_ip_cache_snapshot_fixture)"
 assert_eq '1770000001' "$(printf '%s' "$SNAPSHOT_JSON" | jq -r '.detected_at')" \
 	'public IP snapshot preserves valid detected_at epoch'
+
+NORDVPN_EASY_PUBLIC_COUNTRY_CACHE="$TMP_DIR/public_country_changed"
+NORDVPN_EASY_LAST_ERROR_CACHE="$TMP_DIR/last_error_country_changed"
+COUNTRY_LOOKUP_CALLS="$TMP_DIR/country_lookup_calls"
+PUBLIC_IP='198.51.100.9'
+PUBLIC_IP_CHANGED='1'
+nordvpn_easy_lookup_public_country_by_ip() {
+	printf '%s\n' "$1" >> "$COUNTRY_LOOKUP_CALLS"
+	printf '%s\n' 'CH'
+}
+nordvpn_easy_refresh_public_country_cache
+assert_eq '198.51.100.9' "$(sed -n '1p' "$COUNTRY_LOOKUP_CALLS")" \
+	'public country check uses the current public IP result when the IP changes'
+assert_eq 'CH' "$(sed -n '1p' "$NORDVPN_EASY_PUBLIC_COUNTRY_CACHE")" \
+	'public country check stores lookup result after IP change'
+
+: > "$COUNTRY_LOOKUP_CALLS"
+PUBLIC_COUNTRY=''
+PUBLIC_IP_CHANGED='0'
+nordvpn_easy_refresh_public_country_cache
+assert_eq '' "$(sed -n '1p' "$COUNTRY_LOOKUP_CALLS")" \
+	'public country check reuses cached country when public IP is unchanged'
+assert_eq 'CH' "$PUBLIC_COUNTRY" \
+	'cached public country is reused for unchanged public IP'
+unset -f nordvpn_easy_lookup_public_country_by_ip 2>/dev/null || true
+# shellcheck disable=SC1090
+. "$PUBLIC_IP_LIB"
+
+NORDVPN_EASY_PUBLIC_IP_CACHE="$TMP_DIR/public_ip_endpoint_order"
+NORDVPN_EASY_PUBLIC_COUNTRY_CACHE="$TMP_DIR/public_country_endpoint_order"
+NORDVPN_EASY_PUBLIC_VERIFICATION_CACHE="$TMP_DIR/public_verification_endpoint_order"
+{
+	printf '%s\n' 'ip=198.51.100.1'
+	printf '%s\n' 'detected_at=1770000000'
+	printf '%s\n' 'detected_at_iso=2026-02-01T00:00:00Z'
+	printf '%s\n' 'source=https://icanhazip.com'
+} > "$NORDVPN_EASY_PUBLIC_IP_CACHE"
+CURL_URLS_FILE="$TMP_DIR/curl_urls_endpoint_order"
+curl() {
+	last_arg=''
+	for arg in "$@"; do
+		last_arg="$arg"
+	done
+	printf '%s\n' "$last_arg" >> "$CURL_URLS_FILE"
+	printf '%s\n' '198.51.100.9'
+	return 0
+}
+nordvpn_easy_detect_public_ip
+assert_eq 'https://icanhazip.com' "$(sed -n '1p' "$CURL_URLS_FILE")" \
+	'public IP detection tries the last successful endpoint first'
+unset -f curl 2>/dev/null || true
+
+NORDVPN_EASY_PUBLIC_IP_CACHE="$TMP_DIR/public_ip_failure"
+NORDVPN_EASY_PUBLIC_COUNTRY_CACHE="$TMP_DIR/public_country_failure"
+NORDVPN_EASY_PUBLIC_VERIFICATION_CACHE="$TMP_DIR/public_verification_failure"
+NORDVPN_EASY_LAST_ERROR_CACHE="$TMP_DIR/last_error_failure"
+printf '%s\n' 'keep-runtime-error' > "$NORDVPN_EASY_LAST_ERROR_CACHE"
+curl() {
+	return 28
+}
+nordvpn_easy_run_public_ip_check quiet >/dev/null 2>&1 || true
+assert_eq 'keep-runtime-error' "$(sed -n '1p' "$NORDVPN_EASY_LAST_ERROR_CACHE")" \
+	'failed public IP poll does not overwrite runtime last_error'
+assert_eq 'failed' "$(sed -n 's/^status=//p' "$NORDVPN_EASY_PUBLIC_VERIFICATION_CACHE")" \
+	'failed public IP poll records public verification status'
+unset -f curl 2>/dev/null || true
+
+# Country-match transition logging: a single diagnostics line only when the
+# outcome (status / selected / exit country) actually changes.
+CM_LOG="$TMP_DIR/country_match_log"
+nordvpn_easy_public_ip_log() { printf '%s\n' "$*" >> "$CM_LOG"; }
+
+: > "$CM_LOG"
+nordvpn_easy_log_country_match_transition 'ok' 'CH' 'CH' 'ok' 'CH' 'CH'
+assert_eq '' "$(cat "$CM_LOG")" 'unchanged country match logs nothing'
+
+: > "$CM_LOG"
+nordvpn_easy_log_country_match_transition 'mismatch' 'CH' 'DE' 'ok' 'CH' 'CH'
+assert_eq 'country match changed: ok -> mismatch (selected=CH, exit=DE)' "$(cat "$CM_LOG")" \
+	'a country-match status change is logged once with selected and exit country'
+
+: > "$CM_LOG"
+nordvpn_easy_log_country_match_transition 'mismatch' 'CH' 'FR' 'mismatch' 'CH' 'DE'
+assert_eq 'country match changed: mismatch -> mismatch (selected=CH, exit=FR)' "$(cat "$CM_LOG")" \
+	'a changed exit country is logged even when the status is unchanged'
+
+: > "$CM_LOG"
+nordvpn_easy_log_country_match_transition 'ok' '' 'US' '' '' ''
+assert_eq 'country match changed: unknown -> ok (selected=automatic, exit=US)' "$(cat "$CM_LOG")" \
+	'the first recorded result logs with unknown previous and automatic selection'
+
+unset -f nordvpn_easy_public_ip_log 2>/dev/null || true
+# shellcheck disable=SC1090
+. "$PUBLIC_IP_LIB"
 
 printf '%s\n' 'test-public-ip-cache.sh: ok'

@@ -198,7 +198,19 @@ nordvpn_easy_wait_for_vpn_connectivity "$VPN_IF" '3' 'timeout-test' || WAIT_RC=$
 assert_eq '1' "$WAIT_RC" 'wait helper fails when connectivity never returns'
 assert_eq '1,1,' "$SLEEP_CALLS" 'wait helper retries until the timeout window is exhausted'
 
-nordvpn_easy_set_vpn_server_in_uci 'it12.nordvpn.com' 'it123' 'PUBKEY-123' 'IT' 'Milan' '12'
+# A fresh handshake must not short-circuit readiness on its own: connectivity is
+# still confirmed with a ping through the interface before the tunnel is ready.
+# (Subshell so the handshake stub does not leak into the later real-handshake test.)
+(
+	nordvpn_easy_wait_for_vpn_handshake() { return 0; }
+	printf '%s\n' '300' > "$FAKE_NOW_FILE"
+	PING_ATTEMPTS=0
+	SUCCESS_ON_ATTEMPT=1
+	nordvpn_easy_wait_for_vpn_connectivity "$VPN_IF" "$POST_RESTART_DELAY" 'handshake-success-test'
+	assert_eq '1' "$PING_ATTEMPTS" 'a fresh handshake still confirms connectivity with a ping before declaring ready'
+)
+
+nordvpn_easy_set_vpn_server_in_uci 'it12.nordvpn.com' 'it123' 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' 'IT' 'Milan' '12'
 
 assert_eq 'it12.nordvpn.com' "$UCI_ENDPOINT_HOST" 'wireguard peer endpoint host uses hostname'
 assert_eq '51820' "$UCI_ENDPOINT_PORT" 'wireguard peer endpoint port is repaired during server update'
@@ -210,6 +222,31 @@ assert_eq 'it123' "$(nordvpn_easy_current_server_station)" 'current server stati
 
 UCI_STATION=''
 assert_eq '' "$(nordvpn_easy_current_server_station || true)" 'current server station does not fall back to endpoint host when station metadata is missing'
+
+# Reject corrupted/spoofed peers before they are committed.
+RC=0
+nordvpn_easy_set_vpn_server_in_uci 'it12.nordvpn.com' 'it123' 'PUBKEY-123' 'IT' 'Milan' '12' >/dev/null 2>&1 || RC=$?
+assert_eq '1' "$RC" 'set_vpn_server rejects a non-base64 public key'
+RC=0
+nordvpn_easy_set_vpn_server_in_uci 'it12.nordvpn.com' 'it123' 'AAAA' 'IT' 'Milan' '12' >/dev/null 2>&1 || RC=$?
+assert_eq '1' "$RC" 'set_vpn_server rejects a wrong-length public key'
+RC=0
+nordvpn_easy_set_vpn_server_in_uci 'bad host' 'it123' 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' 'IT' 'Milan' '12' >/dev/null 2>&1 || RC=$?
+assert_eq '1' "$RC" 'set_vpn_server rejects an endpoint host with invalid characters'
+
+# nordvpn_easy_valid_wireguard_key backs both the peer public key and the
+# NordLynx private key (core.sh get_private_key): 43 base64 chars + '=' = 44.
+WG_KEY_B43="$(printf '%043d' 0 | tr '0' 'A')"
+RC=0; nordvpn_easy_valid_wireguard_key "${WG_KEY_B43}=" || RC=$?
+assert_eq '0' "$RC" 'a 44-char padded base64 key validates'
+RC=0; nordvpn_easy_valid_wireguard_key '' || RC=$?
+assert_eq '1' "$RC" 'an empty key is rejected'
+RC=0; nordvpn_easy_valid_wireguard_key 'AAAA' || RC=$?
+assert_eq '1' "$RC" 'a too-short key is rejected'
+RC=0; nordvpn_easy_valid_wireguard_key "${WG_KEY_B43}A" || RC=$?
+assert_eq '1' "$RC" 'an unpadded 44-char key is rejected'
+RC=0; nordvpn_easy_valid_wireguard_key "$(printf '%042d' 0 | tr '0' 'A')!=" || RC=$?
+assert_eq '1' "$RC" 'a non-base64 key is rejected'
 
 WIREGUARD_PERSISTENT_KEEPALIVE='10'
 WIREGUARD_MTU='1420'
@@ -301,5 +338,60 @@ if ! nordvpn_easy_runtime_needs_provision wg0; then
 	printf '%s\n' 'FAIL: runtime without handshake should require provisioning' >&2
 	exit 1
 fi
+
+IFUP_COUNT=0
+NETWORK_RESTART_COUNT=0
+ifup() {
+	IFUP_COUNT=$((IFUP_COUNT + 1))
+	return 0
+}
+cat > "$TMP_DIR/mock-bin/etc/init.d/network" <<EOF
+#!/bin/sh
+case "\$1" in
+	reload)
+		count="\$(cat "$NETWORK_RELOAD_COUNT_FILE" 2>/dev/null || printf '%s' '0')"
+		printf '%s\n' "\$((count + 1))" > "$NETWORK_RELOAD_COUNT_FILE"
+		exit 0
+		;;
+	restart)
+		printf '%s\n' '1' > "$TMP_DIR/network-restart-count"
+		exit 0
+		;;
+esac
+exit 1
+EOF
+chmod +x "$TMP_DIR/mock-bin/etc/init.d/network"
+printf '%s\n' '0' > "$NETWORK_RELOAD_COUNT_FILE"
+printf '%s\n' '0' > "$TMP_DIR/network-restart-count"
+
+nordvpn_easy_bring_up_vpn_interface wg0
+
+assert_eq '1' "$(cat "$NETWORK_RELOAD_COUNT_FILE")" 'bring-up reloads network once'
+assert_eq '1' "$IFUP_COUNT" 'bring-up prefers ifup over full restart'
+assert_eq '0' "$(cat "$TMP_DIR/network-restart-count")" 'bring-up does not restart network when ifup succeeds'
+
+IFUP_COUNT=0
+ifup() { IFUP_COUNT=$((IFUP_COUNT + 1)); return 1; }
+nordvpn_easy_bring_up_vpn_interface wg0 || true
+assert_eq '1' "$(cat "$TMP_DIR/network-restart-count")" 'bring-up falls back to network restart when ifup fails'
+
+printf '%s\n' '300' > "$FAKE_NOW_FILE"
+HANDSHAKE_EPOCH='295'
+wg() {
+	case "$1 $2 $3" in
+		'show wg0 latest-handshakes')
+			printf '%s\n' 'oldpeer 0'
+			printf '%s\n' "peerpub $HANDSHAKE_EPOCH"
+			;;
+		*) return 1 ;;
+	esac
+}
+SLEEP_CALLS=''
+assert_eq "$HANDSHAKE_EPOCH" "$(nordvpn_easy_wg_handshake_epoch wg0)" 'handshake epoch helper returns the newest peer epoch'
+nordvpn_easy_wait_for_vpn_handshake wg0 10 'handshake-test' || {
+	printf '%s\n' 'FAIL: recent handshake should validate quickly' >&2
+	exit 1
+}
+assert_eq '' "$SLEEP_CALLS" 'handshake wait returns without sleeping when handshake is already fresh'
 
 printf '%s\n' 'test-wireguard.sh: ok'

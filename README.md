@@ -68,6 +68,13 @@ health-check and recovery logic.
 17. Install `luci-app-nordvpn-easy`.
 18. Log out from LuCI.
 
+## Timing diagnostics CGI
+
+The timing-log CGI is a lab/debug tool only. The OPKG/APK packages do **not**
+install it to `/www/cgi-bin`; do not deploy it on production routers or routers
+reachable from untrusted networks. Enable it only explicitly for controlled
+diagnostics as described in `docs/DIAGNOSTICS.md`.
+
 ## Generate NordVPN Token
 
 1. https://my.nordaccount.com/dashboard/nordvpn/access-tokens/
@@ -198,6 +205,22 @@ Suggested checks:
 The NordLynx private key is stored locally by OpenWrt in `/etc/config/network`
 under the WireGuard interface so netifd can bring the tunnel up. NordVPN Easy
 does not expose that key in LuCI, logs, status JSON or diagnostics export.
+
+### Securing the account token
+
+The NordVPN account token and the NordLynx private key are long-lived secrets
+held in `/etc/config/nordvpn_easy` and `/etc/config/network`, which NordVPN Easy
+hardens to root-only (`0600`) on a best-effort basis after each config write
+(chmod failures are ignored rather than aborting the operation). The LuCI form masks
+the token in the page, but that masking is client-side only: any authenticated
+LuCI admin session can read the stored token back over the standard `uci` ubus
+call (this is inherent to LuCI's uci-over-ubus model). To limit exposure:
+
+- serve LuCI over HTTPS only (configure `uhttpd` with TLS and redirect plain
+  HTTP) so the token is never sent to network intermediaries in clear text
+- restrict LuCI administrative access to trusted users and networks
+- rotate the NordVPN access token if a router or its backups may have been
+  exposed
 
 ## Current status
 

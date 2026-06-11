@@ -241,38 +241,86 @@ function preferredServerSummaryFromStatus(status) {
 	});
 }
 
-function updateCountryMatchStatus(state) {
+function decideCountryMatch(state) {
 	let busyAction;
 	const runtimeStatus = state.currentLocalStatus || {};
-	const expectedCountry = managerData.normalizeCountryCode(state.appliedCountryCode);
+	// Country Match compares the exit IP's country against the SAVED/applied
+	// country, never the live dropdown selection: applyTargetCountryCode while a
+	// Save & Apply is converging, otherwise appliedCountryCode (the last applied
+	// value, tracked from status.selected_country). Reading getSelectedCountry()
+	// here made the indicator flip the instant the dropdown changed, before the
+	// user pressed Save & Apply.
+	const expectedCountry = managerData.normalizeCountryCode(
+		state.applyTargetCountryCode ||
+		state.appliedCountryCode ||
+		''
+	);
 	const actualCountry = managerData.normalizeCountryCode(
 		state.currentPublicCountry || ''
 	);
+	const out = { expected: expectedCountry, actual: actualCountry };
+	const intendedEnabled = !!state.appliedEnabled || state.applyTargetEnabled === true;
 
-	if (!state.appliedEnabled || state.currentLocalStatus.runtime_disabled || state.currentLocalStatus.interface_disabled || isDisableRequested(state))
-		return setCountryMatchIndicator('inactive', _('Inactive'));
+	if (!intendedEnabled || runtimeStatus.runtime_disabled || runtimeStatus.interface_disabled || isDisableRequested(state))
+		return Object.assign(out, { indicator: 'inactive', label: _('Inactive') });
 
 	if (state.currentOperationStatus.indexOf('busy:') === 0) {
 		busyAction = state.currentOperationStatus.substring(5);
 
 		if (busyAction !== 'refresh_countries' && busyAction !== 'server_catalog' && !actualCountry)
-			return setCountryMatchIndicator('checking', _('Checking'));
+			return Object.assign(out, { indicator: 'checking', label: _('Checking') });
 	}
 	else if (state.currentOperationStatus === 'busy') {
 		if (!actualCountry)
-			return setCountryMatchIndicator('checking', _('Checking'));
+			return Object.assign(out, { indicator: 'checking', label: _('Checking') });
 	}
 
 	if (!expectedCountry)
-		return setCountryMatchIndicator('automatic', _('Automatic'));
+		return Object.assign(out, { indicator: 'automatic', label: _('Automatic') });
 
 	if (!actualCountry)
-		return setCountryMatchIndicator('unavailable', _('Unavailable'));
+		return Object.assign(out, { indicator: 'unavailable', label: _('Unavailable') });
+
+	// The VPN is enabled with a target country, but if the tunnel is not actually
+	// up the exit IP is the real ISP address: a country equality here is
+	// coincidental, not VPN protection, so do not show a reassuring Match. Skip
+	// this while busy or while a Save & Apply is converging (the tunnel is
+	// transiently down by design during the teardown).
+	const busy = String(state.currentOperationStatus || '') === 'busy' ||
+		String(state.currentOperationStatus || '').indexOf('busy:') === 0;
+	const vpnUp = runtimeStatus.connected === true ||
+		String(runtimeStatus.vpn_status || '') === 'active' ||
+		String(runtimeStatus.state || '') === 'connected';
+	if (!vpnUp && !busy && !state.applyTransitionActive)
+		return Object.assign(out, { indicator: 'novpn', label: _('No VPN (%s)').format(actualCountry) });
 
 	if (actualCountry === expectedCountry)
-		return setCountryMatchIndicator('match', _('Match (%s)').format(actualCountry));
+		return Object.assign(out, { indicator: 'match', label: _('Match (%s)').format(actualCountry) });
 
-	setCountryMatchIndicator('mismatch', _('Mismatch (%s)').format(actualCountry));
+	return Object.assign(out, { indicator: 'mismatch', label: _('Mismatch (%s)').format(actualCountry) });
+}
+
+function updateCountryMatchStatus(state) {
+	const decision = decideCountryMatch(state);
+
+	setCountryMatchIndicator(decision.indicator, decision.label);
+
+	// Record an automatic diagnostics line only when the indicator's meaning
+	// actually changes (its state, the selected country, or the detected exit
+	// country). The first observation per page load just seeds the key so a
+	// reload does not spam the log. The POST itself lives in the owner via
+	// state.onCountryMatchChange so this UI module stays free of network code.
+	const key = decision.indicator + ':' + decision.expected + ':' + decision.actual;
+	if (state.countryMatchLogKey !== key) {
+		const seeded = !!state.countryMatchLogKey;
+		state.countryMatchLogKey = key;
+		if (seeded && typeof state.onCountryMatchChange === 'function')
+			state.onCountryMatchChange({
+				indicator: decision.indicator,
+				expected: decision.expected,
+				actual: decision.actual
+			});
+	}
 }
 
 function setManagerControlsDisabled(disabled) {
@@ -299,7 +347,12 @@ function setManagerControlsDisabled(disabled) {
 			inputEl.disabled = disabled;
 	});
 
-	document.querySelectorAll('.cbi-page-actions button, .cbi-page-actions input[type="button"], .cbi-page-actions input[type="submit"]').forEach(function(el) {
+	// Disable only the form's own Save / Save & Apply actions during an apply,
+	// not every footer button: leaving Reset (and any unrelated buttons) usable
+	// avoids stranding the page if a busy state lingers. Verified on OpenWrt
+	// 24.10: a single .cbi-page-actions footer carrying .cbi-button-save and
+	// .cbi-button-apply.
+	document.querySelectorAll('.cbi-page-actions .cbi-button-save, .cbi-page-actions .cbi-button-apply').forEach(function(el) {
 		el.disabled = disabled;
 	});
 }
@@ -328,7 +381,7 @@ function updateServerCatalogStatus(state) {
 		);
 
 		if (state.currentServerCatalog.cached_at)
-			freshness = managerFormat.formatRelativeTimestamp(state.currentServerCatalog.cached_at);
+			freshness = managerFormat.formatRelativeTimestamp(state.currentServerCatalog.cached_at, state.currentServerCatalog.generated_at);
 
 		if (freshness)
 			text += _(' (refreshed %s)').format(freshness);

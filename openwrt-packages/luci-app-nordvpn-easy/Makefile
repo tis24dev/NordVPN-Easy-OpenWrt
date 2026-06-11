@@ -1,6 +1,6 @@
 include $(TOPDIR)/rules.mk
 
-NORDVPN_EASY_DEFAULT_VERSION:=0.1.3
+NORDVPN_EASY_DEFAULT_VERSION:=0.8.0
 NORDVPN_EASY_DEFAULT_RELEASE:=1
 NORDVPN_EASY_PACKAGE_MAINTAINER?=tis24dev
 NORDVPN_EASY_PACKAGE_URL?=https://github.com/tis24dev/NordVPN-Easy-OpenWrt
@@ -12,7 +12,13 @@ PKG_LICENSE:=GPL-3.0-only
 PKG_MAINTAINER:=$(NORDVPN_EASY_PACKAGE_MAINTAINER)
 LUCI_TITLE:=LuCI support for NordVPN Easy
 LUCI_DESCRIPTION:=User-facing LuCI integration for NordVPN Easy on OpenWrt, bundled with the backend for manual upload installs
-LUCI_DEPENDS:=+ca-certificates +curl +jq +kmod-wireguard +wireguard-tools +luci-base +rpcd
+# +nordvpn-easy is intentionally NOT a dependency: the backend is bundled into
+# this package's root/ tree by the release workflow, so this stays a single
+# manual-upload package. Depending on the separate nordvpn-easy package would
+# force it to co-install and conflict on the shared backend files. Switching to
+# a feed model would mean dropping the bundling and adding the dependency.
+# tests/nordvpn-easy/test-package-lockstep.sh enforces this omission.
+LUCI_DEPENDS:=+ca-certificates +curl +jq +kmod-wireguard +wireguard-tools +firewall4 +luci-base +rpcd
 LUCI_PKGARCH:=all
 LUCI_URL:=$(NORDVPN_EASY_PACKAGE_URL)
 LUCI_MAINTAINER:=$(NORDVPN_EASY_PACKAGE_MAINTAINER)
@@ -106,20 +112,10 @@ fi
 exit 0
 endef
 
-define Build/Prepare/$(PKG_NAME)
-	$(INSTALL_DIR) $(PKG_BUILD_DIR)/root/etc/init.d
-	$(INSTALL_BIN) $(CURDIR)/../nordvpn-easy/files/etc/init.d/nordvpn-easy $(PKG_BUILD_DIR)/root/etc/init.d/nordvpn-easy
-	$(INSTALL_DIR) $(PKG_BUILD_DIR)/root/usr/libexec/nordvpn-easy
-	$(INSTALL_BIN) $(CURDIR)/../nordvpn-easy/files/usr/libexec/nordvpn-easy/core.sh $(PKG_BUILD_DIR)/root/usr/libexec/nordvpn-easy/core.sh
-	$(INSTALL_BIN) $(CURDIR)/../nordvpn-easy/files/usr/libexec/nordvpn-easy/migrate-config.sh $(PKG_BUILD_DIR)/root/usr/libexec/nordvpn-easy/migrate-config.sh
-	$(INSTALL_DIR) $(PKG_BUILD_DIR)/root/usr/libexec/nordvpn-easy/lib
-	$(CP) $(CURDIR)/../nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/. $(PKG_BUILD_DIR)/root/usr/libexec/nordvpn-easy/lib/
-	$(INSTALL_DIR) $(PKG_BUILD_DIR)/root/usr/libexec/rpcd
-	$(INSTALL_BIN) $(CURDIR)/../nordvpn-easy/files/usr/libexec/rpcd/nordvpn.easy $(PKG_BUILD_DIR)/root/usr/libexec/rpcd/nordvpn.easy
-	$(INSTALL_DIR) $(PKG_BUILD_DIR)/root/usr/share/nordvpn-easy/defaults
-	$(INSTALL_CONF) $(CURDIR)/../nordvpn-easy/files/usr/share/nordvpn-easy/defaults/nordvpn_easy $(PKG_BUILD_DIR)/root/usr/share/nordvpn-easy/defaults/nordvpn_easy
-endef
-
+# Backend files are pre-placed into the luci-app root/ tree by the release
+# workflow (.github/workflows/release.yml). luci.mk does not invoke a
+# per-package Build/Prepare/$(PKG_NAME), so no such define is kept here: it was
+# dead and had drifted from the workflow's authoritative file list.
 include $(TOPDIR)/feeds/luci/luci.mk
 
 # call BuildPackage - OpenWrt buildroot signature
