@@ -34,6 +34,10 @@ nordvpn_easy_migrate_service_config() {
 
 	if [ "$changed" -eq 1 ]; then
 		uci -q commit "$uci_config" || {
+			# Discard the staged migration so a later, unrelated uci commit cannot
+			# persist a half-applied config; the migration is idempotent and
+			# retries on the next config load.
+			uci -q revert "$uci_config" 2>/dev/null || true
 			printf '%s\n' "nordvpn-easy: failed to commit migrated config" >&2
 			return 1
 		}
