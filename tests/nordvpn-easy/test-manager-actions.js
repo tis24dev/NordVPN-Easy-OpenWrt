@@ -425,6 +425,7 @@ function testRenderLocalStatusSnapshotClearsDisabledPlaceholders() {
 function testRenderLocalStatusSnapshotHonestDuringApply() {
 	const indicators = {};
 	const serverFlags = [];
+	const fields = {};
 	const actions = loadManagerActionsModule({
 		managerData: {
 			normalizeCountryCode(value) { return String(value || '').trim().toUpperCase(); },
@@ -443,7 +444,7 @@ function testRenderLocalStatusSnapshotHonestDuringApply() {
 				LAST_ERROR_STATUS_ID: 'last_error', PUBLIC_IP_STATUS_ID: 'public_ip',
 				PUBLIC_COUNTRY_STATUS_ID: 'public_country'
 			},
-			replaceStatusText() {},
+			replaceStatusText(id, value) { fields[id] = value; },
 			setManagerControlsDisabled() {},
 			setVpnStatusIndicator(state, label) { indicators.vpn = { state: state, label: String(label) }; },
 			updateCountryMatchStatus() {},
@@ -481,6 +482,12 @@ function testRenderLocalStatusSnapshotHonestDuringApply() {
 		'applyTransitionActive is set during an unconverged apply');
 	assert.equal(serverFlags[serverFlags.length - 1], true,
 		'Current Server renders with the transition flag set');
+	assert.equal(fields.endpoint, 'Reconnecting...',
+		'Endpoint is transitional during an unconverged apply, not the stale old-server value');
+	assert.equal(fields.handshake, 'Reconnecting...',
+		'Last handshake is transitional during an unconverged apply, not the stale value');
+	assert.equal(fields.transfer, 'Reconnecting...',
+		'Tunnel activity is transitional during an unconverged apply, not the stale value');
 
 	// Once the apply is no longer in progress, the real connected state shows.
 	state.saveApplyInProgress = false;

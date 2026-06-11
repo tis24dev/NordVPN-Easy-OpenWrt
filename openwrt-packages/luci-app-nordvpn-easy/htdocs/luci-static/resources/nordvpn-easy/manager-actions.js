@@ -1424,12 +1424,23 @@ function renderLocalStatusDetails(state, status) {
 	syncPublicLookupStateFromStatus(state, runtimeStatus);
 	managerUI.replaceStatusText(managerUI.ids.CURRENT_SERVER_STATUS_ID, managerUI.currentServerSummaryFromStatus(runtimeStatus, state));
 	managerUI.replaceStatusText(managerUI.ids.PREFERRED_SERVER_STATUS_ID, managerUI.preferredServerSummaryFromStatus(runtimeStatus));
-	managerUI.replaceStatusText(managerUI.ids.ENDPOINT_STATUS_ID, runtimeStatus.endpoint || _('Unavailable'));
-	managerUI.replaceStatusText(managerUI.ids.HANDSHAKE_STATUS_ID, runtimeStatus.latest_handshake || _('Never'));
-	managerUI.replaceStatusText(
-		managerUI.ids.TRANSFER_STATUS_ID,
-		_('%s / %s').format(runtimeStatus.transfer_rx || '0 B', runtimeStatus.transfer_tx || '0 B')
-	);
+	if (state.applyTransitionActive) {
+		// While a Save & Apply is converging the tunnel is being torn down and
+		// rebuilt, so the raw endpoint/handshake/transfer still belong to the OLD
+		// server. Show them as transitional too, to match Current Server's
+		// "Reconnecting..." instead of looking like a live tunnel.
+		const reconnecting = _('Reconnecting...');
+		managerUI.replaceStatusText(managerUI.ids.ENDPOINT_STATUS_ID, reconnecting);
+		managerUI.replaceStatusText(managerUI.ids.HANDSHAKE_STATUS_ID, reconnecting);
+		managerUI.replaceStatusText(managerUI.ids.TRANSFER_STATUS_ID, reconnecting);
+	} else {
+		managerUI.replaceStatusText(managerUI.ids.ENDPOINT_STATUS_ID, runtimeStatus.endpoint || _('Unavailable'));
+		managerUI.replaceStatusText(managerUI.ids.HANDSHAKE_STATUS_ID, runtimeStatus.latest_handshake || _('Never'));
+		managerUI.replaceStatusText(
+			managerUI.ids.TRANSFER_STATUS_ID,
+			_('%s / %s').format(runtimeStatus.transfer_rx || '0 B', runtimeStatus.transfer_tx || '0 B')
+		);
+	}
 	managerUI.replaceStatusText(managerUI.ids.LAST_ERROR_STATUS_ID, runtimeStatus.last_error || _('None'));
 	renderPublicLookupStatus(state, runtimeStatus);
 }
