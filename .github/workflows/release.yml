@@ -216,6 +216,7 @@ jobs:
       - name: Prepare APK signing key
         env:
           APK_SIGNING_PRIVATE_KEY: ${{ secrets.APK_SIGNING_PRIVATE_KEY }}
+          APK_SIGNING_PUBLIC_KEY: ${{ secrets.APK_SIGNING_PUBLIC_KEY }}
         run: |
           set -euo pipefail
           SIGNING_DIR=".build/signing"
@@ -229,10 +230,30 @@ jobs:
             exit 1
           fi
 
+          if [ -z "${APK_SIGNING_PUBLIC_KEY:-}" ]; then
+            echo "::error::Missing APK_SIGNING_PUBLIC_KEY environment secret"
+            exit 1
+          fi
+
           mkdir -p "$SIGNING_ROOT" dist
           umask 077
           printf '%s\n' "$APK_SIGNING_PRIVATE_KEY" > "$SIGNING_KEY_PATH"
           openssl ec -in "$SIGNING_KEY_PATH" -pubout -out "$SIGNING_PUBLIC_KEY_PATH"
+
+          # Pin the signing identity: the public key derived from the private key
+          # must match APK_SIGNING_PUBLIC_KEY, so an unexpected private key cannot
+          # silently ship packages under a different identity. Compare canonical
+          # DER (ignores PEM header/whitespace) instead of the raw text.
+          printf '%s\n' "$APK_SIGNING_PUBLIC_KEY" > "${SIGNING_ROOT}/expected-public-key.pem"
+          openssl pkey -pubin -in "$SIGNING_PUBLIC_KEY_PATH" -outform DER -out "${SIGNING_ROOT}/derived.der" 2>/dev/null || {
+            echo "::error::Could not parse the public key derived from APK_SIGNING_PRIVATE_KEY"; exit 1; }
+          openssl pkey -pubin -in "${SIGNING_ROOT}/expected-public-key.pem" -outform DER -out "${SIGNING_ROOT}/expected.der" 2>/dev/null || {
+            echo "::error::APK_SIGNING_PUBLIC_KEY is not a valid public key"; exit 1; }
+          if ! cmp -s "${SIGNING_ROOT}/derived.der" "${SIGNING_ROOT}/expected.der"; then
+            echo "::error::Derived APK public key does not match APK_SIGNING_PUBLIC_KEY (private/public key mismatch)"
+            exit 1
+          fi
+
           cp "$SIGNING_PUBLIC_KEY_PATH" "$PUBLIC_KEY_ASSET_PATH"
 
           echo "APK_SIGNING_ROOT=$(realpath "$SIGNING_ROOT")" >> "$GITHUB_ENV"
@@ -607,7 +628,10 @@ jobs:
       - name: Prepare usign signing key
         env:
           USIGN_PRIVATE_KEY: ${{ secrets.USIGN_PRIVATE_KEY }}
-          USIGN_PUBLIC_KEY: ${{ secrets.USIGN_PUBBLIC_KEY }}
+          # Accept the corrected secret name, falling back to the historical
+          # misspelling so renaming USIGN_PUBBLIC_KEY -> USIGN_PUBLIC_KEY on GitHub
+          # needs no release downtime; drop the fallback once renamed.
+          USIGN_PUBLIC_KEY: ${{ secrets.USIGN_PUBLIC_KEY || secrets.USIGN_PUBBLIC_KEY }}
         run: |
           set -euo pipefail
           SDK_DIR="$(realpath "$SDK_DIR")"
