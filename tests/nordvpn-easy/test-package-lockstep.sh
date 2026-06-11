@@ -62,6 +62,23 @@ extract_make_var() {
 	sed -n "s/^${var_name}:=//p" "$file_path" | head -n 1
 }
 
+# Collect the ${BACKEND_FILES}/... sources a single release job pre-places into
+# the luci-app tree. Job keys sit at a 2-space indent under jobs:, so the body
+# runs from "  <job>:" to the next 2-space key.
+job_preplace_sources() {
+	awk -v job="  $1:" '
+		$0 == job { injob = 1; next }
+		injob && /^  [A-Za-z]/ { exit }
+		injob {
+			s = $0
+			while (match(s, "\\$\\{BACKEND_FILES\\}/[A-Za-z0-9._/-]+")) {
+				print substr(s, RSTART, RLENGTH)
+				s = substr(s, RSTART + RLENGTH)
+			}
+		}
+	' "$2" | sort -u
+}
+
 backend_version="$(extract_make_var 'NORDVPN_EASY_DEFAULT_VERSION' "$BACKEND_MAKEFILE")"
 luci_version="$(extract_make_var 'NORDVPN_EASY_DEFAULT_VERSION' "$LUCI_MAKEFILE")"
 backend_release="$(extract_make_var 'NORDVPN_EASY_DEFAULT_RELEASE' "$BACKEND_MAKEFILE")"
@@ -195,6 +212,27 @@ grep -F "$release_preplace_ucidefaults" "$RELEASE_WORKFLOW" >/dev/null 2>&1 || {
 	printf '%s\n' 'FAIL: OPKG compatibility pre-place must copy the rpcd timeout uci-default' >&2
 	exit 1
 }
+
+# The grep checks above only prove the pre-place exists *somewhere* in the
+# workflow. build-apk once lacked it entirely (bug-audit #24) so the tagged APK
+# release built a backend-less package and failed verification, undetected
+# because no PR job builds the packages. Assert the pre-place exists in EACH
+# build job and that both stage the same backend file set (kept in lockstep).
+apk_preplace_sources="$(job_preplace_sources 'build-apk' "$RELEASE_WORKFLOW")"
+opkg_preplace_sources="$(job_preplace_sources 'build-opkg' "$RELEASE_WORKFLOW")"
+
+[ -n "$apk_preplace_sources" ] || {
+	printf '%s\n' 'FAIL: build-apk job must pre-place the bundled backend (no backend sources found)' >&2
+	exit 1
+}
+
+[ -n "$opkg_preplace_sources" ] || {
+	printf '%s\n' 'FAIL: build-opkg job must pre-place the bundled backend (no backend sources found)' >&2
+	exit 1
+}
+
+assert_eq "$opkg_preplace_sources" "$apk_preplace_sources" \
+	'build-apk and build-opkg must pre-place the same backend files (kept in lockstep)'
 
 for release_payload in \
 	"$release_apk_rpcd" \
