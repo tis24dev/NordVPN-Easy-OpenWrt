@@ -9,8 +9,9 @@
 const RUNTIME_RPC_TIMEOUT = 120;
 const START_CONNECT_RPC_TIMEOUT = 15;
 const DIAGNOSTICS_RPC_TIMEOUT = 180;
-// OpenWrt 24 LuCI rpc.js ignores rpc.declare({ timeout }) and uses L.env.rpctimeout only.
-// Match rpcd/uhttpd minimums in 99-nordvpn-easy-rpcd-timeout (180s).
+// OpenWrt 24 LuCI rpc.js ignores rpc.declare({ timeout }) and uses
+// L.env.rpctimeout only, so execService applies that value per RPC call.
+// Keep 180s for diagnostics/rpcd/uhttpd compatibility, not as a page-global.
 const LUCI_RPC_TIMEOUT_SEC = 180;
 
 function ensureLuCiRpcTimeout(minSeconds) {
@@ -27,7 +28,20 @@ function ensureLuCiRpcTimeout(minSeconds) {
 	return Number(L.env.rpctimeout) || min;
 }
 
-ensureLuCiRpcTimeout(LUCI_RPC_TIMEOUT_SEC);
+function setLuCiRpcTimeout(seconds) {
+	const timeout = Number(seconds) || LUCI_RPC_TIMEOUT_SEC;
+
+	if (typeof L === 'undefined' || !L.env)
+		return timeout;
+
+	L.env.rpctimeout = timeout;
+	return Number(L.env.rpctimeout) || timeout;
+}
+
+function callWithLuCiRpcTimeout(seconds, fn) {
+	setLuCiRpcTimeout(seconds);
+	return fn();
+}
 
 const callStatus = rpc.declare({
 	object: 'nordvpn.easy',
@@ -236,29 +250,29 @@ function normalizeExecResult(action, payload) {
 function callSimpleAction(action) {
 	switch (action) {
 	case 'connect':
-		return callConnect();
+		return callWithLuCiRpcTimeout(RUNTIME_RPC_TIMEOUT, callConnect);
 	case 'start_connect':
-		return callStartConnect();
+		return callWithLuCiRpcTimeout(START_CONNECT_RPC_TIMEOUT, callStartConnect);
 	case 'begin_connect_apply':
-		return callBeginConnectApply();
+		return callWithLuCiRpcTimeout(START_CONNECT_RPC_TIMEOUT, callBeginConnectApply);
 	case 'abort_connect_apply':
-		return callAbortConnectApply();
+		return callWithLuCiRpcTimeout(START_CONNECT_RPC_TIMEOUT, callAbortConnectApply);
 	case 'stop_vpn':
-		return callStopVpn();
+		return callWithLuCiRpcTimeout(RUNTIME_RPC_TIMEOUT, callStopVpn);
 	case 'rotate':
-		return callRotate();
+		return callWithLuCiRpcTimeout(RUNTIME_RPC_TIMEOUT, callRotate);
 	case 'setup':
-		return callSetup();
+		return callWithLuCiRpcTimeout(RUNTIME_RPC_TIMEOUT, callSetup);
 	case 'check':
-		return callCheck();
+		return callWithLuCiRpcTimeout(RUNTIME_RPC_TIMEOUT, callCheck);
 	case 'reconcile':
-		return callReconcile();
+		return callWithLuCiRpcTimeout(RUNTIME_RPC_TIMEOUT, callReconcile);
 	case 'install_hooks':
-		return callInstallHooks();
+		return callWithLuCiRpcTimeout(RUNTIME_RPC_TIMEOUT, callInstallHooks);
 	case 'remove_hooks':
-		return callRemoveHooks();
+		return callWithLuCiRpcTimeout(RUNTIME_RPC_TIMEOUT, callRemoveHooks);
 	case 'public_ip':
-		return callPublicIp();
+		return callWithLuCiRpcTimeout(45, callPublicIp);
 	default:
 		return null;
 	}
@@ -270,22 +284,24 @@ function execService(action, extraArgs) {
 
 	switch (action) {
 	case 'status_json':
-		request = callStatus();
+		request = callWithLuCiRpcTimeout(45, callStatus);
 		break;
 	case 'refresh_countries':
-		request = callRefreshCountries(false);
+		request = callWithLuCiRpcTimeout(90, function() { return callRefreshCountries(false); });
 		break;
 	case 'refresh_countries_force':
-		request = callRefreshCountries(true);
+		request = callWithLuCiRpcTimeout(90, function() { return callRefreshCountries(true); });
 		break;
 	case 'server_catalog':
-		request = callServerCatalog(args[0] || '', args[1] === '1' || args[1] === true);
+		request = callWithLuCiRpcTimeout(90, function() {
+			return callServerCatalog(args[0] || '', args[1] === '1' || args[1] === true);
+		});
 		break;
 	case 'diagnostics_log':
-		request = callDiagnostics();
+		request = callWithLuCiRpcTimeout(DIAGNOSTICS_RPC_TIMEOUT, callDiagnostics);
 		break;
 	case 'diagnostics_summary':
-		request = callDiagnosticsSummary();
+		request = callWithLuCiRpcTimeout(DIAGNOSTICS_RPC_TIMEOUT, callDiagnosticsSummary);
 		break;
 	default:
 		request = callSimpleAction(action);

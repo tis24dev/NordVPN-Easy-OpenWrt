@@ -68,6 +68,13 @@ health-check and recovery logic.
 17. Install `luci-app-nordvpn-easy`.
 18. Log out from LuCI.
 
+## Timing diagnostics CGI
+
+The timing-log CGI is a lab/debug tool only. The OPKG/APK packages do **not**
+install it to `/www/cgi-bin`; do not deploy it on production routers or routers
+reachable from untrusted networks. Enable it only explicitly for controlled
+diagnostics as described in `docs/DIAGNOSTICS.md`.
+
 ## Generate NordVPN Token
 
 1. https://my.nordaccount.com/dashboard/nordvpn/access-tokens/

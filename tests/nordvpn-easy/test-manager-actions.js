@@ -1868,6 +1868,7 @@ async function testHandleSaveApplyConvergesViaStartConnectAndStatusPolling() {
 	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn' ], [ 'begin_connect_apply' ], [ 'start_connect' ] ],
 		'Save & Apply dispatches start_connect then polls status');
 	assert.equal(harness.state.pendingOperationLabel, '', 'status convergence clears pending operation label');
+	assert.equal(harness.state.applyTargetEnabled, null, 'status convergence clears the pending enabled target');
 	assert.equal(harness.notifications.filter(function(entry) {
 		return entry.type === 'error';
 	}).length, 0, 'status convergence does not show a false error notification');
@@ -2453,7 +2454,36 @@ function testManualApplyConvergenceRequiresStation() {
 		'auto apply converges on country regardless of the current station');
 }
 
+function testCountryMatchTimingLogIsLabOptIn() {
+	const posts = [];
+	const localStorage = {
+		enabled: false,
+		getItem(key) {
+			return key === 'nordvpnEasyTimingLog' && this.enabled ? '1' : null;
+		}
+	};
+	const actions = loadManagerActionsModule({
+		localStorage: localStorage,
+		request: {
+			post(url, payload, options) {
+				posts.push({ url: url, payload: payload, options: options });
+				return Promise.resolve({ ok: true });
+			}
+		}
+	}).managerActions;
+
+	actions.postCountryMatchLog({ indicator: 'mismatch', expected: 'SE', actual: 'DE' });
+	assert.equal(posts.length, 0, 'Country Match transitions do not post to the timing CGI without the lab flag');
+
+	localStorage.enabled = true;
+	actions.postCountryMatchLog({ indicator: 'mismatch', expected: 'SE', actual: 'DE' });
+	assert.equal(posts.length, 1, 'Country Match transitions post when the lab timing flag is enabled');
+	assert.equal(posts[0].url, '/cgi-bin/nordvpn-easy-timing-log', 'Country Match timing log uses the lab CGI endpoint');
+	assert.equal(posts[0].payload.event, 'country_match', 'Country Match timing log keeps the diagnostics event marker');
+}
+
 Promise.resolve().then(async function() {
+	testCountryMatchTimingLogIsLabOptIn();
 	testManualApplyConvergenceRequiresStation();
 	testForcedCatalogRefreshUsesADistinctSlot();
 	await testUpdateLocalStatusPreservesSnapshotOnFailedResponse();

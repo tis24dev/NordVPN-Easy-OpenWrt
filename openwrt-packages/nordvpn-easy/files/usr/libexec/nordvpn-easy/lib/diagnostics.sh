@@ -803,7 +803,7 @@ nordvpn_easy_diagnostics_runtime_transition_active() {
 	[ "$DIAG_CONNECT_APPLY_PENDING" = 'yes' ] && return 0
 
 	case "${DIAG_OPERATION_LOCK_STATE:-none}:${DIAG_OPERATION_LOCK_ACTION:-}" in
-		held:setup|held:stop_vpn|held:start_connect|stale_recovered:setup|stale_recovered:stop_vpn|stale_recovered:start_connect)
+		held:setup|held:stop_vpn|held:start_connect|held:reconnect|held:reconcile|stale_recovered:setup|stale_recovered:stop_vpn|stale_recovered:start_connect|stale_recovered:reconnect|stale_recovered:reconcile)
 			return 0
 			;;
 	esac

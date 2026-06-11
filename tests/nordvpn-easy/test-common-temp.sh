@@ -122,6 +122,20 @@ esac
 
 assert_eq 'HTTP error response' "$(nordvpn_easy_curl_rc_meaning 22)" 'curl rc 22 is explained'
 
+nordvpn_easy_write_status_cache() { :; }
+RESULT_DIR="$(mktemp -d)"
+RESULT_FILE="$RESULT_DIR/connect-apply-result"
+nordvpn_easy_connect_apply_result_begin "$RESULT_FILE"
+assert_eq 'pending' "$(_nordvpn_easy_connect_apply_result_get "$RESULT_FILE" state)" 'connect-apply begin writes pending state'
+nordvpn_easy_connect_apply_result_finish "$RESULT_FILE" 0 'de'
+assert_eq 'success' "$(_nordvpn_easy_connect_apply_result_get "$RESULT_FILE" state)" 'connect-apply finish writes success state'
+assert_eq 'DE' "$(_nordvpn_easy_connect_apply_result_get "$RESULT_FILE" country)" 'connect-apply finish uppercases country'
+if find "$RESULT_DIR" -name '.connect-apply-result.*' | grep -q .; then
+	printf '%s\n' 'FAIL: connect-apply result writer left temporary files behind' >&2
+	exit 1
+fi
+rm -rf "$RESULT_DIR"
+
 VPN_IF='wg0'
 WIREGUARD_PERSISTENT_KEEPALIVE='15'
 WIREGUARD_MTU='1420'

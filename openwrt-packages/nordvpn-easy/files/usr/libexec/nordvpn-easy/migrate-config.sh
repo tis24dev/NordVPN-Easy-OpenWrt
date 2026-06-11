@@ -192,6 +192,7 @@ build_migrated_config() {
 # values and repeat one-time bumps (e.g. post_restart_delay 60 -> 30).
 if [ -r "$CONFIG_FILE" ] && active_option_exists 'config_schema_version' &&
 	[ "$(read_active_option 'config_schema_version')" = "$NORDVPN_EASY_SCHEMA_VERSION" ]; then
+	rm -f -- "$LEGACY_CONFIG_FILE"
 	exit 0
 fi
 

@@ -58,6 +58,8 @@ log "MARK t4 start_connect_returned delta=$((T3 - T2))s"
 
 TARGET_COUNTRY="$NEW"
 POLL=0
+T_DONE=''
+RESULT_RC=0
 while [ "$POLL" -lt 120 ]; do
 	sleep 3
 	POLL=$((POLL + 3))
@@ -84,6 +86,11 @@ while [ "$POLL" -lt 120 ]; do
 	fi
 done
 
+if [ -z "$T_DONE" ]; then
+	RESULT_RC=1
+	log "ERROR convergence_timeout after=${POLL}s target_country=$TARGET_COUNTRY"
+fi
+
 log "=== syslog slice (this run) ==="
 logread 2>/dev/null | grep -E 'nordvpn-easy' | grep -E 'MARK|apply:|service:|core action|Private key|network restart|VPN connectivity|geolocat|install_hooks|hook unchanged|cached setup|using cached|during connect apply' | tail -80 >>"$OUT" || true
 
@@ -92,3 +99,4 @@ logread 2>/dev/null | grep -E "core action '(stop_vpn|setup)' completed" | tail 
 
 log "=== analysis written to $OUT ==="
 cat "$OUT"
+exit "$RESULT_RC"

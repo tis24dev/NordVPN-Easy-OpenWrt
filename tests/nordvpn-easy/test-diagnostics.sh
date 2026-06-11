@@ -367,6 +367,20 @@ if printf '%s' "$JSON" | jq -e '.findings[]? | select(.code == "runtime.link_dow
 fi
 rm -f "$NORDVPN_EASY_CONNECT_APPLY_RESULT"
 
+DIAG_CONNECT_APPLY_PENDING='no'
+DIAG_OPERATION_LOCK_STATE='held'
+DIAG_OPERATION_LOCK_ACTION='reconnect'
+nordvpn_easy_diagnostics_runtime_transition_active || {
+	printf '%s\n' 'FAIL: held reconnect should suppress transient diagnostics' >&2
+	exit 1
+}
+DIAG_OPERATION_LOCK_STATE='stale_recovered'
+DIAG_OPERATION_LOCK_ACTION='reconcile'
+nordvpn_easy_diagnostics_runtime_transition_active || {
+	printf '%s\n' 'FAIL: stale-recovered reconcile should suppress transient diagnostics' >&2
+	exit 1
+}
+
 uci_wg0_no_peer() {
 	case "$*" in
 		'get network.wg0.proto') printf '%s\n' 'wireguard' ;;

@@ -337,10 +337,15 @@ set_store_value '__section__' 'nordvpn_easy'
 set_store_value 'enabled' '1'
 set_store_value 'post_restart_delay' '60'
 set_store_value 'config_schema_version' "$NORDVPN_EASY_SCHEMA_VERSION"
+printf '%s\n' 'stale same-schema legacy conffile' > "$FAKE_LEGACY_CONFIG_FILE"
 
 run_migrator
 
 assert_file_has_line "	option post_restart_delay '60'" "$FAKE_UCI_CONFIG_FILE" 'same-schema migration is a no-op and does not rewrite post_restart_delay'
+[ ! -e "$FAKE_LEGACY_CONFIG_FILE" ] || {
+	printf '%s\n' 'FAIL: same-schema migrator did not remove stale legacy config file' >&2
+	exit 1
+}
 
 # Atomic-swap durability: a failure during the build (here a commit failure)
 # must leave the ORIGINAL config byte-for-byte intact - never a template-only

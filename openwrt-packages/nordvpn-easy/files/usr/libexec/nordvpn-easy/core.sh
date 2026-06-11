@@ -35,6 +35,7 @@ SERVER_CATALOG_URL_BASE="${NORDVPN_API}/servers?filters[servers_technologies][id
 CREDENTIALS_URL="${NORDVPN_API}/users/services/credentials"
 LOCK_DIR='/tmp/nordvpn-easy.lock'
 NORDVPN_EASY_RC_BUSY="${NORDVPN_EASY_RC_BUSY:-75}"
+NORDVPN_EASY_RC_RUNTIME_DRIFT="${NORDVPN_EASY_RC_RUNTIME_DRIFT:-2}"
 RESOLVED_COUNTRY_ID=''
 RESOLVED_COUNTRY_NAME=''
 RESOLVED_COUNTRY_CODE=''
@@ -1099,13 +1100,18 @@ case "$ACTION" in
     ACTION_RC=$?
     ;;
   reconcile)
-    validate_setup_runtime &&
-    reconcile_action
-    ACTION_RC=$?
-    if [ "$ACTION_RC" -ne 0 ]; then
-      log 'reconcile: runtime did not validate; reprovisioning (stop_vpn + connect_fresh) under the held lock'
-      reprovision_vpn
+    VALID_RC=0
+    validate_setup_runtime || VALID_RC=$?
+    if [ "$VALID_RC" -ne 0 ]; then
+      ACTION_RC="$VALID_RC"
+    else
+      reconcile_action
       ACTION_RC=$?
+      if [ "$ACTION_RC" -eq "$NORDVPN_EASY_RC_RUNTIME_DRIFT" ]; then
+        log 'reconcile: runtime drift remained after reconcile action; reprovisioning (stop_vpn + connect_fresh) under the held lock'
+        reprovision_vpn
+        ACTION_RC=$?
+      fi
     fi
     ;;
   stop_vpn)

@@ -857,12 +857,14 @@ disconnect() {
 }
 
 begin_connect_apply() {
+	acquire_runtime_transaction_lock begin_connect_apply || return $?
 	load_service_config || return 1
 	log_service_info 'begin_connect_apply requested; marking connect apply pending'
 	connect_apply_guard_begin
 }
 
 abort_connect_apply() {
+	acquire_runtime_transaction_lock abort_connect_apply || return $?
 	load_service_config || return 1
 	log_service_info 'abort_connect_apply requested; finishing connect apply as failed'
 	connect_apply_result_finish 1

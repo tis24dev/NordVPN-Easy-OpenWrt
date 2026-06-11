@@ -498,6 +498,25 @@ assert_eq '0' "$RC" 'abort_connect_apply succeeds'
 # interleave into the gaps of an in-flight connect/reconnect/reconcile.
 TRANSACTION_LOCK_RC="$NORDVPN_EASY_RC_BUSY"
 
+rm -f "$CONNECT_APPLY_GUARD" "$CONNECT_APPLY_RESULT"
+RC=0
+begin_connect_apply || RC=$?
+assert_eq "$NORDVPN_EASY_RC_BUSY" "$RC" 'begin_connect_apply defers with RC_BUSY when the runtime lock is held'
+[ ! -f "$CONNECT_APPLY_GUARD" ] || {
+	printf '%s\n' 'FAIL: busy begin_connect_apply should not create connect apply guard' >&2
+	exit 1
+}
+
+: > "$CONNECT_APPLY_GUARD"
+RC=0
+abort_connect_apply || RC=$?
+assert_eq "$NORDVPN_EASY_RC_BUSY" "$RC" 'abort_connect_apply defers with RC_BUSY when the runtime lock is held'
+[ -f "$CONNECT_APPLY_GUARD" ] || {
+	printf '%s\n' 'FAIL: busy abort_connect_apply should not remove connect apply guard' >&2
+	exit 1
+}
+rm -f "$CONNECT_APPLY_GUARD"
+
 cfg_enabled=1
 cfg_nordvpn_token='token-secret'
 cfg_vpn_if='wg0'

@@ -64,6 +64,7 @@ assert_eq '1194' "$(nordvpn_easy_normalize_value vpn_port 1194)" 'valid port acc
 assert_eq '80' "$(nordvpn_easy_normalize_value vpn_port 0080)" 'leading-zero port canonicalized'
 assert_eq '86400' "$(nordvpn_easy_normalize_value server_cache_ttl 086400)" 'leading-zero uint canonicalized'
 assert_eq '10.8.0.1/24' "$(nordvpn_easy_normalize_value vpn_addr 10.8.0.1/24)" 'valid vpn_addr accepted'
+assert_eq '10.5.0.2/32' "$(nordvpn_easy_normalize_value vpn_addr 10.8.0.1)" 'bare IPv4 vpn_addr normalizes to default because CIDR is required'
 assert_eq '10.5.0.2/32' "$(nordvpn_easy_normalize_value vpn_addr not-an-ip)" 'invalid vpn_addr normalizes to default'
 assert_eq '10.5.0.2/32' "$(nordvpn_easy_normalize_value vpn_addr '')" 'empty vpn_addr normalizes to default'
 assert_eq '1.1.1.1' "$(nordvpn_easy_normalize_value vpn_dns1 1.1.1.1)" 'valid dns accepted'

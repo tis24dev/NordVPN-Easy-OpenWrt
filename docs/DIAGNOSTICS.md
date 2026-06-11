@@ -110,8 +110,8 @@ The flag is read per milestone, so toggling it takes effect on the next Save & A
 | Component | Location |
 |-----------|----------|
 | CGI append script (source) | `openwrt-packages/luci-app-nordvpn-easy/htdocs/luci-static/resources/nordvpn-easy/nordvpn-easy-timing-log.cgi` |
-| Installed on router | `/www/cgi-bin/nordvpn-easy-timing-log` (mode `755`) |
-| Instrumented LuCI JS | `manager-actions.js` (`timingLog()` milestones, opt-in via `localStorage['nordvpnEasyTimingLog']`) |
+| Lab endpoint when manually deployed | `/www/cgi-bin/nordvpn-easy-timing-log` (mode `755`) |
+| Instrumented LuCI JS | `manager-actions.js` (`timingLog()` milestones and Country Match transition logs, opt-in via `localStorage['nordvpnEasyTimingLog']`) |
 | Log file on router | `/tmp/nordvpn-easy-luci-timing.ndjson` |
 
 Each line is one **NDJSON** object (one JSON object per line).
@@ -128,8 +128,8 @@ callers post tiny JSON records). It also mirrors **Country Match indicator
 transitions** (`event:"country_match"`) into the system log via
 `logger -t nordvpn-easy`, so `logread` / `diagnostics_log` records when the
 on-screen indicator changes, cross-referencing the backend's own
-country-match transitions. That mirroring is always-on (not gated by the
-opt-in flag), but only fires on an actual transition.
+country-match transitions. This mirroring is also gated by the same
+`nordvpnEasyTimingLog` opt-in flag and only fires on an actual transition.
 
 > This CGI is **lab-only** and must not be installed on production routers
 > (it is an unauthenticated, same-origin endpoint). The package ships the
@@ -283,13 +283,19 @@ Possible improvement areas (analysis only; not all implemented):
 
 ## 5. RPC timeouts and Save & Apply connect
 
-LuCI declares per-method timeouts in `service.js` (`RUNTIME_RPC_TIMEOUT` = **120 s** for sync `connect` / `stop_vpn`), but **OpenWrt 24 LuCI `rpc.js` ignores `rpc.declare({ timeout })`** and uses `L.env.rpctimeout` only. `ensureLuCiRpcTimeout()` bumps that to **180 s** to match rpcd/uhttpd.
+LuCI declares per-method timeouts in `service.js`, but **OpenWrt 24 LuCI
+`rpc.js` ignores `rpc.declare({ timeout })`** and uses `L.env.rpctimeout` only.
+The service client therefore sets `L.env.rpctimeout` immediately before each
+RPC call: short dispatch calls stay short, while diagnostics still use the
+longer window.
 
 | Layer | Timeout |
 |-------|---------|
-| Browser ubus XHR (`L.env.rpctimeout`) | **180 s** |
+| Browser ubus XHR (`L.env.rpctimeout`) | Set per RPC call |
 | `start_connect` (Save & Apply dispatch) | **15 s** |
-| Sync `connect` (Advanced / CLI) | **120 s** declared, **180 s** effective |
+| `begin_connect_apply` / `abort_connect_apply` | **15 s** |
+| Sync `connect` / `stop_vpn` / `reconcile` | **120 s** |
+| Diagnostics RPCs | **180 s** |
 | rpcd `@rpcd[0].timeout` | **180 s** |
 | uhttpd `script_timeout` / `network_timeout` | **180 s** |
 | LuCI Save & Apply watchdog | **240 s** |

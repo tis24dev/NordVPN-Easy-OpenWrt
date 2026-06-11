@@ -26,6 +26,8 @@ function createState() {
 		countryMatchLogKey: '',
 		onCountryMatchChange: null,
 		applyTransitionActive: false,
+		applyTargetEnabled: null,
+		applyTargetCountryCode: '',
 		currentLocalStatus: managerData.parseLocalStatus('{}'),
 		currentLocalStatusFresh: false,
 		currentLocalStatusLastUpdated: 0,

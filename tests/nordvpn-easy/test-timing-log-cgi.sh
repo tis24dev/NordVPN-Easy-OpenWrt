@@ -34,9 +34,23 @@ post() {
 	printf '%s' "$body" | \
 		PATH="$FAKE_BIN:$PATH" \
 		NORDVPN_EASY_LUCI_TIMING_LOG="$NDJSON" \
+		REQUEST_METHOD='POST' \
 		CONTENT_LENGTH="${#body}" \
 		sh "$CGI" >/dev/null 2>&1
 }
+
+get() {
+	: > "$LOGGER_CAP"
+	PATH="$FAKE_BIN:$PATH" \
+		NORDVPN_EASY_LUCI_TIMING_LOG="$NDJSON" \
+		REQUEST_METHOD='GET' \
+		CONTENT_LENGTH='0' \
+		sh "$CGI" >/dev/null 2>&1
+}
+
+get
+[ ! -s "$LOGGER_CAP" ] || fail 'GET must not reach the system log'
+[ ! -s "$NDJSON" ] || fail 'GET must not append to the timing log'
 
 # A Country Match transition event is mirrored to the system log via logger,
 # tagged nordvpn-easy so diagnostics_log (logread) captures it.

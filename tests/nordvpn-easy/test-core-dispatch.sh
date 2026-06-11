@@ -68,4 +68,13 @@ if grep -qi 'provisioning VPN interface' "$TMP_DIR/cmds"; then
 	fail 'provisioning must NOT start when setup validation fails'
 fi
 
+rc=0
+run_core reconcile "$TMP_DIR/setup-no-token.conf" || rc=$?
+
+[ "$rc" -ne 0 ] || fail 'reconcile with a missing token must fail (rc=0)'
+grep -qi 'setup prerequisites missing' "$TMP_DIR/cmds" || fail 'reconcile should log the missing-prerequisite blocker'
+if grep -qi 'provisioning VPN interface' "$TMP_DIR/cmds"; then
+	fail 'reconcile must NOT reprovision when setup validation fails'
+fi
+
 printf '%s\n' 'test-core-dispatch.sh: ok'

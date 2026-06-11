@@ -17,7 +17,10 @@ trap cleanup EXIT HUP INT TERM
 log() { :; }
 
 FW_STORE="$TMP_DIR/fw"
+FW_SNAPSHOT="$TMP_DIR/fw.snapshot"
 RELOAD_MARK="$TMP_DIR/reload"
+UCI_COMMIT_FAIL=0
+UCI_REVERT_COUNT=0
 
 # File-backed fake uci. UCI keys contain [ ] @ . so match keys by exact string
 # (split on the first '='), never by regex.
@@ -55,7 +58,13 @@ uci() {
 			{ while IFS='=' read -r ek ev; do [ "$ek" = "$k" ] || printf '%s=%s\n' "$ek" "$ev"; done < "$FW_STORE"; [ -n "$new" ] && printf '%s=%s\n' "$k" "$new"; } > "$FW_STORE.t"
 			mv "$FW_STORE.t" "$FW_STORE"
 			;;
-		commit) : ;;
+		commit)
+			[ "$UCI_COMMIT_FAIL" -eq 0 ] || return 1
+			;;
+		revert)
+			UCI_REVERT_COUNT=$((UCI_REVERT_COUNT + 1))
+			[ -f "$FW_SNAPSHOT" ] && cp "$FW_SNAPSHOT" "$FW_STORE"
+			;;
 		*) : ;;
 	esac
 	return 0
@@ -117,6 +126,19 @@ run_ensure 0
 
 [ "$(fwget firewall.nordvpn_ks6_1.target)" = 'DROP' ] || { echo 'FAIL: IPv6 must be blocked even with the kill switch off' >&2; exit 1; }
 [ "$(fwget firewall.nordvpn_ks4_1.target)" = '<none>' ] || { echo 'FAIL: IPv4 kill-switch rule must be absent when fallback is allowed' >&2; exit 1; }
+
+# --- teardown commit failure reverts staged app-owned deletes ------------------
+cp "$FW_STORE" "$FW_SNAPSHOT"
+UCI_COMMIT_FAIL=1
+NORDVPN_EASY_FIREWALL_INIT="$TMP_DIR/fw-init"
+teardown_rc=0
+nordvpn_easy_teardown_vpn_firewall || teardown_rc=$?
+[ "$teardown_rc" -eq 1 ] || { echo 'FAIL: teardown should fail when firewall commit fails' >&2; exit 1; }
+[ "$UCI_REVERT_COUNT" -eq 1 ] || { echo 'FAIL: teardown should revert firewall on commit failure' >&2; exit 1; }
+[ "$(fwget firewall.nordvpn_vpn)" = 'zone' ] || { echo 'FAIL: failed teardown should leave prior vpn zone restored' >&2; exit 1; }
+UCI_COMMIT_FAIL=0
+UCI_REVERT_COUNT=0
+rm -f "$FW_SNAPSHOT"
 
 # --- teardown removes every app-owned section ---------------------------------
 nordvpn_easy_remove_app_firewall_sections

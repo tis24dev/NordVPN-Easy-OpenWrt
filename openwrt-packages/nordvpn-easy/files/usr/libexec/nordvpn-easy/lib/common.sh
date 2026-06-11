@@ -145,7 +145,10 @@ nordvpn_easy_teardown_vpn_firewall() {
 	# Tear the app's firewall objects down and reload, restoring plain LAN->WAN so
 	# a disabled VPN does not leave the kill switch blocking the user's internet.
 	nordvpn_easy_remove_app_firewall_sections
-	uci commit firewall 2>/dev/null || return 1
+	uci commit firewall 2>/dev/null || {
+		uci revert firewall >/dev/null 2>&1 || true
+		return 1
+	}
 	"${NORDVPN_EASY_FIREWALL_INIT:-/etc/init.d/firewall}" reload >/dev/null 2>&1 || return 1
 }
 
@@ -389,10 +392,11 @@ _nordvpn_easy_connect_apply_result_get() {
 
 nordvpn_easy_connect_apply_result_begin() {
 	local target="${1:-/tmp/run/nordvpn-easy/connect-apply-result}"
-	local target_dir now_ts started_at existing_state existing_started_at
+	local target_dir tmp now_ts started_at existing_state existing_started_at
 
 	target_dir="$(dirname "$target")"
 	mkdir -p "$target_dir" 2>/dev/null || return 1
+	tmp="$(mktemp "${target_dir}/.connect-apply-result.XXXXXX" 2>/dev/null)" || return 1
 	now_ts="$(date +%s 2>/dev/null || printf '%s' '0')"
 
 	# Idempotent re-begin: the connect-apply lifecycle is begun by several owners
@@ -409,19 +413,29 @@ nordvpn_easy_connect_apply_result_begin() {
 		esac
 	fi
 
-	cat > "$target" <<EOF
+	if ! cat > "$tmp" <<EOF
 state=pending
 rc=
 finished_at=
 country=
 started_at=$started_at
 EOF
+	then
+		rm -f "$tmp" 2>/dev/null || true
+		return 1
+	fi
+
+	mv "$tmp" "$target" || {
+		rm -f "$tmp" 2>/dev/null || true
+		return 1
+	}
 }
 
 nordvpn_easy_connect_apply_result_finish() {
 	local target="${1:-/tmp/run/nordvpn-easy/connect-apply-result}"
 	local rc="${2:-1}"
 	local country="${3:-}"
+	local target_dir tmp
 	local finished_at=''
 	local previous_started_at=''
 	local state='failed'
@@ -430,14 +444,25 @@ nordvpn_easy_connect_apply_result_finish() {
 	[ "$rc" -eq 0 ] && state='success'
 	previous_started_at="$(_nordvpn_easy_connect_apply_result_get "$target" started_at 2>/dev/null)"
 
-	mkdir -p "$(dirname "$target")" 2>/dev/null || true
-	cat > "$target" <<EOF
+	target_dir="$(dirname "$target")"
+	mkdir -p "$target_dir" 2>/dev/null || return 1
+	tmp="$(mktemp "${target_dir}/.connect-apply-result.XXXXXX" 2>/dev/null)" || return 1
+	if ! cat > "$tmp" <<EOF
 state=$state
 rc=$rc
 finished_at=$finished_at
 country=$(printf '%s' "$country" | tr 'a-z' 'A-Z')
 started_at=${previous_started_at:-$finished_at}
 EOF
+	then
+		rm -f "$tmp" 2>/dev/null || true
+		return 1
+	fi
+
+	mv "$tmp" "$target" || {
+		rm -f "$tmp" 2>/dev/null || true
+		return 1
+	}
 
 	if command -v nordvpn_easy_write_status_cache >/dev/null 2>&1; then
 		nordvpn_easy_write_status_cache >/dev/null 2>&1 || true

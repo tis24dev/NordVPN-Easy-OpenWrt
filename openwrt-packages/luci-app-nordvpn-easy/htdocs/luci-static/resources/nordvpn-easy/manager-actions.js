@@ -56,12 +56,14 @@ function timingLog(location, event, data) {
 	}).catch(function() {});
 }
 
-// Always-on, same-origin record of when the on-screen Country Match indicator
-// transitions, so the change lands in the automatic diagnostics log (the timing
-// CGI mirrors country_match events to the system log, which diagnostics_log
-// exports). Unlike the opt-in timing log this is not gated, but it only fires on
-// a real indicator transition (manager-ui dedups), so the volume stays low.
+// Lab-only, same-origin record of when the on-screen Country Match indicator
+// transitions. When the timing CGI is manually deployed for diagnostics it
+// mirrors country_match events to syslog, but the browser must still opt in via
+// the timing flag so normal installations never post to the lab CGI endpoint.
 function postCountryMatchLog(info) {
+	if (!timingLogEnabled())
+		return;
+
 	if (typeof request === 'undefined' || typeof request.post !== 'function')
 		return;
 
@@ -1905,6 +1907,7 @@ function finishApplyCycle(state, options) {
 	state.pendingOperationLabel = '';
 	state.applyPhase = '';
 	state.saveApplyInProgress = false;
+	state.applyTargetEnabled = null;
 	// Re-enable the manager controls deterministically when the apply cycle
 	// settles, rather than waiting for the forced status refresh below: if that
 	// refresh fails or hangs, the controls would otherwise stay disabled.
@@ -1957,6 +1960,7 @@ function handleSaveApply(viewState, state, ev) {
 	state.saveApplyInProgress = true;
 	state.applySelectionBaseline = { captured: false };
 	captureApplySelectionBaseline(state, viewState);
+	state.applyTargetEnabled = !!submittedRuntimeConfig.enabled;
 	state.applyTargetCountryCode = managerData.normalizeCountryCode(submittedRuntimeConfig.country || '');
 	state.connectApplyDispatchedAt = 0;
 	state.pendingOperationLabel = '';

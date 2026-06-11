@@ -131,7 +131,10 @@ nordvpn_easy_wg_handshake_epoch() {
 	local vpn_if="${1:-$VPN_IF}"
 	local epoch=''
 
-	epoch="$(wg show "$vpn_if" latest-handshakes 2>/dev/null | awk 'NR==1 { print $2 }')"
+	epoch="$(wg show "$vpn_if" latest-handshakes 2>/dev/null | awk '
+		$2 ~ /^[0-9]+$/ && $2 > max { max = $2 }
+		END { if (max != "") print max }
+	')"
 	case "$epoch" in
 		''|*[!0-9]*)
 			printf '%s\n' '0'
@@ -645,4 +648,3 @@ nordvpn_easy_set_vpn_server_in_uci() {
 	nordvpn_easy_apply_wireguard_transport_settings "${VPN_IF}server" || return 1
 	log "apply: prepared VPN peer update for server $1 ($2)"
 }
-

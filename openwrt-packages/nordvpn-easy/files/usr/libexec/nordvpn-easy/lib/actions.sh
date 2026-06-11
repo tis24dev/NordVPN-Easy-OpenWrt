@@ -5,6 +5,8 @@
 # refresh_countries_cache and get_private_key), so validate that sourcing
 # contract when these code paths execute.
 
+NORDVPN_EASY_RC_RUNTIME_DRIFT="${NORDVPN_EASY_RC_RUNTIME_DRIFT:-2}"
+
 nordvpn_easy_require_core_action_helpers() {
 	local helper
 
@@ -564,7 +566,7 @@ nordvpn_easy_provision_vpn() {
 nordvpn_easy_reconcile_action() {
 	log 'apply: reconcile action started'
 	nordvpn_easy_provision_vpn || return 1
-	nordvpn_easy_check_once
+	nordvpn_easy_check_once || return "$NORDVPN_EASY_RC_RUNTIME_DRIFT"
 }
 
 nordvpn_easy_rotate_action() {

@@ -45,6 +45,15 @@ nordvpn_easy_timing_read_body() {
 	printf '%s' "$body"
 }
 
+if [ "${REQUEST_METHOD:-}" != 'POST' ]; then
+	printf 'Status: 405 Method Not Allowed\r\n'
+	printf 'Content-Type: application/json\r\n'
+	printf 'Cache-Control: no-store\r\n'
+	printf '\r\n'
+	printf '%s\n' '{"ok":false,"error":"method_not_allowed"}'
+	exit 0
+fi
+
 line="$(nordvpn_easy_timing_read_body)"
 line="$(printf '%s' "$line" | sed -n '1p')"
 

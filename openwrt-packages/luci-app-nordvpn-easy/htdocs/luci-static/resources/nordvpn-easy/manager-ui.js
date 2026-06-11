@@ -259,8 +259,9 @@ function decideCountryMatch(state) {
 		state.currentPublicCountry || ''
 	);
 	const out = { expected: expectedCountry, actual: actualCountry };
+	const intendedEnabled = !!state.appliedEnabled || state.applyTargetEnabled === true;
 
-	if (!state.appliedEnabled || runtimeStatus.runtime_disabled || runtimeStatus.interface_disabled || isDisableRequested(state))
+	if (!intendedEnabled || runtimeStatus.runtime_disabled || runtimeStatus.interface_disabled || isDisableRequested(state))
 		return Object.assign(out, { indicator: 'inactive', label: _('Inactive') });
 
 	if (state.currentOperationStatus.indexOf('busy:') === 0) {

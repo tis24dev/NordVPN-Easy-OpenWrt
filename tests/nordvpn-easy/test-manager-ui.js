@@ -127,6 +127,21 @@ r = run({
 assert.equal(r.color, GREEN, 'apply target match turns Country Match green');
 assert.equal(r.label, 'Match (DE)', 'during apply Country Match tracks the in-flight target');
 
+// Enabling from a disabled saved state: the pending enabled target must keep
+// Country Match from short-circuiting to Inactive while apply is converging.
+r = run({
+	appliedEnabled: false,
+	applyTargetEnabled: true,
+	currentLocalStatus: activeStatus,
+	currentOperationStatus: 'idle',
+	applyTargetCountryCode: 'DE',
+	appliedCountryCode: '',
+	currentPublicCountry: 'DE',
+	saveApplyInProgress: true
+}, 'DE');
+assert.equal(r.color, GREEN, 'pending enable lets Country Match evaluate the target country');
+assert.equal(r.label, 'Match (DE)', 'pending enable does not render Country Match as Inactive');
+
 // Same apply, not yet converged: exit IP still in the old country -> mismatch.
 r = run({
 	appliedEnabled: true,

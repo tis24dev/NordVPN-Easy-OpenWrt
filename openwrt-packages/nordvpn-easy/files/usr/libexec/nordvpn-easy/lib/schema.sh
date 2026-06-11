@@ -284,6 +284,9 @@ nordvpn_easy_is_valid_ipv4_cidr() {
 			esac
 			[ "$prefix" -le 32 ] || return 1
 			;;
+		*)
+			return 1
+			;;
 	esac
 	nordvpn_easy_is_valid_ipv4 "$value"
 }

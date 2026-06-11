@@ -380,12 +380,14 @@ HANDSHAKE_EPOCH='295'
 wg() {
 	case "$1 $2 $3" in
 		'show wg0 latest-handshakes')
+			printf '%s\n' 'oldpeer 0'
 			printf '%s\n' "peerpub $HANDSHAKE_EPOCH"
 			;;
 		*) return 1 ;;
 	esac
 }
 SLEEP_CALLS=''
+assert_eq "$HANDSHAKE_EPOCH" "$(nordvpn_easy_wg_handshake_epoch wg0)" 'handshake epoch helper returns the newest peer epoch'
 nordvpn_easy_wait_for_vpn_handshake wg0 10 'handshake-test' || {
 	printf '%s\n' 'FAIL: recent handshake should validate quickly' >&2
 	exit 1
