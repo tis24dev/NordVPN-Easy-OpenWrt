@@ -228,20 +228,23 @@ nordvpn_easy_set_first_server_from_list() {
 	FIRST_SERVER=$(jq -r --arg exclude "$exclude" --arg want "${RESOLVED_COUNTRY_CODE:-}" '
 		[.[] |
 			select(($exclude == "") or ((.station // "") != $exclude)) |
-			select(($want == "") or ((.locations[0].country.code // "") == $want))
-		] | .[0] | [
-			.hostname,
-			.station,
-			([.technologies[]?
+			select(($want == "") or ((.locations[0].country.code // "") == $want)) |
+			. as $srv |
+			([$srv.technologies[]?
 				| select(.identifier == "wireguard_udp")
 				| .metadata[]?
 				| select(.name == "public_key")
 				| (.value // "")
-			][0] // ""),
-			(.locations[0].country.code // ""),
-			(.locations[0].country.city.name // ""),
-			((.load // 0) | tostring)
-		] | @tsv' "$SERVER_LIST_FILE" 2>/dev/null) || {
+			][0] // "") as $pubkey |
+			# Skip a recommendation with no usable WireGuard key (no wireguard_udp
+			# technology, so an empty public key) instead of selecting it and
+			# failing provisioning when a valid server is available further down.
+			select($pubkey != "") |
+			[ $srv.hostname, $srv.station, $pubkey,
+			  ($srv.locations[0].country.code // ""),
+			  ($srv.locations[0].country.city.name // ""),
+			  (($srv.load // 0) | tostring) ]
+		] | (.[0] // empty) | @tsv' "$SERVER_LIST_FILE" 2>/dev/null) || {
 		log 'ERROR: INVALID VPN SERVER LIST'
 		return 1
 	}

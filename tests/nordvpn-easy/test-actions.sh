@@ -189,6 +189,26 @@ nordvpn_easy_set_first_server_from_list
 assert_eq 'it12.nordvpn.com|it123' "$LAST_SET_SERVER" 'first recommended server uses first list entry'
 assert_eq 'RIGHT-KEY' "$LAST_SET_PUBLIC_KEY" 'first recommended server uses WireGuard public key'
 
+# A first recommendation with no WireGuard key must be skipped in favour of the
+# next server that has one, instead of selecting it and failing provisioning.
+jq -n '[
+	{ "hostname": "it01.nordvpn.com", "station": "it001", "load": 10,
+	  "locations": [{ "country": { "code": "IT", "city": { "name": "Rome" } } }],
+	  "technologies": [{ "identifier": "openvpn_udp", "metadata": [{ "name": "public_key", "value": "NO-WG" }] }] },
+	{ "hostname": "it02.nordvpn.com", "station": "it002", "load": 20,
+	  "locations": [{ "country": { "code": "IT", "city": { "name": "Milan" } } }],
+	  "technologies": [{ "identifier": "wireguard_udp", "metadata": [{ "name": "public_key", "value": "VALID-WG-KEY" }] }] }
+]' > "$TMP_DIR/skip-invalid.json"
+SERVER_LIST_FILE="$TMP_DIR/skip-invalid.json"
+RESOLVED_COUNTRY_CODE=''
+NORDVPN_EASY_ROTATE_EXCLUDE_STATION=''
+NORDVPN_EASY_PROVISION_MODE=''
+LAST_SET_SERVER=''
+LAST_SET_PUBLIC_KEY=''
+nordvpn_easy_set_first_server_from_list
+assert_eq 'it02.nordvpn.com|it002' "$LAST_SET_SERVER" 'auto-selection skips a first server without a WireGuard key'
+assert_eq 'VALID-WG-KEY' "$LAST_SET_PUBLIC_KEY" 'auto-selection uses the first server that has a WireGuard key'
+
 SERVER_LIST_FILE="$TMP_DIR/recommendations.json"
 
 NORDVPN_EASY_ROTATE_EXCLUDE_STATION='it123'
