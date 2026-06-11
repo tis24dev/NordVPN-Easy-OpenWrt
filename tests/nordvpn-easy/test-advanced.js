@@ -438,6 +438,14 @@ async function testWireGuardTransportControlsValidateOperationalRanges() {
 	assert.equal(cronOption.validate('main', '0-30/5 1,2 * * 1-5'), true, 'range/step/list cron schedule is valid');
 	assert.match(String(cronOption.validate('main', '*/10 * * *')), /exactly 5 fields/, 'cron schedule with too few fields is rejected');
 	assert.match(String(cronOption.validate('main', 'bad * * * *')), /not a valid cron expression/, 'cron field with invalid characters is rejected');
+	assert.equal(cronOption.validate('main', '59 23 31 12 7'), true, 'cron schedule at the per-field maxima is valid');
+	assert.match(String(cronOption.validate('main', '60 * * * *')), /not a valid cron expression/, 'minute above 59 is rejected (matches the init bounds)');
+	assert.match(String(cronOption.validate('main', '* 24 * * *')), /not a valid cron expression/, 'hour above 23 is rejected');
+	assert.match(String(cronOption.validate('main', '* * 0 * *')), /not a valid cron expression/, 'day-of-month below 1 is rejected');
+	assert.match(String(cronOption.validate('main', '* * * 13 *')), /not a valid cron expression/, 'month above 12 is rejected');
+	assert.match(String(cronOption.validate('main', '* * * * 8')), /not a valid cron expression/, 'weekday above 7 is rejected');
+	assert.match(String(cronOption.validate('main', '30-10 * * * *')), /not a valid cron expression/, 'inverted minute range is rejected');
+	assert.match(String(cronOption.validate('main', '*/99 * * * *')), /not a valid cron expression/, 'minute step above 59 is rejected');
 
 	const wanOption = harness.formHarness.findOption('wan_if');
 	const addrOption = harness.formHarness.findOption('vpn_addr');

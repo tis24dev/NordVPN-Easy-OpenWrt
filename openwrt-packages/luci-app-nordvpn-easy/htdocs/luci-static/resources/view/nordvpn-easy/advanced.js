@@ -240,12 +240,43 @@ return view.extend({
 			if (fields.length !== 5)
 				return _('Cron schedule must have exactly 5 fields (minute hour day-of-month month day-of-week).');
 
-			// Mirror the init service's accepted tokens: *, */n, a, a-b, a-b/n and comma lists.
-			const item = '(\\*|\\*\\/[0-9]+|[0-9]+(-[0-9]+)?(\\/[0-9]+)?)';
-			const token = new RegExp('^' + item + '(,' + item + ')*$');
+			// Mirror the init service's validate_cron_schedule: accept *, */n, a,
+			// a-b and a-b/n in comma lists, but enforce the same per-field numeric
+			// bounds and step limits so the UI rejects exactly what the backend
+			// would (minute 0-59, hour 0-23, day 1-31, month 1-12, weekday 0-7).
+			const maxv = [ 59, 23, 31, 12, 7 ];
+			const minv = [ 0, 0, 1, 1, 0 ];
+			const invalid = function(field) {
+				return _('Cron field "%s" is not a valid cron expression.').format(field);
+			};
 			for (let i = 0; i < fields.length; i++) {
-				if (!token.test(fields[i]))
-					return _('Cron field "%s" is not a valid cron expression.').format(fields[i]);
+				const items = fields[i].split(',');
+				for (let k = 0; k < items.length; k++) {
+					let base = items[k];
+					if (base === '')
+						return invalid(fields[i]);
+					const slash = base.indexOf('/');
+					if (slash >= 0) {
+						const stepStr = base.slice(slash + 1);
+						base = base.slice(0, slash);
+						if (!/^[0-9]+$/.test(stepStr) || Number(stepStr) < 1 || Number(stepStr) > maxv[i])
+							return invalid(fields[i]);
+					}
+					if (base === '*')
+						continue;
+					const range = base.match(/^([0-9]+)-([0-9]+)$/);
+					if (range) {
+						const a = Number(range[1]), b = Number(range[2]);
+						if (a < minv[i] || a > maxv[i] || b < minv[i] || b > maxv[i] || a > b)
+							return invalid(fields[i]);
+					} else if (/^[0-9]+$/.test(base)) {
+						const n = Number(base);
+						if (n < minv[i] || n > maxv[i])
+							return invalid(fields[i]);
+					} else {
+						return invalid(fields[i]);
+					}
+				}
 			}
 
 			return true;
