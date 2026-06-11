@@ -133,6 +133,18 @@ migrator_runtime_path='/usr/libexec/nordvpn-easy/migrate-config.sh'
 assert_eq "$backend_version" "$luci_version" 'backend and LuCI packages share default version'
 assert_eq "$backend_release" "$luci_release" 'backend and LuCI packages share default release'
 
+# The luci-app bundles the backend into its own payload, so it must NOT depend
+# on the separate nordvpn-easy package: that dependency would force a
+# conflicting co-install on the shared backend files. Intentional omission
+# (bug-audit #25); see the comment above LUCI_DEPENDS in the LuCI Makefile.
+luci_depends_line="$(grep '^LUCI_DEPENDS:=' "$LUCI_MAKEFILE" || true)"
+case "$luci_depends_line" in
+	*+nordvpn-easy*)
+		printf '%s\n' 'FAIL: luci-app must not depend on +nordvpn-easy (backend is bundled; the dep would conflict on shared files)' >&2
+		exit 1
+		;;
+esac
+
 [ -f "$RPCD_SCRIPT" ] || {
 	printf '%s\n' 'FAIL: backend rpcd plugin must exist in package source' >&2
 	exit 1

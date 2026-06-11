@@ -12,6 +12,12 @@ PKG_LICENSE:=GPL-3.0-only
 PKG_MAINTAINER:=$(NORDVPN_EASY_PACKAGE_MAINTAINER)
 LUCI_TITLE:=LuCI support for NordVPN Easy
 LUCI_DESCRIPTION:=User-facing LuCI integration for NordVPN Easy on OpenWrt, bundled with the backend for manual upload installs
+# +nordvpn-easy is intentionally NOT a dependency: the backend is bundled into
+# this package's root/ tree by the release workflow, so this stays a single
+# manual-upload package. Depending on the separate nordvpn-easy package would
+# force it to co-install and conflict on the shared backend files. Switching to
+# a feed model would mean dropping the bundling and adding the dependency.
+# tests/nordvpn-easy/test-package-lockstep.sh enforces this omission.
 LUCI_DEPENDS:=+ca-certificates +curl +jq +kmod-wireguard +wireguard-tools +firewall4 +luci-base +rpcd
 LUCI_PKGARCH:=all
 LUCI_URL:=$(NORDVPN_EASY_PACKAGE_URL)
