@@ -476,25 +476,27 @@ function testRenderLocalStatusSnapshotHonestDuringApply() {
 	};
 
 	actions.renderLocalStatusSnapshot(state, status);
-	assert.deepEqual(indicators.vpn, { state: 'starting', label: 'Connecting' },
-		'an unconverged apply renders Connecting instead of the stale Connected');
-	assert.equal(state.applyTransitionActive, true,
-		'applyTransitionActive is set during an unconverged apply');
-	assert.equal(serverFlags[serverFlags.length - 1], true,
-		'Current Server renders with the transition flag set');
-	assert.equal(fields.endpoint, 'Reconnecting...',
-		'Endpoint is transitional during an unconverged apply, not the stale old-server value');
-	assert.equal(fields.handshake, 'Reconnecting...',
-		'Last handshake is transitional during an unconverged apply, not the stale value');
-	assert.equal(fields.transfer, 'Reconnecting...',
-		'Tunnel activity is transitional during an unconverged apply, not the stale value');
-
-	// Once the apply is no longer in progress, the real connected state shows.
-	state.saveApplyInProgress = false;
-	actions.renderLocalStatusSnapshot(state, status);
+	// Connection shows the ACTUAL vpn_status even mid-apply: the old tunnel is
+	// genuinely up (vpn_status active) during the stop phase, so it reads
+	// Connected -- not a forced apply-time "Connecting". The Operation Status row
+	// separately conveys what is being applied.
 	assert.deepEqual(indicators.vpn, { state: 'active', label: 'Connected' },
-		'a settled connected runtime still renders Connected');
-	assert.equal(state.applyTransitionActive, false, 'transition flag clears once the apply settles');
+		'Connection shows the real vpn_status (Connected) during an apply, not a forced Connecting');
+	// The detail rows show the real values, consistent with the Connection state.
+	assert.equal(fields.endpoint, 'at107.nordvpn.com:51820', 'Endpoint shows the real value during an apply');
+	assert.equal(fields.handshake, '1 minute ago', 'Last handshake shows the real value during an apply');
+	assert.equal(fields.transfer, '1 B / 1 B', 'Tunnel activity shows the real value during an apply');
+
+	// As the teardown proceeds the backend reports vpn_status=stopping; Connection
+	// follows it instead of pretending to keep connecting.
+	actions.renderLocalStatusSnapshot(state, Object.assign({}, status, { vpn_status: 'stopping', connected: false }));
+	assert.deepEqual(indicators.vpn, { state: 'stopping', label: 'Stopping' },
+		'Connection follows vpn_status to Stopping during the teardown');
+
+	// Then the new tunnel comes up as starting -> Connecting.
+	actions.renderLocalStatusSnapshot(state, Object.assign({}, status, { vpn_status: 'starting', connected: false }));
+	assert.deepEqual(indicators.vpn, { state: 'starting', label: 'Connecting' },
+		'Connection follows vpn_status to Connecting while the new tunnel establishes');
 }
 
 async function testPublicLookupsReturnEarlyWhenRuntimeDisabled() {
@@ -1036,8 +1038,8 @@ function testSaveApplyTransitionSuppressesConnectedAndDrift() {
 	);
 	assert.deepEqual(
 		diagnosticsBanners.vpn,
-		{ state: 'starting', label: 'Connecting' },
-		'Save & Apply renders Connecting (not the stale Connected) until convergence'
+		{ state: 'active', label: 'Connected' },
+		'Connection shows the real vpn_status during Save & Apply, not a forced Connecting'
 	);
 	assert.equal(
 		diagnosticsBanners.summaryHidden,

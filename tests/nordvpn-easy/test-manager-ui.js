@@ -217,7 +217,9 @@ managerUI.updateCountryMatchStatus(persistent);
 assert.equal(changes.length, 2, 'returning to a match logs the transition back');
 assert.equal(changes[1].indicator, 'match', 'transition back reports the match indicator');
 
-// Current Server is transitional while an apply is mid-flight, then real.
+// Current Server shows the real server regardless of an in-flight apply: the
+// Connection / Operation Status rows convey the transition, the server is not
+// masked behind "Reconnecting...".
 const cfgStatus = {
 	desired_enabled: true, runtime_disabled: false, interface_disabled: false,
 	runtime_configured: true, current_server_station: 'be1', current_server_hostname: 'be1.nordvpn.com',
@@ -225,13 +227,13 @@ const cfgStatus = {
 };
 assert.equal(
 	managerUI.currentServerSummaryFromStatus(cfgStatus, { applyTransitionActive: true }),
-	'Reconnecting...',
-	'Current Server shows the transition while an apply is mid-flight'
+	'be1',
+	'Current Server shows the real server even while an apply is mid-flight'
 );
 assert.equal(
 	managerUI.currentServerSummaryFromStatus(cfgStatus, { applyTransitionActive: false }),
 	'be1',
-	'Current Server shows the real server once the apply settles'
+	'Current Server shows the real server when settled'
 );
 
 console.log('test-manager-ui.js: ok');

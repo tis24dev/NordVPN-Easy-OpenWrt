@@ -1424,23 +1424,15 @@ function renderLocalStatusDetails(state, status) {
 	syncPublicLookupStateFromStatus(state, runtimeStatus);
 	managerUI.replaceStatusText(managerUI.ids.CURRENT_SERVER_STATUS_ID, managerUI.currentServerSummaryFromStatus(runtimeStatus, state));
 	managerUI.replaceStatusText(managerUI.ids.PREFERRED_SERVER_STATUS_ID, managerUI.preferredServerSummaryFromStatus(runtimeStatus));
-	if (state.applyTransitionActive) {
-		// While a Save & Apply is converging the tunnel is being torn down and
-		// rebuilt, so the raw endpoint/handshake/transfer still belong to the OLD
-		// server. Show them as transitional too, to match Current Server's
-		// "Reconnecting..." instead of looking like a live tunnel.
-		const reconnecting = _('Reconnecting...');
-		managerUI.replaceStatusText(managerUI.ids.ENDPOINT_STATUS_ID, reconnecting);
-		managerUI.replaceStatusText(managerUI.ids.HANDSHAKE_STATUS_ID, reconnecting);
-		managerUI.replaceStatusText(managerUI.ids.TRANSFER_STATUS_ID, reconnecting);
-	} else {
-		managerUI.replaceStatusText(managerUI.ids.ENDPOINT_STATUS_ID, runtimeStatus.endpoint || _('Unavailable'));
-		managerUI.replaceStatusText(managerUI.ids.HANDSHAKE_STATUS_ID, runtimeStatus.latest_handshake || _('Never'));
-		managerUI.replaceStatusText(
-			managerUI.ids.TRANSFER_STATUS_ID,
-			_('%s / %s').format(runtimeStatus.transfer_rx || '0 B', runtimeStatus.transfer_tx || '0 B')
-		);
-	}
+	// Show the real endpoint / handshake / transfer at this instant; the backend
+	// status is honest (no stale 'active' from a bare link), so these stay
+	// consistent with the Connection state instead of being masked.
+	managerUI.replaceStatusText(managerUI.ids.ENDPOINT_STATUS_ID, runtimeStatus.endpoint || _('Unavailable'));
+	managerUI.replaceStatusText(managerUI.ids.HANDSHAKE_STATUS_ID, runtimeStatus.latest_handshake || _('Never'));
+	managerUI.replaceStatusText(
+		managerUI.ids.TRANSFER_STATUS_ID,
+		_('%s / %s').format(runtimeStatus.transfer_rx || '0 B', runtimeStatus.transfer_tx || '0 B')
+	);
 	managerUI.replaceStatusText(managerUI.ids.LAST_ERROR_STATUS_ID, runtimeStatus.last_error || _('None'));
 	renderPublicLookupStatus(state, runtimeStatus);
 }
@@ -1563,22 +1555,21 @@ function renderLocalStatusSnapshot(state, status) {
 	else
 		managerStore.syncPhase(state);
 
-	const enterpriseState = String(runtimeStatus.state || '');
-
+	// Connection shows the ACTUAL VPN state at this instant, straight from the
+	// backend's honest vpn_status: it reports 'active' only on a real session
+	// (fresh handshake or netifd up), 'stopping' during a teardown, 'starting'
+	// while (re)connecting. No apply-time override -- the Operation Status row
+	// already says what is being applied, so e.g. a server change reads
+	// Connected -> Stopping -> Connecting -> Connected, not a blanket Connecting.
 	if (!desiredEnabled || runtimeStatus.runtime_disabled || runtimeStatus.interface_disabled || managerUI.isDisableRequested(state))
 		managerUI.setVpnStatusIndicator('inactive', _('Disabled'));
-	else if (applyConverging)
-		managerUI.setVpnStatusIndicator('starting', _('Connecting'));
-	else if (enterpriseState === 'connected' || runtimeStatus.vpn_status === 'active' || runtimeStatus.connected)
+	else if (String(runtimeStatus.vpn_status || '') === 'active')
 		managerUI.setVpnStatusIndicator('active', _('Connected'));
-	else if (state.saveApplyInProgress ||
-		enterpriseState === 'connecting' || enterpriseState === 'recovering' ||
-		enterpriseState === 'degraded' || runtimeStatus.connect_apply_pending ||
-		runtimeStatus.vpn_status === 'starting' || state.enabledRuntimeRecoveryInFlight)
-		managerUI.setVpnStatusIndicator('starting', _('Connecting'));
-	else if (runtimeStatus.vpn_status === 'stopping')
+	else if (String(runtimeStatus.vpn_status || '') === 'stopping')
 		managerUI.setVpnStatusIndicator('stopping', _('Stopping'));
-	else if (runtimeStatus.vpn_status === 'error')
+	else if (String(runtimeStatus.vpn_status || '') === 'starting')
+		managerUI.setVpnStatusIndicator('starting', _('Connecting'));
+	else if (String(runtimeStatus.vpn_status || '') === 'error')
 		managerUI.setVpnStatusIndicator('error', _('Error'));
 	else
 		managerUI.setVpnStatusIndicator('inactive', _('Disconnected'));
