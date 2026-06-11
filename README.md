@@ -202,7 +202,9 @@ does not expose that key in LuCI, logs, status JSON or diagnostics export.
 ### Securing the account token
 
 The NordVPN account token and the NordLynx private key are long-lived secrets
-held in `/etc/config/*` with root-only (`0600`) permissions. The LuCI form masks
+held in `/etc/config/nordvpn_easy` and `/etc/config/network`, which NordVPN Easy
+hardens to root-only (`0600`) on a best-effort basis after each config write
+(chmod failures are ignored rather than aborting the operation). The LuCI form masks
 the token in the page, but that masking is client-side only: any authenticated
 LuCI admin session can read the stored token back over the standard `uci` ubus
 call (this is inherent to LuCI's uci-over-ubus model). To limit exposure:
