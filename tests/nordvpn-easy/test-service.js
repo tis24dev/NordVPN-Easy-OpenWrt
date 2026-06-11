@@ -230,6 +230,7 @@ Promise.resolve().then(async function() {
 	const abortApplyCall = loaded.calls[loaded.calls.length - 1];
 	assert.equal(abortApplyResult.code, 0, 'abort_connect_apply returns normalized success result');
 	assert.equal(abortApplyCall.spec.method, 'abort_connect_apply', 'abort_connect_apply uses the dedicated ubus method');
+	assert.equal(abortApplyCall.spec.timeout, 15, 'abort_connect_apply uses a short rpc timeout');
 
 	const reconcileResult = await loaded.service.execService('reconcile');
 	const reconcileCall = loaded.calls[loaded.calls.length - 1];

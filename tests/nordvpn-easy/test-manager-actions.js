@@ -2079,7 +2079,7 @@ async function testAutoReconcileRunsForCountryDrift() {
 
 	await harness.actions.maybeAutoReconcileSelectionDrift(harness.state, harness.state.currentLocalStatus);
 
-	assert.ok(harness.runtimeActions.length >= 2, 'country drift runs at least stop then start_connect');
+	assert.ok(harness.runtimeActions.length >= 3, 'country drift runs at least stop_vpn, begin_connect_apply then start_connect');
 	assert.equal(harness.runtimeActions[0][0], 'stop_vpn', 'country drift clears stale server caches before connect apply');
 	assert.equal(harness.runtimeActions[1][0], 'begin_connect_apply', 'country drift marks connect apply pending after cache clear');
 	assert.equal(harness.runtimeActions[2][0], 'start_connect', 'country drift follows with start_connect');
