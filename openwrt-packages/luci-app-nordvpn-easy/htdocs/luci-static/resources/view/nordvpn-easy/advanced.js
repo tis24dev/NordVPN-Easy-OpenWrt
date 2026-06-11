@@ -261,10 +261,10 @@ return view.extend({
 		o.rmempty = false;
 		o.description = _('Minimum seconds between hotplug-triggered health checks.');
 
-		o = s.option(form.Flag, 'kill_switch_enabled', _('Enable Kill Switch'));
-		o.default = '0';
+		o = s.option(form.Flag, 'kill_switch_enabled', _('Kill Switch'));
+		o.default = '1';
 		o.rmempty = false;
-		o.description = _('Advanced guardrail for future routing/firewall policy enforcement. Default is off.');
+		o.description = _('On (default): while the VPN is enabled, LAN traffic is forced through the tunnel and is blocked if the tunnel drops, so nothing leaks to the bare WAN (IPv6 is always blocked, since NordLynx is IPv4-only). Turn off to allow the LAN to fall back to the unprotected WAN when the tunnel is down.');
 
 		o = s.option(form.Value, 'failure_retry_delay', _('Failure Retry Delay'));
 		o.placeholder = '6';

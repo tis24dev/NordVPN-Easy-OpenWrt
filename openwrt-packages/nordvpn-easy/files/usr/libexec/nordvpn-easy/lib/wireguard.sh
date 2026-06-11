@@ -502,72 +502,105 @@ nordvpn_easy_apply_wireguard_transport_settings() {
 	fi
 }
 
-nordvpn_easy_ensure_vpn_in_wan_zone() {
-	WAN_ZONE=$(find_firewall_zone_section "$WAN_IF") || {
+NORDVPN_EASY_FW_ZONE_SECTION="${NORDVPN_EASY_FW_ZONE_SECTION:-nordvpn_vpn}"
+NORDVPN_EASY_FW_ZONE_NAME="${NORDVPN_EASY_FW_ZONE_NAME:-nordvpn}"
+
+nordvpn_easy_lan_zones_forwarding_to() {
+	# Echo the source zone names that forward to the given destination zone name
+	# (the LAN-side zones whose internet egress must be steered through the VPN).
+	local dest_zone="$1" section dest src
+	[ -n "$dest_zone" ] || return 0
+	for section in $(uci show firewall 2>/dev/null | awk -F= '$2=="forwarding"{print $1}'); do
+		dest="$(uci -q get "${section}.dest" 2>/dev/null)"
+		[ "$dest" = "$dest_zone" ] || continue
+		src="$(uci -q get "${section}.src" 2>/dev/null)"
+		case "$src" in ''|"$NORDVPN_EASY_FW_ZONE_NAME") continue ;; esac
+		printf '%s\n' "$src"
+	done | sort -u
+}
+
+nordvpn_easy_ensure_vpn_firewall() {
+	local wan_zone_section wan_zone_name kill_switch mtu_fix_value lan_zone idx=0
+	local fw_zone znet
+
+	wan_zone_section="$(nordvpn_easy_find_firewall_zone_section "$WAN_IF")" || {
 		log "ERROR: FIREWALL ZONE FOR $WAN_IF NOT FOUND"
 		return 1
 	}
+	wan_zone_name="$(uci -q get "${wan_zone_section}.name" 2>/dev/null)"
+	[ -n "$wan_zone_name" ] || {
+		log "ERROR: WAN FIREWALL ZONE $wan_zone_section HAS NO NAME"
+		return 1
+	}
 
-	FIREWALL_CHANGED=0
+	kill_switch=0
+	[ "${KILL_SWITCH_ENABLED:-1}" = '1' ] && kill_switch=1
+	mtu_fix_value=0
+	[ "${FIREWALL_MTU_FIX:-1}" = '1' ] && mtu_fix_value=1
 
-	for FIREWALL_SECTION in $(uci show firewall | awk -F= '$2=="zone"{ print $1 }'); do
-		[ "$FIREWALL_SECTION" = "$WAN_ZONE" ] && continue
-
-		ZONE_NETWORKS=$(uci -q get "${FIREWALL_SECTION}.network" 2>/dev/null)
-		for ZONE_NETWORK in $ZONE_NETWORKS; do
-			[ "$ZONE_NETWORK" = "$VPN_IF" ] || continue
-			uci -q del_list "${FIREWALL_SECTION}.network"="$VPN_IF"
-			FIREWALL_CHANGED=1
-			break
+	# Rebuild the app-owned firewall objects from a clean slate (idempotent), then
+	# move VPN_IF out of every other zone (it used to live in the WAN zone).
+	nordvpn_easy_remove_app_firewall_sections
+	for fw_zone in $(uci show firewall 2>/dev/null | awk -F= '$2=="zone"{print $1}'); do
+		for znet in $(uci -q get "${fw_zone}.network" 2>/dev/null); do
+			[ "$znet" = "$VPN_IF" ] && uci -q del_list "${fw_zone}.network"="$VPN_IF"
 		done
 	done
 
-	ZONE_HAS_VPN=0
-	ZONE_NETWORKS=$(uci -q get "${WAN_ZONE}.network" 2>/dev/null)
+	# Dedicated VPN zone: keeping wg0 out of the WAN zone is what lets the kill
+	# switch drop lan->WAN without also dropping the legitimate lan->wg0 traffic.
+	uci set "firewall.${NORDVPN_EASY_FW_ZONE_SECTION}=zone"
+	uci set "firewall.${NORDVPN_EASY_FW_ZONE_SECTION}.name=${NORDVPN_EASY_FW_ZONE_NAME}"
+	uci set "firewall.${NORDVPN_EASY_FW_ZONE_SECTION}.network=${VPN_IF}"
+	uci set "firewall.${NORDVPN_EASY_FW_ZONE_SECTION}.masq=1"
+	uci set "firewall.${NORDVPN_EASY_FW_ZONE_SECTION}.mtu_fix=${mtu_fix_value}"
+	uci set "firewall.${NORDVPN_EASY_FW_ZONE_SECTION}.input=REJECT"
+	uci set "firewall.${NORDVPN_EASY_FW_ZONE_SECTION}.output=ACCEPT"
+	uci set "firewall.${NORDVPN_EASY_FW_ZONE_SECTION}.forward=REJECT"
 
-	for ZONE_NETWORK in $ZONE_NETWORKS; do
-		[ "$ZONE_NETWORK" = "$VPN_IF" ] && {
-			ZONE_HAS_VPN=1
-			break
-		}
+	# For every LAN-side zone that forwards to WAN: allow it to the VPN zone,
+	# always drop its IPv6 to WAN (NordLynx is IPv4-only, so IPv6 can only leak),
+	# and -- when the kill switch is strict -- drop its IPv4 to WAN so a dropped
+	# tunnel cannot fall back to the bare WAN and leak. When the tunnel is up the
+	# default route is via wg0 (the VPN zone) so this never matches.
+	for lan_zone in $(nordvpn_easy_lan_zones_forwarding_to "$wan_zone_name"); do
+		idx=$((idx + 1))
+
+		uci set "firewall.nordvpn_fwd_${idx}=forwarding"
+		uci set "firewall.nordvpn_fwd_${idx}.src=${lan_zone}"
+		uci set "firewall.nordvpn_fwd_${idx}.dest=${NORDVPN_EASY_FW_ZONE_NAME}"
+
+		uci set "firewall.nordvpn_ks6_${idx}=rule"
+		uci set "firewall.nordvpn_ks6_${idx}.name=nordvpn-killswitch-v6-${idx}"
+		uci set "firewall.nordvpn_ks6_${idx}.src=${lan_zone}"
+		uci set "firewall.nordvpn_ks6_${idx}.dest=${wan_zone_name}"
+		uci set "firewall.nordvpn_ks6_${idx}.family=ipv6"
+		uci set "firewall.nordvpn_ks6_${idx}.proto=all"
+		uci set "firewall.nordvpn_ks6_${idx}.target=DROP"
+
+		[ "$kill_switch" = '1' ] || continue
+		uci set "firewall.nordvpn_ks4_${idx}=rule"
+		uci set "firewall.nordvpn_ks4_${idx}.name=nordvpn-killswitch-v4-${idx}"
+		uci set "firewall.nordvpn_ks4_${idx}.src=${lan_zone}"
+		uci set "firewall.nordvpn_ks4_${idx}.dest=${wan_zone_name}"
+		uci set "firewall.nordvpn_ks4_${idx}.family=ipv4"
+		uci set "firewall.nordvpn_ks4_${idx}.proto=all"
+		uci set "firewall.nordvpn_ks4_${idx}.target=DROP"
 	done
-
-	if [ "$ZONE_HAS_VPN" -ne 1 ]; then
-		uci add_list "${WAN_ZONE}.network"="$VPN_IF"
-		FIREWALL_CHANGED=1
-	fi
-
-	CURRENT_MTU_FIX=$(uci -q get "${WAN_ZONE}.mtu_fix" 2>/dev/null || true)
-	if [ "${FIREWALL_MTU_FIX:-1}" = '1' ]; then
-		if [ "$CURRENT_MTU_FIX" != '1' ]; then
-			uci set "${WAN_ZONE}.mtu_fix=1"
-			FIREWALL_CHANGED=1
-		fi
-	elif [ "$CURRENT_MTU_FIX" != '0' ]; then
-		uci set "${WAN_ZONE}.mtu_fix=0"
-		FIREWALL_CHANGED=1
-	fi
-
-	if [ "$FIREWALL_CHANGED" -ne 1 ]; then
-		log "runtime: firewall zone for $WAN_IF already contains $VPN_IF with mtu_fix=${CURRENT_MTU_FIX:-unset}"
-		return 0
-	fi
 
 	uci commit firewall || {
 		log 'ERROR: COULD NOT COMMIT FIREWALL CONFIGURATION'
 		return 1
 	}
 
-	# Use reload, not restart: restart flushes nftables/conntrack and drops every
-	# forwarded session (including the admin's SSH/LuCI connection) on each
-	# provision. reload regenerates the ruleset and applies the zone membership
-	# change in place, which is what netifd itself triggers on interface changes.
+	# reload, not restart: restart flushes conntrack and drops every forwarded
+	# session (including the admin's LuCI/SSH); reload applies the ruleset in place.
 	"${NORDVPN_EASY_FIREWALL_INIT:-/etc/init.d/firewall}" reload || {
 		log 'ERROR: FIREWALL RELOAD FAILED'
 		return 1
 	}
 
-	log "runtime: firewall updated so zone for $WAN_IF includes $VPN_IF with mtu_fix=${FIREWALL_MTU_FIX:-1}"
+	log "runtime: VPN firewall zone ${NORDVPN_EASY_FW_ZONE_NAME} ready for ${VPN_IF} (kill_switch=${kill_switch}, mtu_fix=${mtu_fix_value})"
 }
 
 nordvpn_easy_set_vpn_server_in_uci() {

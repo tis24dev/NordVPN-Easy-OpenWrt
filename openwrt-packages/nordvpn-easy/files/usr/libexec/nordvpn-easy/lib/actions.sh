@@ -359,10 +359,15 @@ nordvpn_easy_configure_vpn_interface() {
 	if [ "${NORDVPN_EASY_PROVISION_FETCH_DONE:-}" != '1' ]; then
 		nordvpn_easy_fetch_provision_prerequisites || return 1
 	fi
-	log "apply: ensuring firewall zone for ${WAN_IF:-unset} contains ${VPN_IF:-unset}"
-	nordvpn_easy_ensure_vpn_in_wan_zone || return 1
+	log "apply: ensuring VPN firewall zone for ${VPN_IF:-unset} (egress steered through the tunnel)"
+	nordvpn_easy_ensure_vpn_firewall || return 1
 
 	uci set "network.${VPN_IF}"='interface'
+	# Clear any soft-disable left by a previous disconnect (disable_vpn_runtime
+	# sets network.${VPN_IF}.disabled=1 and keeps the section); configuring the
+	# interface means we want it up, so a stale disabled flag must not survive a
+	# re-enable or the tunnel never comes up.
+	uci -q delete "network.${VPN_IF}.disabled" >/dev/null 2>&1 || true
 	uci set "network.${VPN_IF}.proto"='wireguard'
 	uci -q delete "network.${VPN_IF}.addresses" >/dev/null 2>&1 || true
 	uci add_list "network.${VPN_IF}.addresses"="$VPN_ADDR"

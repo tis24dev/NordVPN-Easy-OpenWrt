@@ -164,7 +164,7 @@ nordvpn_easy_default() {
 		check_cron_schedule) printf '%s\n' '' ;;
 		enable_hotplug) printf '%s\n' '1' ;;
 		hotplug_debounce_seconds) printf '%s\n' '30' ;;
-		kill_switch_enabled) printf '%s\n' '0' ;;
+		kill_switch_enabled) printf '%s\n' '1' ;;
 		failure_retry_delay) printf '%s\n' '6' ;;
 		interface_restart_delay) printf '%s\n' '10' ;;
 		post_restart_delay) printf '%s\n' '30' ;;

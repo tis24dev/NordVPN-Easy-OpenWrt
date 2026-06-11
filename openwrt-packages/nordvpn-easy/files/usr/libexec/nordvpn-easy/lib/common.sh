@@ -131,6 +131,24 @@ nordvpn_easy_valid_wireguard_key() {
 	[ "${#key}" -eq 44 ] || return 1
 }
 
+nordvpn_easy_remove_app_firewall_sections() {
+	# Remove every firewall section this app owns (named nordvpn_*) so the VPN
+	# zone, lan->vpn forwarding and kill-switch rules can be rebuilt idempotently
+	# (provisioning) and fully cleaned up on disable (restoring plain LAN->WAN).
+	local section
+	for section in $(uci show firewall 2>/dev/null | sed -n 's/^firewall\.\(nordvpn_[A-Za-z0-9_]*\)=.*/\1/p' | sort -u); do
+		uci -q delete "firewall.${section}"
+	done
+}
+
+nordvpn_easy_teardown_vpn_firewall() {
+	# Tear the app's firewall objects down and reload, restoring plain LAN->WAN so
+	# a disabled VPN does not leave the kill switch blocking the user's internet.
+	nordvpn_easy_remove_app_firewall_sections
+	uci commit firewall 2>/dev/null || return 1
+	"${NORDVPN_EASY_FIREWALL_INIT:-/etc/init.d/firewall}" reload >/dev/null 2>&1 || return 1
+}
+
 nordvpn_easy_mktemp_dir() {
 	local prefix="${1:-runtime}"
 	local result_var="${2:-}"

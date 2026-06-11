@@ -705,6 +705,10 @@ disable_vpn_runtime() {
 	log_service_info "enabled flag is $(nordvpn_easy_enabled_flag_label "${cfg_enabled:-0}"); disabling VPN runtime with $(nordvpn_easy_service_debug_summary 'cfg_')"
 	remove_hooks
 
+	# Restore plain LAN->WAN: a disabled VPN must not leave the kill switch / IPv6
+	# block in place, or the user would lose internet while the VPN is off.
+	nordvpn_easy_teardown_vpn_firewall || log_service_error 'failed to tear down VPN firewall while disabling runtime'
+
 	if [ "$(uci -q get "network.${cfg_vpn_if}.proto" 2>/dev/null)" != 'wireguard' ]; then
 		log_service_info "no WireGuard interface named $cfg_vpn_if is currently configured"
 		return 0

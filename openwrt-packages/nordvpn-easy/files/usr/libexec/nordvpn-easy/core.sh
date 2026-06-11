@@ -905,8 +905,8 @@ find_firewall_zone_section () {
   nordvpn_easy_find_firewall_zone_section "$@"
 }
 
-ensure_vpn_in_wan_zone () {
-  nordvpn_easy_ensure_vpn_in_wan_zone "$@"
+ensure_vpn_firewall () {
+  nordvpn_easy_ensure_vpn_firewall "$@"
 }
 
 set_vpn_server_in_uci () {

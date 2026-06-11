@@ -29,7 +29,7 @@ assert_eq '' "$(nordvpn_easy_default wireguard_mtu)" 'default WireGuard MTU is a
 assert_eq '1' "$(nordvpn_easy_default firewall_mtu_fix)" 'default firewall MTU fix enabled'
 assert_eq '' "$(nordvpn_easy_default check_cron_schedule)" 'default cron schedule disabled'
 assert_eq '30' "$(nordvpn_easy_default hotplug_debounce_seconds)" 'default hotplug debounce'
-assert_eq '0' "$(nordvpn_easy_default kill_switch_enabled)" 'default kill switch disabled'
+assert_eq '1' "$(nordvpn_easy_default kill_switch_enabled)" 'default kill switch enabled (strict no-leak)'
 assert_eq '1' "$(nordvpn_easy_normalize_value enabled yes)" 'boolean normalization for yes'
 assert_eq '1' "$(nordvpn_easy_normalize_value enable_hotplug '')" 'missing default-on boolean keeps default'
 assert_eq '1' "$(nordvpn_easy_normalize_value enabled true)" 'boolean normalization for true'

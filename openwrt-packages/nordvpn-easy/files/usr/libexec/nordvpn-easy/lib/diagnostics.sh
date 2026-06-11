@@ -974,8 +974,8 @@ nordvpn_easy_diagnostics_compute_findings() {
 	if [ "$DIAG_KILL_SWITCH_ENABLED" = '1' ] && [ "$DIAG_WG_CONNECTED" != 'yes' ]; then
 		nordvpn_easy_diagnostics_add_finding \
 			'operational.kill_switch_active' \
-			'Kill switch is enabled while the VPN tunnel is not connected' \
-			'Restore VPN connectivity or disable kill switch if all traffic is blocked'
+			'Kill switch is blocking LAN internet traffic because the VPN tunnel is down' \
+			'Restore VPN connectivity, or turn off the kill switch to allow the LAN to fall back to the unprotected WAN'
 	fi
 
 	if [ "$DIAG_DESIRED_ENABLED" = '1' ] && [ "$DIAG_WAN_PING" = 'no' ]; then
