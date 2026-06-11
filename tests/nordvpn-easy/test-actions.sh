@@ -125,6 +125,16 @@ nordvpn_easy_get_servers_list || {
 
 assert_eq '1' "$CURL_CALL_COUNT" 'server list refresh attempts API before cache fallback'
 assert_eq 'it123' "$(jq -r '.[0].station' "$SERVER_LIST_FILE")" 'server list cache is kept when API fails'
+
+# A cache not owned by us (e.g. pre-created by a non-root process in world-
+# writable /tmp) must not be trusted as a fallback. Only runnable as root.
+if [ "$(id -u 2>/dev/null)" = '0' ] && command -v chown >/dev/null 2>&1 && id nobody >/dev/null 2>&1; then
+	chown nobody "$SERVER_LIST_FILE"
+	foreign_rejected=0
+	nordvpn_easy_get_servers_list >/dev/null 2>&1 || foreign_rejected=1
+	chown root "$SERVER_LIST_FILE"
+	assert_eq '1' "$foreign_rejected" 'a server-list cache not owned by us is refused as a fallback'
+fi
 unset -f curl 2>/dev/null || true
 VPN_COUNTRY="$CACHED_VPN_COUNTRY"
 

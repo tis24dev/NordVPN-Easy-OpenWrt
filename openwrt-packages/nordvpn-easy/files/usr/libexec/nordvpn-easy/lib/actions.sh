@@ -126,6 +126,12 @@ nordvpn_easy_build_server_recommendations_url() {
 
 nordvpn_easy_server_list_cache_is_usable() {
 	[ -f "$SERVER_LIST_FILE" ] || return 1
+	# /tmp is world-writable, so a non-root process could pre-create a poisoned
+	# server list before the first fetch and have it trusted as a fallback for
+	# the endpoint + public key we then connect to. A cache the service wrote is
+	# always owned by us (atomic mv of a root-owned temp), so refuse anything not
+	# owned by the effective user.
+	[ -O "$SERVER_LIST_FILE" ] || return 1
 
 	jq -er --arg country "${RESOLVED_COUNTRY_CODE:-}" '
 		(type == "array") and
