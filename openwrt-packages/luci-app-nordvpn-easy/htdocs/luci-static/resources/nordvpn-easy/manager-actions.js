@@ -1012,11 +1012,11 @@ function commitLuCiPendingChangesFallback() {
 
 function flushLuCiPendingChanges() {
 	if (typeof uci !== 'undefined' && typeof uci.save === 'function') {
-		return uci.save().then(function() {
-			return commitLuCiPendingChangesFallback();
-		}).catch(function() {
-			return commitLuCiPendingChangesFallback();
-		});
+		// Run the fallback commit exactly once whether uci.save() resolves or
+		// rejects. A .then().catch() chain would also catch a rejection from the
+		// then-branch commit and run commitLuCiPendingChangesFallback() a second
+		// time, so use the two-callback form of then() instead.
+		return uci.save().then(commitLuCiPendingChangesFallback, commitLuCiPendingChangesFallback);
 	}
 
 	return commitLuCiPendingChangesFallback();
