@@ -146,4 +146,57 @@ assert_eq "$$" "$(cat "$LOCK_DIR/pid")" 'fallthrough acquisition records this pi
 nordvpn_easy_release_lock
 unset NORDVPN_EASY_LOCK_INHERITED
 
+# --- Bounded-wait acquire (nordvpn_easy_acquire_lock wrapper) ---------------
+# Deliberate apply actions (connect/reconnect) wait briefly for a TRANSIENT lock
+# holder instead of aborting busy. Drive the wrapper with a stubbed try function
+# so we test the retry/terminate logic without real lock timing.
+TRY_CALLS=0
+
+# Default (no wait window) must stay fail-fast: exactly one try, busy passed
+# straight through.
+_nordvpn_easy_try_acquire_lock() { TRY_CALLS=$((TRY_CALLS + 1)); return 2; }
+TRY_CALLS=0
+ff_rc=0
+NORDVPN_EASY_LOCK_WAIT_SECONDS=0 nordvpn_easy_acquire_lock >/dev/null 2>&1 || ff_rc=$?
+assert_eq '2' "$ff_rc" 'default acquire is fail-fast on contention'
+assert_eq '1' "$TRY_CALLS" 'fail-fast acquire tries exactly once (no retry)'
+
+# A transient holder that releases: try returns busy twice, then success. The
+# wrapper must retry and acquire (the country-change fix).
+TRY_CALLS=0
+_nordvpn_easy_try_acquire_lock() {
+	TRY_CALLS=$((TRY_CALLS + 1))
+	[ "$TRY_CALLS" -ge 3 ] && return 0
+	return 2
+}
+wait_rc=0
+NORDVPN_EASY_LOCK_WAIT_SECONDS=5 NORDVPN_EASY_LOCK_WAIT_INTERVAL=1 \
+	nordvpn_easy_acquire_lock >/dev/null 2>&1 || wait_rc=$?
+assert_eq '0' "$wait_rc" 'bounded wait acquires once a transient holder releases'
+assert_eq '3' "$TRY_CALLS" 'bounded wait retries until the lock frees'
+
+# A hard error (rc 1) is terminal: never retried.
+TRY_CALLS=0
+_nordvpn_easy_try_acquire_lock() { TRY_CALLS=$((TRY_CALLS + 1)); return 1; }
+hard_rc=0
+NORDVPN_EASY_LOCK_WAIT_SECONDS=5 nordvpn_easy_acquire_lock >/dev/null 2>&1 || hard_rc=$?
+assert_eq '1' "$hard_rc" 'bounded wait surfaces a hard error immediately'
+assert_eq '1' "$TRY_CALLS" 'bounded wait does not retry a hard error'
+
+# A holder that never releases: the wait must TERMINATE (return busy), never hang.
+TRY_CALLS=0
+_nordvpn_easy_try_acquire_lock() { TRY_CALLS=$((TRY_CALLS + 1)); return 2; }
+stuck_rc=0
+NORDVPN_EASY_LOCK_WAIT_SECONDS=2 NORDVPN_EASY_LOCK_WAIT_INTERVAL=1 \
+	nordvpn_easy_acquire_lock >/dev/null 2>&1 || stuck_rc=$?
+assert_eq '2' "$stuck_rc" 'bounded wait gives up busy when the holder never releases'
+[ "$TRY_CALLS" -ge 2 ] || {
+	printf '%s\n' 'FAIL: bounded wait should retry at least once before giving up' >&2
+	exit 1
+}
+[ "$TRY_CALLS" -le 10 ] || {
+	printf '%s\n' 'FAIL: bounded wait iteration cap did not bound the retries' >&2
+	exit 1
+}
+
 printf '%s\n' 'test-common-lock.sh: ok'

@@ -251,6 +251,7 @@ acquire_runtime_transaction_lock() {
 	local rc=0
 	local holder_pid=''
 	local holder_action=''
+	local lock_wait_seconds=0
 
 	# Reentrant within a single init process: reconcile() delegates to connect(),
 	# and both want the transaction lock. The first acquisition wins; nested
@@ -259,9 +260,27 @@ acquire_runtime_transaction_lock() {
 
 	load_config_context_library || return 1
 
+	# The background connect worker (start_connect -> connect) and the reconnect
+	# verb are deliberate, user-driven apply actions. A country-change Save & Apply
+	# tears the runtime down in a separate stop_vpn step that holds this lock for
+	# the duration of the (slow) teardown; the non-blocking lock would otherwise
+	# reject the connect with RC_BUSY and leave the VPN torn down. These run async
+	# (no LuCI rpc client timeout on the call), so let them wait briefly for a
+	# transient holder to finish instead of aborting. Background/auto verbs
+	# (reconcile, disconnect, begin_connect_apply) keep fail-fast semantics so they
+	# yield to a foreground apply instead of queueing behind it.
+	case "$action_label" in
+		connect|reconnect)
+			lock_wait_seconds="${NORDVPN_EASY_APPLY_LOCK_WAIT_SECONDS:-90}"
+			;;
+		*)
+			lock_wait_seconds=0
+			;;
+	esac
+
 	LOCK_DIR="$RUNTIME_LOCK_DIR"
 	ACTION="$action_label"
-	nordvpn_easy_acquire_lock || rc=$?
+	NORDVPN_EASY_LOCK_WAIT_SECONDS="$lock_wait_seconds" nordvpn_easy_acquire_lock || rc=$?
 	if [ "$rc" -eq 0 ]; then
 		RUNTIME_TRANSACTION_LOCK_HELD=1
 		export NORDVPN_EASY_LOCK_INHERITED=1

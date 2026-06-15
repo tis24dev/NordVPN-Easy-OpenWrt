@@ -503,7 +503,7 @@ nordvpn_easy_write_lock_metadata() {
 	printf '%s\n' "$lock_state" > "${lock_dir}/state" || return 1
 }
 
-nordvpn_easy_acquire_lock() {
+_nordvpn_easy_try_acquire_lock() {
 	local lock_pid_file="${LOCK_DIR}/pid"
 	local lock_action_file="${LOCK_DIR}/action"
 	local lock_started_at_file="${LOCK_DIR}/started_at"
@@ -643,6 +643,65 @@ nordvpn_easy_acquire_lock() {
 	LOCK_ACQUIRED=1
 	nordvpn_easy_install_exit_trap
 	nordvpn_easy_log_phase 'runtime' "recovered and acquired execution lock at $LOCK_DIR (reason: ${stale_reason})"
+}
+
+# Bounded blocking acquire. Default behavior is unchanged (one attempt, fail
+# fast): NORDVPN_EASY_LOCK_WAIT_SECONDS<=0 => single try. Deliberate, user-driven
+# apply actions set a positive wait (via the init transaction lock) so a TRANSIENT
+# holder -- a slow stop_vpn teardown, an in-flight reconcile -- just delays this
+# connect for a few seconds instead of aborting the apply and leaving the runtime
+# torn down. Only a busy result (rc 2) is retried; acquired/adopted/recovered (0)
+# and hard errors (1) return immediately. Each retry re-runs the full try (incl.
+# stale-lock recovery), so a genuinely dead lock is recovered on a later pass and
+# we never wait forever on a dead owner.
+nordvpn_easy_acquire_lock() {
+	local wait_seconds="${NORDVPN_EASY_LOCK_WAIT_SECONDS:-0}"
+	local poll_interval="${NORDVPN_EASY_LOCK_WAIT_INTERVAL:-1}"
+	local rc=0
+	local now_ts=0
+	local deadline=0
+	local logged_wait=0
+	local iters=0
+	local max_iters=0
+
+	case "$wait_seconds" in
+		''|*[!0-9]*) wait_seconds=0 ;;
+	esac
+	case "$poll_interval" in
+		''|*[!0-9]*|0) poll_interval=1 ;;
+	esac
+
+	if [ "$wait_seconds" -le 0 ]; then
+		_nordvpn_easy_try_acquire_lock
+		return $?
+	fi
+
+	now_ts="$(date +%s 2>/dev/null || printf '0')"
+	case "$now_ts" in ''|*[!0-9]*) now_ts=0 ;; esac
+	deadline=$((now_ts + wait_seconds))
+	# Iteration cap bounds the loop independently of the wall clock, so a broken
+	# or non-monotonic `date +%s` (which could leave the deadline check never
+	# true) can never produce an unbounded wait. With poll_interval seconds per
+	# pass this caps real wait near wait_seconds.
+	max_iters=$(( (wait_seconds / poll_interval) + 5 ))
+
+	while :; do
+		_nordvpn_easy_try_acquire_lock
+		rc=$?
+		# 0 = acquired/adopted/recovered, 1 = hard error: both terminal.
+		[ "$rc" -ne 2 ] && return "$rc"
+
+		iters=$((iters + 1))
+		now_ts="$(date +%s 2>/dev/null || printf '0')"
+		case "$now_ts" in ''|*[!0-9]*) now_ts=0 ;; esac
+		{ [ "$now_ts" -ge "$deadline" ] || [ "$iters" -ge "$max_iters" ]; } && return 2
+
+		if [ "$logged_wait" -eq 0 ]; then
+			nordvpn_easy_log_phase 'runtime' "execution lock busy at $LOCK_DIR; waiting up to ${wait_seconds}s for the current operation to finish"
+			logged_wait=1
+		fi
+		sleep "$poll_interval"
+	done
 }
 
 nordvpn_easy_on_exit() {
