@@ -112,12 +112,9 @@ Promise.resolve().then(async function() {
 	await harness.pollers[0].fn();
 	assert.deepEqual(harness.calls, [ 'status' ], 'first poller refreshes local status');
 
-	await harness.pollers[2].fn();
-	assert.deepEqual(harness.calls, [ 'status', 'diagnostics' ], 'third poller refreshes diagnostics on the 120s cadence');
-
 	state.saveApplyInProgress = true;
 	await harness.pollers[0].fn();
-	assert.deepEqual(harness.calls, [ 'status', 'diagnostics', 'status:suppress' ],
+	assert.deepEqual(harness.calls, [ 'status', 'status:suppress' ],
 		'local status keeps refreshing during Save & Apply with auto reconcile suppressed');
 	state.saveApplyInProgress = false;
 

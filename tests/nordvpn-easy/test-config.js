@@ -344,20 +344,9 @@ function loadConfigView(options) {
 					status: normalizeValue(status)
 				});
 			},
-			diagnosticsStatusKey(status) {
-				return JSON.stringify({
-					desired_enabled: !!(status && status.desired_enabled),
-					selected_country: String((status && status.selected_country) || ''),
-					current_server_country: String((status && status.current_server_country) || '')
-				});
-			},
-			renderDiagnosticsSnapshot(renderState, summary, fresh, statusKey) {
+			renderDiagnosticsSnapshot(renderState, summary, fresh) {
 				renderState.currentDiagnosticsSummary = summary;
 				renderState.currentDiagnosticsSummaryFresh = !!fresh;
-				if (fresh && statusKey != null)
-					renderState.currentDiagnosticsSummaryStatusKey = String(statusKey);
-				else if (!fresh)
-					renderState.currentDiagnosticsSummaryStatusKey = '';
 				calls.updateDiagnosticsBanner.push(summary);
 			},
 			updateLocalStatus(renderState, updateOptions) {
@@ -733,8 +722,6 @@ async function testRenderMarksInvalidDiagnosticsPayloadStale() {
 
 	assert.equal(harness.state.currentDiagnosticsSummaryFresh, false,
 		'diagnostics_summary with invalid JSON is not marked fresh');
-	assert.equal(harness.state.lastDiagnosticsSummaryAttemptAt > 0, true,
-		'invalid initial diagnostics_summary response is still recorded as an attempt for backoff');
 }
 
 async function testRenderLoadsManualCatalogInBackgroundAfterInitialPaint() {

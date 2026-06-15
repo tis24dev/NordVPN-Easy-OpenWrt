@@ -231,12 +231,9 @@ const TokenValue = form.Value.extend({
 		const initialDiagnosticsFresh = !!(data[3] && data[3].code === 0 &&
 			managerData.isDiagnosticsSummaryPayload(initialDiagnosticsPayload));
 		const initialDiagnostics = managerData.parseDiagnosticsSummary(initialDiagnosticsPayload);
-		const initialDiagnosticsAttempted = data.length > 3;
-		const renderNow = Date.now();
 		// render keeps managerData.parseServerCatalog(data[2]) for external callers and
 		// testRenderWiresInitialStateAndLiveHandlers; load returns null in this slot.
 		const initialCatalog = managerData.parseServerCatalog(data[2] && data[2].code === 0 ? data[2].stdout || '{}' : '{}');
-		const initialDiagnosticsStatusKey = managerActions.diagnosticsStatusKey(initialStatus);
 		const currentCountry = managerData.normalizeCountryCode(uci.get('nordvpn_easy', 'main', 'vpn_country') || '');
 		const currentMode = String(uci.get('nordvpn_easy', 'main', 'server_selection_mode') || 'auto');
 		const currentPreferredStation = String(uci.get('nordvpn_easy', 'main', 'preferred_server_station') || '');
@@ -251,15 +248,11 @@ const TokenValue = form.Value.extend({
 		state.appliedCountryCode = currentCountry;
 		state.currentLocalStatus = initialStatus;
 		state.currentLocalStatusFresh = initialStatusFresh;
-		state.currentLocalStatusLastUpdated = initialStatusFresh ? renderNow : 0;
+		state.currentLocalStatusLastUpdated = initialStatusFresh ? Date.now() : 0;
 		state.currentOperationStatus = String(initialStatus.operation_status || 'idle');
 		state.currentServerCatalog = initialCatalog;
 		state.currentDiagnosticsSummary = initialDiagnostics;
 		state.currentDiagnosticsSummaryFresh = initialDiagnosticsFresh;
-		state.currentDiagnosticsSummaryLastUpdated = initialDiagnosticsFresh ? renderNow : 0;
-		state.currentDiagnosticsSummaryStatusKey = initialDiagnosticsFresh ? initialDiagnosticsStatusKey : '';
-		state.lastDiagnosticsSummaryAttemptAt = initialDiagnosticsAttempted ? renderNow : 0;
-		state.lastDiagnosticsSummaryAttemptStatusKey = initialDiagnosticsStatusKey;
 		state.serverCatalogIndex = managerData.buildServerCatalogIndex(state.currentServerCatalog);
 
 		// Defer the orphaned-runtime recovery out of render so render stays

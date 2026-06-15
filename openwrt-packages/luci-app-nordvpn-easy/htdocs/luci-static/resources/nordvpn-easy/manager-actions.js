@@ -21,8 +21,6 @@ const CONNECT_APPLY_DISPATCH_CLOCK_SLACK_MS = 120000;
 const RUNTIME_ACTION_COOLDOWN_MS = SAVE_APPLY_TIMEOUT_MS + 30000;
 const ENABLED_RUNTIME_RECOVERY_COOLDOWN_MS = 15000;
 const POST_APPLY_RECOVERY_GRACE_MS = 120000;
-const DIAGNOSTICS_SUMMARY_TTL_MS = 120000;
-const DIAGNOSTICS_SUMMARY_FAILURE_BACKOFF_MS = 15000;
 let callUciCommit = null;
 
 // Opt-in, same-origin-only Save & Apply timing log (development / lab). It is
@@ -406,31 +404,6 @@ function buildDiagnosticsSnapshot(res) {
 		summary: managerData.parseDiagnosticsSummary(rawSummary),
 		fresh: fresh
 	};
-}
-
-function diagnosticsStatusKey(status) {
-	const runtimeStatus = status || {};
-
-	return [
-		runtimeStatus.desired_enabled ? '1' : '0',
-		runtimeStatus.runtime_disabled ? '1' : '0',
-		runtimeStatus.interface_disabled ? '1' : '0',
-		runtimeStatus.runtime_configured ? '1' : '0',
-		String(runtimeStatus.server_selection_mode || 'auto'),
-		managerData.normalizeCountryCode(runtimeStatus.selected_country || ''),
-		String(runtimeStatus.preferred_server_station || ''),
-		String(runtimeStatus.current_server_station || ''),
-		managerData.normalizeCountryCode(runtimeStatus.current_server_country || ''),
-		String(runtimeStatus.state || ''),
-		String(runtimeStatus.vpn_status || 'inactive'),
-		runtimeStatus.connected ? '1' : '0',
-		runtimeStatus.connect_apply_pending ? '1' : '0',
-		runtimeStatus.connect_apply_finished ? '1' : '0',
-		runtimeStatus.connect_apply_success ? '1' : '0',
-		String(Number(runtimeStatus.connect_apply_rc || 0)),
-		managerData.normalizeCountryCode(runtimeStatus.connect_apply_country || ''),
-		String(runtimeStatus.last_error || '')
-	].join('\x1f');
 }
 
 function runtimeActionFailureFromStatus(status) {
@@ -1674,7 +1647,7 @@ function updatePublicIp(state) {
 	});
 }
 
-function renderDiagnosticsSnapshot(state, summary, fresh, statusKey) {
+function renderDiagnosticsSnapshot(state, summary, fresh) {
 	if (shouldHideDiagnosticsAlerts(state)) {
 		summary = managerData.emptyDiagnosticsSummary();
 		fresh = false;
@@ -1682,11 +1655,6 @@ function renderDiagnosticsSnapshot(state, summary, fresh, statusKey) {
 
 	state.currentDiagnosticsSummary = summary;
 	state.currentDiagnosticsSummaryFresh = !!fresh;
-	state.currentDiagnosticsSummaryLastUpdated = fresh ? Date.now() : 0;
-	if (fresh && statusKey != null)
-		state.currentDiagnosticsSummaryStatusKey = String(statusKey);
-	else if (!fresh)
-		state.currentDiagnosticsSummaryStatusKey = '';
 
 	if (!driftEvaluationAllowed(state)) {
 		suppressDriftUi(state);
@@ -1696,49 +1664,8 @@ function renderDiagnosticsSnapshot(state, summary, fresh, statusKey) {
 	managerUI.updateDiagnosticsBanner(summary);
 }
 
-function diagnosticsSummaryCacheFresh(state, now, statusKey) {
-	const lastFresh = Number((state && state.currentDiagnosticsSummaryLastUpdated) || 0);
-	const lastKey = String((state && state.currentDiagnosticsSummaryStatusKey) || '');
-
-	return !!(state && state.currentDiagnosticsSummaryFresh) &&
-		lastFresh > 0 &&
-		lastKey === String(statusKey || '') &&
-		(now - lastFresh) < DIAGNOSTICS_SUMMARY_TTL_MS;
-}
-
-function diagnosticsSummaryRetryBackoffActive(state, now, statusKey) {
-	const lastAttempt = Number((state && state.lastDiagnosticsSummaryAttemptAt) || 0);
-	const lastAttemptKey = String((state && state.lastDiagnosticsSummaryAttemptStatusKey) || '');
-
-	return lastAttempt > 0 &&
-		lastAttemptKey === String(statusKey || '') &&
-		(now - lastAttempt) < DIAGNOSTICS_SUMMARY_FAILURE_BACKOFF_MS;
-}
-
-function nextDiagnosticsSummaryRequestId(state) {
-	const next = Number((state && state.latestDiagnosticsSummaryRequestId) || 0) + 1;
-
-	state.latestDiagnosticsSummaryRequestId = next;
-	return next;
-}
-
-function diagnosticsSummaryRequestIsCurrent(state, requestId) {
-	return Number((state && state.latestDiagnosticsSummaryRequestId) || 0) === requestId;
-}
-
-function updateDiagnosticsSummary(state, options) {
-	const opts = options || {};
-	const now = Date.now();
-	const diagnosticsInFlight = !!(state && state.inFlight && state.inFlight.diagnostics);
-	const statusKey = opts.statusKey != null
-		? String(opts.statusKey)
-		: diagnosticsStatusKey(state && state.currentLocalStatus);
-	const inFlightStatusKey = String((state && state.inFlightDiagnosticsStatusKey) || '');
-	const sameStatusRequestInFlight = !opts.force && diagnosticsInFlight && inFlightStatusKey === statusKey;
-	const replaceInFlight = diagnosticsInFlight && inFlightStatusKey !== statusKey;
-	let requestId;
-
-	if (!driftEvaluationAllowed(state) || shouldHideDiagnosticsAlerts(state)) {
+function updateDiagnosticsSummary(state) {
+	if (!driftEvaluationAllowed(state)) {
 		suppressDriftUi(state);
 		return Promise.resolve(state.currentDiagnosticsSummary);
 	}
@@ -1748,40 +1675,17 @@ function updateDiagnosticsSummary(state, options) {
 		return Promise.resolve(state.currentDiagnosticsSummary);
 	}
 
-	if (!opts.force && diagnosticsSummaryCacheFresh(state, now, statusKey))
-		return Promise.resolve(state.currentDiagnosticsSummary);
-
-	if (!opts.force && !replaceInFlight && diagnosticsSummaryRetryBackoffActive(state, now, statusKey))
-		return Promise.resolve(state.currentDiagnosticsSummary);
-
-	state.lastDiagnosticsSummaryAttemptAt = now;
-	state.lastDiagnosticsSummaryAttemptStatusKey = statusKey;
-	if (sameStatusRequestInFlight)
-		return managerStore.runExclusive(state, 'diagnostics', function() {
-			return Promise.resolve(state.currentDiagnosticsSummary);
-		});
-
-	if (opts.force || replaceInFlight || !diagnosticsInFlight)
-		requestId = nextDiagnosticsSummaryRequestId(state);
-	state.inFlightDiagnosticsStatusKey = statusKey;
-
 	return managerStore.runExclusive(state, 'diagnostics', function() {
 		return service.execService('diagnostics_summary').then(function(res) {
 			const diagnosticsSnapshot = buildDiagnosticsSnapshot(res);
 
-			if (!diagnosticsSummaryRequestIsCurrent(state, requestId))
-				return state.currentDiagnosticsSummary;
-
-			renderDiagnosticsSnapshot(state, diagnosticsSnapshot.summary, diagnosticsSnapshot.fresh, statusKey);
+			renderDiagnosticsSnapshot(state, diagnosticsSnapshot.summary, diagnosticsSnapshot.fresh);
 			return diagnosticsSnapshot.summary;
 		}).catch(function() {
-			if (!diagnosticsSummaryRequestIsCurrent(state, requestId))
-				return state.currentDiagnosticsSummary;
-
 			renderDiagnosticsSnapshot(state, managerData.emptyDiagnosticsSummary(), false);
 			return state.currentDiagnosticsSummary;
 		});
-	}, { fresh: !!(opts.force || replaceInFlight) });
+	});
 }
 
 function updateLocalStatus(state, options) {
@@ -1831,13 +1735,9 @@ function updateLocalStatus(state, options) {
 				});
 			}
 
-			// Status ticks reuse the last diagnostics result for unchanged runtime
-			// inputs; apply/runtime completion still forces a fresh diagnostics pass.
+			// Drift is evaluated only after Save & Apply / runtime actions finish.
 			if (desiredEnabled && driftEvaluationAllowed(state))
-				void updateDiagnosticsSummary(state, {
-					force: !!(opts.force || opts.refreshDiagnostics),
-					statusKey: diagnosticsStatusKey(status)
-				});
+				void updateDiagnosticsSummary(state, { force: opts.force });
 			else if (!driftEvaluationAllowed(state))
 				suppressDriftUi(state);
 			else
@@ -2023,7 +1923,6 @@ function finishApplyCycle(state, options) {
 
 	return updateLocalStatus(state, {
 		force: true,
-		refreshDiagnostics: true,
 		suppressAutoReconcile: !!opts.suppressAutoReconcile
 	}).then(function() {
 		return refreshLuCiChangeTracker();
@@ -2176,7 +2075,6 @@ return baseclass.extend({
 	maybeEnsureEnabledRuntime: maybeEnsureEnabledRuntime,
 	maybeAutoReconcileSelectionDrift: maybeAutoReconcileSelectionDrift,
 	runtimeOperationIsBusy: runtimeOperationIsBusy,
-	diagnosticsStatusKey: diagnosticsStatusKey,
 	loadServerCatalog: loadServerCatalog,
 	renderLocalStatusSnapshot: renderLocalStatusSnapshot,
 	renderLocalStatusUnavailable: renderLocalStatusUnavailable,
