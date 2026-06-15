@@ -29,6 +29,16 @@ const managerDataPath = path.join(
 	'nordvpn-easy',
 	'manager-data.js'
 );
+const managerStorePath = path.join(
+	rootDir,
+	'openwrt-packages',
+	'luci-app-nordvpn-easy',
+	'htdocs',
+	'luci-static',
+	'resources',
+	'nordvpn-easy',
+	'manager-store.js'
+);
 
 if (!String.prototype.format) {
 	Object.defineProperty(String.prototype, 'format', {
@@ -60,6 +70,36 @@ function loadManagerDataModule() {
 }
 
 const managerData = loadManagerDataModule();
+
+function loadManagerStoreModule() {
+	const source = fs.readFileSync(managerStorePath, 'utf8');
+
+	return vm.runInNewContext(`(function(){\n${source}\n})();`, {
+		baseclass: {
+			extend(api) {
+				return api;
+			}
+		},
+		managerData: {
+			parseLocalStatus() {
+				return {};
+			},
+			emptyServerCatalog() {
+				return { servers: [] };
+			},
+			emptyDiagnosticsSummary() {
+				return managerData.emptyDiagnosticsSummary();
+			},
+			normalizeCountryCode(value) {
+				return String(value || '').trim().toUpperCase();
+			}
+		}
+	}, {
+		filename: managerStorePath
+	});
+}
+
+const realManagerStore = loadManagerStoreModule();
 
 // The rpcd readonly-status fail-safe stub omits most fields on purpose;
 // parseLocalStatus must fill safe (down) defaults so a context-load + emitter
@@ -105,6 +145,9 @@ function loadManagerActionsModule(overrides) {
 			},
 			parseDiagnosticsSummary(raw) {
 				return managerData.parseDiagnosticsSummary(raw);
+			},
+			isDiagnosticsSummaryPayload(value) {
+				return managerData.isDiagnosticsSummaryPayload(value);
 			},
 			diagnosticsHasAlert(summary) {
 				return managerData.diagnosticsHasAlert(summary);
@@ -204,6 +247,21 @@ function delay(ms) {
 	});
 }
 
+function deferred() {
+	let resolve;
+	let reject;
+	const promise = new Promise(function(resolvePromise, rejectPromise) {
+		resolve = resolvePromise;
+		reject = rejectPromise;
+	});
+
+	return {
+		promise: promise,
+		resolve: resolve,
+		reject: reject
+	};
+}
+
 const healthyRuntime = {
 	interface: 'wg0',
 	runtime_disabled: false,
@@ -213,6 +271,7 @@ const healthyRuntime = {
 
 assert.equal(typeof managerActions.runApplyCycle, 'function', 'runApplyCycle is exported');
 assert.equal(typeof managerActions.renderLocalStatusSnapshot, 'function', 'renderLocalStatusSnapshot is exported');
+assert.equal(typeof managerActions.diagnosticsStatusKey, 'function', 'diagnosticsStatusKey is exported');
 
 assert.equal(managerData.parseEnabledFlag(undefined), false, 'missing enabled option is treated as disabled');
 assert.equal(managerData.parseEnabledFlag('0'), false, 'explicit disabled value is treated as disabled');
@@ -282,6 +341,14 @@ function buildUpdateLocalStatusState() {
 		currentLocalStatus: Object.assign({}, healthyRuntime, { desired_enabled: true, operation_status: 'idle' }),
 		currentLocalStatusFresh: true,
 		currentLocalStatusLastUpdated: 1234,
+		currentDiagnosticsSummary: managerData.emptyDiagnosticsSummary(),
+		currentDiagnosticsSummaryFresh: true,
+		currentDiagnosticsSummaryLastUpdated: Date.now(),
+		currentDiagnosticsSummaryStatusKey: '',
+		lastDiagnosticsSummaryAttemptAt: Date.now(),
+		lastDiagnosticsSummaryAttemptStatusKey: '',
+		latestDiagnosticsSummaryRequestId: 0,
+		inFlightDiagnosticsStatusKey: '',
 		pendingOperationLabel: '',
 		currentOperationStatus: 'idle',
 		appliedEnabled: true,
@@ -289,6 +356,542 @@ function buildUpdateLocalStatusState() {
 		currentPublicCountry: '',
 		appliedCountryCode: 'UY'
 	};
+}
+
+function diagnosticsExecResult(summary) {
+	return {
+		code: 0,
+		stdout: JSON.stringify(summary || managerData.emptyDiagnosticsSummary()),
+		stderr: ''
+	};
+}
+
+async function testUpdateLocalStatusSkipsDiagnosticsForStableStatusTicks() {
+	const calls = [];
+	const statusPayload = Object.assign({}, healthyRuntime, {
+		desired_enabled: true,
+		operation_status: 'idle',
+		selected_country: 'UY',
+		current_server_country: 'UY'
+	});
+	const actions = buildUpdateLocalStatusHarness({
+		parseExecJsonResponse(res, fallback) {
+			if (!res || res.code !== 0)
+				return fallback;
+
+			return JSON.parse(res.stdout || '');
+		},
+		execService(action) {
+			calls.push(action);
+			if (action === 'status_json')
+				return Promise.resolve({ code: 0, stdout: JSON.stringify(statusPayload), stderr: '' });
+			if (action === 'diagnostics_summary')
+				return Promise.resolve(diagnosticsExecResult());
+
+			return Promise.reject(new Error('unexpected action: ' + action));
+		}
+	});
+	const state = Object.assign(buildUpdateLocalStatusState(), {
+		currentLocalStatus: statusPayload,
+		currentDiagnosticsSummaryLastUpdated: Date.now(),
+		currentDiagnosticsSummaryStatusKey: actions.diagnosticsStatusKey(statusPayload),
+		lastDiagnosticsSummaryAttemptAt: Date.now(),
+		lastDiagnosticsSummaryAttemptStatusKey: actions.diagnosticsStatusKey(statusPayload)
+	});
+
+	await actions.updateLocalStatus(state, { suppressAutoReconcile: true });
+	await actions.updateLocalStatus(state, { suppressAutoReconcile: true });
+
+	assert.deepEqual(calls, [ 'status_json', 'status_json' ],
+		'stable status ticks do not call diagnostics_summary while the diagnostics summary matches the current status');
+}
+
+async function testUpdateLocalStatusRefreshesDiagnosticsWhenStatusKeyChanges() {
+	const calls = [];
+	const previousStatus = Object.assign({}, healthyRuntime, {
+		desired_enabled: true,
+		operation_status: 'idle',
+		selected_country: 'UY',
+		current_server_country: 'UY',
+		public_verification_status: 'verified'
+	});
+	const changedStatus = Object.assign({}, previousStatus, {
+		current_server_country: 'AR'
+	});
+	const actions = buildUpdateLocalStatusHarness({
+		parseExecJsonResponse(res, fallback) {
+			if (!res || res.code !== 0)
+				return fallback;
+
+			return JSON.parse(res.stdout || '');
+		},
+		execService(action) {
+			calls.push(action);
+			if (action === 'status_json')
+				return Promise.resolve({ code: 0, stdout: JSON.stringify(changedStatus), stderr: '' });
+			if (action === 'diagnostics_summary')
+				return Promise.resolve(diagnosticsExecResult());
+
+			return Promise.reject(new Error('unexpected action: ' + action));
+		}
+	});
+	const state = Object.assign(buildUpdateLocalStatusState(), {
+		currentLocalStatus: previousStatus,
+		currentDiagnosticsSummaryLastUpdated: Date.now(),
+		currentDiagnosticsSummaryStatusKey: actions.diagnosticsStatusKey(previousStatus),
+		lastDiagnosticsSummaryAttemptAt: Date.now() - 30000,
+		lastDiagnosticsSummaryAttemptStatusKey: actions.diagnosticsStatusKey(previousStatus)
+	});
+
+	await actions.updateLocalStatus(state, { suppressAutoReconcile: true });
+
+	assert.deepEqual(calls, [ 'status_json', 'diagnostics_summary' ],
+		'status changes relevant to diagnostics refresh diagnostics immediately even inside the TTL window');
+	assert.equal(state.currentDiagnosticsSummaryStatusKey, actions.diagnosticsStatusKey(changedStatus),
+		'fresh diagnostics summary is recorded against the changed status key');
+}
+
+async function testPublicVerificationTimestampDoesNotBustDiagnosticsCache() {
+	const calls = [];
+	const previousStatus = Object.assign({}, healthyRuntime, {
+		desired_enabled: true,
+		operation_status: 'idle',
+		selected_country: 'UY',
+		current_server_country: 'UY',
+		public_verification_status: 'verified',
+		public_verification_checked_at: 100
+	});
+	const changedTimestampStatus = Object.assign({}, previousStatus, {
+		public_verification_checked_at: 200
+	});
+	const actions = buildUpdateLocalStatusHarness({
+		parseExecJsonResponse(res, fallback) {
+			if (!res || res.code !== 0)
+				return fallback;
+
+			return JSON.parse(res.stdout || '');
+		},
+		execService(action) {
+			calls.push(action);
+			if (action === 'status_json')
+				return Promise.resolve({ code: 0, stdout: JSON.stringify(changedTimestampStatus), stderr: '' });
+			if (action === 'diagnostics_summary')
+				return Promise.resolve(diagnosticsExecResult());
+
+			return Promise.reject(new Error('unexpected action: ' + action));
+		}
+	});
+	const state = Object.assign(buildUpdateLocalStatusState(), {
+		currentLocalStatus: previousStatus,
+		currentDiagnosticsSummaryLastUpdated: Date.now(),
+		currentDiagnosticsSummaryStatusKey: actions.diagnosticsStatusKey(previousStatus),
+		lastDiagnosticsSummaryAttemptAt: Date.now(),
+		lastDiagnosticsSummaryAttemptStatusKey: actions.diagnosticsStatusKey(previousStatus)
+	});
+
+	await actions.updateLocalStatus(state, { suppressAutoReconcile: true });
+
+	assert.deepEqual(calls, [ 'status_json' ],
+		'public verification timestamp churn does not force diagnostics_summary inside the TTL window');
+}
+
+async function testPublicVerificationPendingDoesNotBustDiagnosticsCache() {
+	const calls = [];
+	const previousStatus = Object.assign({}, healthyRuntime, {
+		desired_enabled: true,
+		operation_status: 'idle',
+		selected_country: 'UY',
+		current_server_country: 'UY',
+		public_verification_status: 'ok',
+		public_verification_checked_at: 100
+	});
+	const pendingStatus = Object.assign({}, previousStatus, {
+		public_verification_status: 'pending',
+		public_verification_checked_at: 101
+	});
+	const actions = buildUpdateLocalStatusHarness({
+		parseExecJsonResponse(res, fallback) {
+			if (!res || res.code !== 0)
+				return fallback;
+
+			return JSON.parse(res.stdout || '');
+		},
+		execService(action) {
+			calls.push(action);
+			if (action === 'status_json')
+				return Promise.resolve({ code: 0, stdout: JSON.stringify(pendingStatus), stderr: '' });
+			if (action === 'diagnostics_summary')
+				return Promise.resolve(diagnosticsExecResult());
+
+			return Promise.reject(new Error('unexpected action: ' + action));
+		}
+	});
+	const state = Object.assign(buildUpdateLocalStatusState(), {
+		currentLocalStatus: previousStatus,
+		currentDiagnosticsSummaryLastUpdated: Date.now(),
+		currentDiagnosticsSummaryStatusKey: actions.diagnosticsStatusKey(previousStatus),
+		lastDiagnosticsSummaryAttemptAt: Date.now(),
+		lastDiagnosticsSummaryAttemptStatusKey: actions.diagnosticsStatusKey(previousStatus)
+	});
+
+	await actions.updateLocalStatus(state, { suppressAutoReconcile: true });
+
+	assert.deepEqual(calls, [ 'status_json' ],
+		'transient public verification pending state does not force diagnostics_summary inside the TTL window');
+}
+
+async function testUpdateLocalStatusRefreshesDiagnosticsWhenRequested() {
+	const calls = [];
+	const statusPayload = Object.assign({}, healthyRuntime, {
+		desired_enabled: true,
+		operation_status: 'idle',
+		selected_country: 'UY',
+		current_server_country: 'UY'
+	});
+	const actions = buildUpdateLocalStatusHarness({
+		parseExecJsonResponse(res, fallback) {
+			if (!res || res.code !== 0)
+				return fallback;
+
+			return JSON.parse(res.stdout || '');
+		},
+		execService(action) {
+			calls.push(action);
+			if (action === 'status_json')
+				return Promise.resolve({ code: 0, stdout: JSON.stringify(statusPayload), stderr: '' });
+			if (action === 'diagnostics_summary')
+				return Promise.resolve(diagnosticsExecResult());
+
+			return Promise.reject(new Error('unexpected action: ' + action));
+		}
+	});
+	const state = Object.assign(buildUpdateLocalStatusState(), {
+		currentLocalStatus: statusPayload,
+		currentDiagnosticsSummaryLastUpdated: Date.now(),
+		currentDiagnosticsSummaryStatusKey: actions.diagnosticsStatusKey(statusPayload),
+		lastDiagnosticsSummaryAttemptAt: Date.now(),
+		lastDiagnosticsSummaryAttemptStatusKey: actions.diagnosticsStatusKey(statusPayload)
+	});
+
+	await actions.updateLocalStatus(state, { force: true });
+
+	assert.deepEqual(calls, [ 'status_json', 'diagnostics_summary' ],
+		'forced status refresh bypasses the diagnostics TTL');
+}
+
+async function testUpdateLocalStatusClearsDiagnosticsWhenRuntimeDisabled() {
+	const calls = [];
+	const banners = [];
+	const statusPayload = {
+		desired_enabled: false,
+		runtime_disabled: true,
+		interface_disabled: true,
+		runtime_configured: false,
+		operation_status: 'idle',
+		vpn_status: 'inactive'
+	};
+	const actions = loadManagerActionsModule({
+		managerData: {
+			normalizeCountryCode(value) {
+				return String(value || '').trim().toUpperCase();
+			},
+			parseLocalStatus(raw) {
+				return JSON.parse(raw || '{}');
+			},
+			runtimeStatusIsBusy(status) {
+				return managerData.runtimeStatusIsBusy(status);
+			},
+			emptyDiagnosticsSummary() {
+				return managerData.emptyDiagnosticsSummary();
+			},
+			parseDiagnosticsSummary(raw) {
+				return managerData.parseDiagnosticsSummary(raw);
+			},
+			isDiagnosticsSummaryPayload(value) {
+				return managerData.isDiagnosticsSummaryPayload(value);
+			},
+			diagnosticsHasAlert(summary) {
+				return managerData.diagnosticsHasAlert(summary);
+			},
+			hideSelectionDriftDiagnostics(summary) {
+				return managerData.hideSelectionDriftDiagnostics(summary);
+			}
+		},
+		managerStore: {
+			PHASES: {},
+			runExclusive(_state, _key, factory) {
+				return Promise.resolve().then(factory);
+			},
+			clearError() {},
+			syncPhase() {},
+			setPhase() {}
+		},
+		managerUI: {
+			ids: {
+				CURRENT_SERVER_STATUS_ID: 'current',
+				PREFERRED_SERVER_STATUS_ID: 'preferred',
+				ENDPOINT_STATUS_ID: 'endpoint',
+				HANDSHAKE_STATUS_ID: 'handshake',
+				TRANSFER_STATUS_ID: 'transfer',
+				OPERATION_STATUS_ID: 'operation',
+				LAST_ERROR_STATUS_ID: 'last_error',
+				PUBLIC_IP_STATUS_ID: 'public_ip',
+				PUBLIC_COUNTRY_STATUS_ID: 'public_country'
+			},
+			replaceStatusText() {},
+			setManagerControlsDisabled() {},
+			setVpnStatusIndicator() {},
+			updateCountryMatchStatus() {},
+			updateServerSelectionState() {},
+			currentServerSummaryFromStatus() {
+				return '';
+			},
+			preferredServerSummaryFromStatus() {
+				return '';
+			},
+			isDisableRequested() {
+				return false;
+			},
+			updateDiagnosticsBanner(summary) {
+				banners.push(summary);
+			}
+		},
+		service: {
+			parseExecJsonResponse(res, fallback) {
+				if (!res || res.code !== 0)
+					return fallback;
+
+				return JSON.parse(res.stdout || '');
+			},
+			execService(action) {
+				calls.push(action);
+				if (action === 'status_json')
+					return Promise.resolve({ code: 0, stdout: JSON.stringify(statusPayload), stderr: '' });
+				if (action === 'diagnostics_summary')
+					return Promise.resolve(diagnosticsExecResult());
+
+				return Promise.reject(new Error('unexpected action: ' + action));
+			}
+		}
+	}).managerActions;
+	const alertSummary = {
+		primary_finding: {
+			code: 'selection.drift',
+			message: 'drift',
+			severity: 'warning',
+			priority: 150
+		},
+		findings: [
+			{
+				code: 'selection.drift',
+				message: 'drift',
+				severity: 'warning',
+				priority: 150
+			}
+		]
+	};
+	const state = Object.assign(buildUpdateLocalStatusState(), {
+		currentDiagnosticsSummary: alertSummary,
+		currentDiagnosticsSummaryFresh: true,
+		currentDiagnosticsSummaryLastUpdated: Date.now(),
+		lastDiagnosticsSummaryAttemptAt: Date.now()
+	});
+
+	await actions.updateLocalStatus(state);
+
+	assert.deepEqual(calls, [ 'status_json' ], 'disabled status clears diagnostics without calling diagnostics_summary');
+	assert.equal(state.currentDiagnosticsSummaryFresh, false, 'disabled status marks diagnostics stale');
+	assert.equal(managerData.diagnosticsHasAlert(state.currentDiagnosticsSummary), false,
+		'disabled status clears the diagnostics alert summary');
+	assert.equal(banners.length, 1, 'disabled status updates the diagnostics banner once');
+	assert.equal(managerData.diagnosticsHasAlert(banners[0]), false, 'disabled status renders an empty diagnostics banner');
+}
+
+async function testDiagnosticsSharesSameKeyInFlightRequest() {
+	const first = deferred();
+	const serviceResults = [ first ];
+	const banners = [];
+	const staleSummary = {
+		primary_finding: {
+			code: 'selection.drift',
+			message: 'stale drift',
+			severity: 'warning',
+			priority: 150
+		},
+		findings: [
+			{
+				code: 'selection.drift',
+				message: 'stale drift',
+				severity: 'warning',
+				priority: 150
+			}
+		]
+	};
+	const cleanSummary = managerData.emptyDiagnosticsSummary();
+	const actions = loadManagerActionsModule({
+		managerData: {
+			emptyDiagnosticsSummary() {
+				return managerData.emptyDiagnosticsSummary();
+			},
+			parseDiagnosticsSummary(raw) {
+				return managerData.parseDiagnosticsSummary(raw);
+			},
+			isDiagnosticsSummaryPayload(value) {
+				return managerData.isDiagnosticsSummaryPayload(value);
+			},
+			diagnosticsHasAlert(summary) {
+				return managerData.diagnosticsHasAlert(summary);
+			},
+			hideSelectionDriftDiagnostics(summary) {
+				return managerData.hideSelectionDriftDiagnostics(summary);
+			}
+		},
+		managerStore: realManagerStore,
+		managerUI: {
+			updateDiagnosticsBanner(summary) {
+				banners.push(summary);
+			}
+		},
+		service: {
+			parseExecJsonResponse(res, fallback) {
+				if (!res || res.code !== 0)
+					return fallback;
+
+				return JSON.parse(res.stdout || '');
+			},
+			execService(action) {
+				if (action !== 'diagnostics_summary')
+					return Promise.reject(new Error('unexpected action: ' + action));
+
+				const result = serviceResults.shift();
+				if (!result)
+					return Promise.reject(new Error('unexpected diagnostics call'));
+
+				return result.promise;
+			}
+		}
+	}).managerActions;
+	const state = realManagerStore.createState();
+	Object.assign(state, {
+		appliedEnabled: true,
+		currentLocalStatus: Object.assign({}, healthyRuntime, {
+			desired_enabled: true,
+			selected_country: 'UY',
+			current_server_country: 'UY'
+		}),
+		currentDiagnosticsSummary: cleanSummary,
+		currentDiagnosticsSummaryFresh: true,
+		currentDiagnosticsSummaryLastUpdated: 0,
+		lastDiagnosticsSummaryAttemptAt: 0,
+		latestDiagnosticsSummaryRequestId: 0
+	});
+
+	const firstPromise = actions.updateDiagnosticsSummary(state);
+	await Promise.resolve();
+	const sharedPromise = actions.updateDiagnosticsSummary(state);
+	await Promise.resolve();
+
+	assert.equal(serviceResults.length, 0, 'same-key diagnostics reuses the existing in-flight request');
+	first.resolve(diagnosticsExecResult(staleSummary));
+	await sharedPromise;
+	await firstPromise;
+
+	assert.equal(managerData.diagnosticsHasAlert(state.currentDiagnosticsSummary), true,
+		'same-key diagnostics does not discard the existing in-flight success');
+	assert.equal(banners.length, 1, 'shared diagnostics request renders once');
+	assert.equal(managerData.diagnosticsHasAlert(banners[0]), true, 'shared diagnostics result is rendered');
+}
+
+async function testForcedDiagnosticsStartsNewSameKeyRequest() {
+	const first = deferred();
+	const second = deferred();
+	const serviceResults = [ first, second ];
+	const banners = [];
+	const cleanSummary = managerData.emptyDiagnosticsSummary();
+	const alertSummary = {
+		primary_finding: {
+			code: 'selection.drift',
+			message: 'old drift',
+			severity: 'warning',
+			priority: 150
+		},
+		findings: [
+			{
+				code: 'selection.drift',
+				message: 'old drift',
+				severity: 'warning',
+				priority: 150
+			}
+		]
+	};
+	const actions = loadManagerActionsModule({
+		managerData: {
+			emptyDiagnosticsSummary() {
+				return managerData.emptyDiagnosticsSummary();
+			},
+			parseDiagnosticsSummary(raw) {
+				return managerData.parseDiagnosticsSummary(raw);
+			},
+			isDiagnosticsSummaryPayload(value) {
+				return managerData.isDiagnosticsSummaryPayload(value);
+			},
+			diagnosticsHasAlert(summary) {
+				return managerData.diagnosticsHasAlert(summary);
+			},
+			hideSelectionDriftDiagnostics(summary) {
+				return managerData.hideSelectionDriftDiagnostics(summary);
+			}
+		},
+		managerStore: realManagerStore,
+		managerUI: {
+			updateDiagnosticsBanner(summary) {
+				banners.push(summary);
+			}
+		},
+		service: {
+			parseExecJsonResponse(res, fallback) {
+				if (!res || res.code !== 0)
+					return fallback;
+
+				return JSON.parse(res.stdout || '');
+			},
+			execService(action) {
+				if (action !== 'diagnostics_summary')
+					return Promise.reject(new Error('unexpected action: ' + action));
+
+				const result = serviceResults.shift();
+				if (!result)
+					return Promise.reject(new Error('unexpected diagnostics call'));
+
+				return result.promise;
+			}
+		}
+	}).managerActions;
+	const state = realManagerStore.createState();
+	Object.assign(state, {
+		appliedEnabled: true,
+		currentLocalStatus: Object.assign({}, healthyRuntime, {
+			desired_enabled: true,
+			selected_country: 'UY',
+			current_server_country: 'UY'
+		})
+	});
+
+	const firstPromise = actions.updateDiagnosticsSummary(state);
+	await Promise.resolve();
+	const forcedPromise = actions.updateDiagnosticsSummary(state, { force: true });
+	await Promise.resolve();
+
+	assert.equal(serviceResults.length, 0, 'forced same-key diagnostics starts a new backend request');
+	second.resolve(diagnosticsExecResult(cleanSummary));
+	await forcedPromise;
+	first.resolve(diagnosticsExecResult(alertSummary));
+	await firstPromise;
+
+	assert.equal(managerData.diagnosticsHasAlert(state.currentDiagnosticsSummary), false,
+		'older same-key diagnostics response cannot overwrite a newer forced clean summary');
+	assert.equal(banners.length, 1, 'only the forced diagnostics result renders');
+	assert.equal(managerData.diagnosticsHasAlert(banners[0]), false, 'rendered forced result remains clean');
 }
 
 async function testUpdateLocalStatusPreservesSnapshotOnFailedResponse() {
@@ -2486,6 +3089,14 @@ Promise.resolve().then(async function() {
 	testCountryMatchTimingLogIsLabOptIn();
 	testManualApplyConvergenceRequiresStation();
 	testForcedCatalogRefreshUsesADistinctSlot();
+	await testUpdateLocalStatusSkipsDiagnosticsForStableStatusTicks();
+	await testUpdateLocalStatusRefreshesDiagnosticsWhenStatusKeyChanges();
+	await testPublicVerificationTimestampDoesNotBustDiagnosticsCache();
+	await testPublicVerificationPendingDoesNotBustDiagnosticsCache();
+	await testUpdateLocalStatusRefreshesDiagnosticsWhenRequested();
+	await testUpdateLocalStatusClearsDiagnosticsWhenRuntimeDisabled();
+	await testDiagnosticsSharesSameKeyInFlightRequest();
+	await testForcedDiagnosticsStartsNewSameKeyRequest();
 	await testUpdateLocalStatusPreservesSnapshotOnFailedResponse();
 	await testUpdateLocalStatusMarksSnapshotsStaleOnRejectedExec();
 	testRenderLocalStatusSnapshotClearsDisabledPlaceholders();
