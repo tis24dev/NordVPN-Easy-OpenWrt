@@ -53,6 +53,62 @@ release_tag_from_pr_tag() {
   printf '%s\n' "${pr_tag#pr-}"
 }
 
+# vX.Y.Z -> X.Y.Z (the value written into the package Makefiles).
+version_from_tag() {
+  local tag="${1:-}"
+
+  validate_release_tag "${tag}"
+  printf '%s\n' "${tag#v}"
+}
+
+# This project keeps its version in the two OpenWrt package Makefiles, not in a
+# single manifest: NORDVPN_EASY_DEFAULT_VERSION must be identical in both (the
+# lockstep test tests/nordvpn-easy/test-package-lockstep.sh enforces it). The
+# release tag is the source of truth and the pipeline keeps both Makefiles in
+# sync with it (mirrors addhОn's manifest.json handling). The built artifact
+# takes its version from the tag via release.yml regardless; the Makefile default
+# is the version for local/manual SDK builds and for repo correctness.
+BACKEND_MAKEFILE="openwrt-packages/nordvpn-easy/Makefile"
+LUCI_MAKEFILE="openwrt-packages/luci-app-nordvpn-easy/Makefile"
+
+# Read NORDVPN_EASY_DEFAULT_VERSION from the backend Makefile at a git ref
+# (same extraction idiom as the lockstep test's extract_make_var).
+package_version_at_ref() {
+  local ref="${1:-}"
+
+  git show "${ref}:${BACKEND_MAKEFILE}" \
+    | sed -n 's/^NORDVPN_EASY_DEFAULT_VERSION:=//p' | head -n 1
+}
+
+# Set NORDVPN_EASY_DEFAULT_VERSION to ${version} in BOTH Makefiles (working tree).
+set_package_version() {
+  local version="${1:-}"
+  local makefile
+
+  for makefile in "${BACKEND_MAKEFILE}" "${LUCI_MAKEFILE}"; do
+    sed -i "s/^NORDVPN_EASY_DEFAULT_VERSION:=.*/NORDVPN_EASY_DEFAULT_VERSION:=${version}/" "${makefile}"
+  done
+}
+
+# Assert both Makefiles' default version at ${ref} equals the tag's version
+# (also covers the lockstep invariant that the two files agree).
+assert_package_version_matches_tag() {
+  local ref="${1:-}"
+  local tag="${2:-}"
+  local expected backend luci
+
+  expected="$(version_from_tag "${tag}")"
+  backend="$(git show "${ref}:${BACKEND_MAKEFILE}" | sed -n 's/^NORDVPN_EASY_DEFAULT_VERSION:=//p' | head -n 1)"
+  luci="$(git show "${ref}:${LUCI_MAKEFILE}" | sed -n 's/^NORDVPN_EASY_DEFAULT_VERSION:=//p' | head -n 1)"
+
+  if [[ "${backend}" != "${expected}" ]]; then
+    die "backend Makefile version '${backend}' does not match tag '${tag}' (expected '${expected}')."
+  fi
+  if [[ "${luci}" != "${expected}" ]]; then
+    die "luci-app Makefile version '${luci}' does not match tag '${tag}' (expected '${expected}')."
+  fi
+}
+
 # Success if the given commit is contained in (ancestor of, or equal to)
 # origin/main. The caller MUST `git fetch origin main` first.
 tag_commit_on_main() {

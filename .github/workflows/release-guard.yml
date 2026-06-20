@@ -57,9 +57,11 @@ jobs:
             exit 0
           fi
 
-          # This project has no in-repo version file, so there is no manifest
-          # invariant to assert against the dev tree. The guard's job is to enforce
-          # the PR shape/provenance and that the release marker carries a
-          # well-formed tag.
+          # Enforce the PR shape/provenance plus the version invariant: the version
+          # in dev's two package Makefiles (NORDVPN_EASY_DEFAULT_VERSION) must match
+          # the release tag (release-intake aligns them; this is the gate). Mirrors
+          # addhОn's manifest-matches-tag assertion.
           validate_release_tag "${TAG}"
-          notice "Release PR for ${TAG} validated."
+          git fetch --force origin dev
+          assert_package_version_matches_tag "origin/dev" "${TAG}"
+          notice "Release PR for ${TAG} validated (package version matches ${TAG})."

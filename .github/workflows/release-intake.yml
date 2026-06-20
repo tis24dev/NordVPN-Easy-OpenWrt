@@ -110,6 +110,28 @@ jobs:
             die "An open dev -> main PR already exists (#${OPEN_PR}). Close or merge it before starting a new release."
           fi
 
+          # Align the version source on dev with the requested release. The version
+          # lives in the two package Makefiles (NORDVPN_EASY_DEFAULT_VERSION); the
+          # tag is the source of truth, so bump both to match (or assert they already
+          # do). dev is not protected, so this normal commit + push is fine. Mirrors
+          # addhОn's manifest.json alignment.
+          RELEASE_VERSION="$(version_from_tag "${TAG}")"
+          CURRENT_VERSION="$(package_version_at_ref "${DEV_SHA}")"
+          if [[ "${CURRENT_VERSION}" != "${RELEASE_VERSION}" ]]; then
+            notice "Updating package version ${CURRENT_VERSION} -> ${RELEASE_VERSION} for ${TAG}."
+            git checkout -B dev origin/dev
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            set_package_version "${RELEASE_VERSION}"
+            if ! git diff --quiet -- "${BACKEND_MAKEFILE}" "${LUCI_MAKEFILE}"; then
+              git add "${BACKEND_MAKEFILE}" "${LUCI_MAKEFILE}"
+              git commit -m "chore: set package version ${RELEASE_VERSION}"
+              git push origin HEAD:refs/heads/dev
+            fi
+          else
+            assert_package_version_matches_tag "${DEV_SHA}" "${TAG}"
+          fi
+
           # The trigger tag has done its job. Remove it (unprotected -> allowed).
           delete_remote_tag "${TRIGGER}"
 

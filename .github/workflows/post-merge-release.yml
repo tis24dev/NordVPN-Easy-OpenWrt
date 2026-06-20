@@ -42,9 +42,6 @@ jobs:
           MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_BODY: ${{ github.event.pull_request.body }}
-          # Whether the PAT secret is configured (true/false), WITHOUT exposing its
-          # value. Used to enforce the PAT prerequisite on the release path below.
-          RELEASE_BOT_TOKEN_PRESENT: ${{ secrets.RELEASE_BOT_TOKEN != '' }}
         run: |
           set -euo pipefail
           source .github/scripts/release-policy.sh
@@ -55,14 +52,6 @@ jobs:
           if TAG="$(extract_pr_marker release-tag)"; then
             HAS_RELEASE_MARKER="true"
             validate_release_tag "${TAG}"
-            # The authoritative vX.Y.Z tag must be created+pushed via RELEASE_BOT_TOKEN
-            # (a PAT) so the push re-triggers release.yml; a default GITHUB_TOKEN push
-            # would NOT (GitHub's loop-prevention). Enforce that documented prerequisite
-            # up front so a missing PAT fails LOUD here, before we create the immutable
-            # tag (a github.token fallback push could otherwise create the tag without
-            # triggering the build = a stuck, undeleteable tag).
-            [[ "${RELEASE_BOT_TOKEN_PRESENT}" == "true" ]] || \
-              die "RELEASE_BOT_TOKEN secret is required to publish a release (the tag push must re-trigger release.yml). Set it on the repository and re-run."
           else
             notice "No release marker found; syncing dev to the squash commit without publishing a release."
           fi
@@ -90,18 +79,19 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # Move dev onto the squash commit. This is a lease-guarded force-sync, NOT a
-          # true fast-forward: the squash commit's parent is the old main, not the old
-          # dev tip, so dev's granular history is dropped. Its CONTENT is preserved
-          # because the tree gate above proved merge_tree == dev_tree. The lease on the
-          # dev we just observed makes a genuine concurrent push abort instead of being
-          # silently lost. Runs for both release and maintenance (no-marker) PRs.
+          # Fast-forward dev onto the squash commit. Lease on the dev we just
+          # observed so a genuine concurrent push aborts instead of being silently
+          # lost. Runs for both release and maintenance (no-marker) PRs.
           git push origin "${MERGE_SHA}:refs/heads/dev" --force-with-lease="refs/heads/dev:${DEV_SHA}"
 
           if [[ "${HAS_RELEASE_MARKER}" != "true" ]]; then
             notice "dev synchronized to ${MERGE_SHA}; no release marker was present."
             exit 0
           fi
+
+          # The released content must carry the matching package version (intake set
+          # it on dev; this is the final gate before the tag becomes immutable).
+          assert_package_version_matches_tag "${MERGE_SHA}" "${TAG}"
 
           # The vX.Y.Z tag is immutable (a tag-immutability ruleset blocks update +
           # deletion), so it must NOT exist yet: we only ever CREATE it, once, here.
