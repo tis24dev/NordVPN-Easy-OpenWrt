@@ -643,6 +643,7 @@ _nordvpn_easy_try_acquire_lock() {
 	LOCK_ACQUIRED=1
 	nordvpn_easy_install_exit_trap
 	nordvpn_easy_log_phase 'runtime' "recovered and acquired execution lock at $LOCK_DIR (reason: ${stale_reason})"
+	return 0
 }
 
 # Bounded blocking acquire. Default behavior is unchanged (one attempt, fail
