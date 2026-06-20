@@ -77,4 +77,50 @@ if grep -qi 'provisioning VPN interface' "$TMP_DIR/cmds"; then
 	fail 'reconcile must NOT reprovision when setup validation fails'
 fi
 
+# --- status_json: single live emit, no per-poll cache write (E-hybrid) ---
+# The status poll path must emit the status document live and must NOT write the
+# status cache (a post-action forensic snapshot, written by the action epilogue,
+# never on a poll). Anchors: HEAD's guard branch emitted twice (-> 2 wg dumps) and
+# every poll wrote the cache.
+RUN_DIR="$TMP_DIR/run"
+GUARD="$RUN_DIR/connect-apply-guard"
+mkdir -p "$RUN_DIR"
+
+# Guarded poll: still a single emit; honors connect_apply_pending; one wg dump; no cache.
+: > "$TMP_DIR/cmds"
+printf '%s\n' 'pending' > "$GUARD"
+rm -f "$RUN_DIR/status.json"
+rc=0
+PATH="$BIN:$PATH" \
+	NORDVPN_EASY_LIB_DIR="$LIB_DIR" \
+	NORDVPN_EASY_LOCK_DIR="$TMP_DIR/lock" \
+	NORDVPN_EASY_RUN_DIR="$RUN_DIR" \
+	NORDVPN_EASY_CONNECT_APPLY_GUARD="$GUARD" \
+	sh "$CORE" status_json --config "$TMP_DIR/setup-no-token.conf" > "$TMP_DIR/status-out" 2>/dev/null || rc=$?
+rm -rf "$TMP_DIR/lock"
+[ "$rc" -eq 0 ] || fail 'guarded status_json should succeed (rc=0)'
+jq -er '.interface == "wg_test_dispatch" and .connect_apply_pending == true' "$TMP_DIR/status-out" >/dev/null \
+	|| fail 'guarded status_json must emit valid JSON with the interface and connect_apply_pending'
+dumps="$(grep -c '^wg show wg_test_dispatch dump$' "$TMP_DIR/cmds" || true)"
+[ "$dumps" = '1' ] || fail "guarded status_json must collect the WireGuard dump once, got $dumps"
+[ ! -e "$RUN_DIR/status.json" ] || fail 'guarded status_json poll must NOT write the status cache'
+
+# Unguarded poll: single live emit; one wg dump; no cache.
+: > "$TMP_DIR/cmds"
+rm -f "$GUARD" "$RUN_DIR/status.json"
+rc=0
+PATH="$BIN:$PATH" \
+	NORDVPN_EASY_LIB_DIR="$LIB_DIR" \
+	NORDVPN_EASY_LOCK_DIR="$TMP_DIR/lock" \
+	NORDVPN_EASY_RUN_DIR="$RUN_DIR" \
+	NORDVPN_EASY_CONNECT_APPLY_GUARD="$GUARD" \
+	sh "$CORE" status_json --config "$TMP_DIR/setup-no-token.conf" > "$TMP_DIR/status-out2" 2>/dev/null || rc=$?
+rm -rf "$TMP_DIR/lock"
+[ "$rc" -eq 0 ] || fail 'unguarded status_json should succeed (rc=0)'
+jq -er '.interface == "wg_test_dispatch"' "$TMP_DIR/status-out2" >/dev/null \
+	|| fail 'unguarded status_json must emit valid JSON with the interface'
+dumps="$(grep -c '^wg show wg_test_dispatch dump$' "$TMP_DIR/cmds" || true)"
+[ "$dumps" = '1' ] || fail "unguarded status_json must collect the WireGuard dump once, got $dumps"
+[ ! -e "$RUN_DIR/status.json" ] || fail 'unguarded status_json poll must NOT write the status cache'
+
 printf '%s\n' 'test-core-dispatch.sh: ok'

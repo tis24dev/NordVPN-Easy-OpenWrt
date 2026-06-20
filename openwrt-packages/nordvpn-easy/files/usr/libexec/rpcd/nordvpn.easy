@@ -119,7 +119,6 @@ rpc_load_runtime_context_readonly() {
 rpc_status() {
 	if rpc_load_runtime_context_readonly >/dev/null 2>&1; then
 		nordvpn_easy_emit_status_json
-		nordvpn_easy_write_status_cache >/dev/null 2>&1 || true
 		return 0
 	fi
 

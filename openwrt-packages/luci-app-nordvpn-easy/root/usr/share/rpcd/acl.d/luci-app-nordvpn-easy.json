@@ -17,9 +17,6 @@
 				],
 				"/tmp/nordvpn-easy-servers.json": [
 					"read"
-				],
-				"/tmp/run/nordvpn-easy/status.json": [
-					"read"
 				]
 			},
 			"ubus": {
