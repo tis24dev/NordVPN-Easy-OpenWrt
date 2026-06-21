@@ -119,7 +119,6 @@ rpc_load_runtime_context_readonly() {
 rpc_status() {
 	if rpc_load_runtime_context_readonly >/dev/null 2>&1; then
 		nordvpn_easy_emit_status_json
-		nordvpn_easy_write_status_cache >/dev/null 2>&1 || true
 		return 0
 	fi
 
@@ -192,23 +191,34 @@ rpc_start_connect() {
 	# connect worker). Do NOT begin it here: begin_connect_apply has already
 	# marked it pending before start_connect, and beginning ahead of the busy
 	# check below would leave a phantom 'pending' when the call is rejected busy.
+	# Decide whether to dispatch the background connect worker. The worker itself
+	# acquires the runtime transaction lock with a bounded wait (init connect ->
+	# acquire_runtime_transaction_lock), so a TRANSIENT holder (a country-change
+	# stop_vpn teardown, a reconcile) no longer has to abort the connect: we fork
+	# the worker and it queues behind the holder for a few seconds. The ONLY case
+	# we must not fork is when a connect/reconnect transaction is ALREADY running
+	# (a duplicate worker would needlessly reprovision): report async in-progress.
 	nordvpn_easy_load_lock_metadata "$LOCK_DIR"
 	case "$OPERATION_LOCK_STATE" in
 		held|stale_recovered)
 			holder_pid="${OPERATION_LOCK_PID:-}"
 			holder_action="${OPERATION_LOCK_ACTION:-}"
 			holder_age_seconds="${OPERATION_LOCK_AGE_SECONDS:-0}"
-			reason='operation_busy'
-			printf '{"action":%s,"code":%s,"success":false,"async":false,"busy":true,"skipped":true,"reason":%s,"holder_pid":%s,"holder_action":%s,"holder_age_seconds":%s,"stdout":"","stderr":%s,"message":%s}\n' \
-				"$(rpc_json_string 'start_connect')" \
-				"$NORDVPN_EASY_RC_BUSY" \
-				"$(rpc_json_string "$reason")" \
-				"$(rpc_json_string "$holder_pid")" \
-				"$(rpc_json_string "$holder_action")" \
-				"${holder_age_seconds:-0}" \
-				"$(rpc_json_string "operation busy: another NordVPN Easy operation is running (holder_action=${holder_action:-unknown}, holder_pid=${holder_pid:-unknown}, holder_age_seconds=${holder_age_seconds:-0})")" \
-				"$(rpc_json_string "operation busy: another NordVPN Easy operation is running (holder_action=${holder_action:-unknown}, holder_pid=${holder_pid:-unknown}, holder_age_seconds=${holder_age_seconds:-0})")"
-			return 0
+			case "$holder_action" in
+				connect|reconnect)
+					printf '{"action":%s,"code":0,"success":true,"async":true,"busy":false,"skipped":true,"reason":%s,"holder_pid":%s,"holder_action":%s,"holder_age_seconds":%s,"stdout":"","stderr":"","message":%s}\n' \
+						"$(rpc_json_string 'start_connect')" \
+						"$(rpc_json_string 'connect_in_progress')" \
+						"$(rpc_json_string "$holder_pid")" \
+						"$(rpc_json_string "$holder_action")" \
+						"${holder_age_seconds:-0}" \
+						"$(rpc_json_string "Connect already in progress (holder_action=${holder_action:-unknown}, holder_pid=${holder_pid:-unknown}); poll status for completion.")"
+					return 0
+					;;
+			esac
+			printf '%s nordvpn-easy: start_connect dispatching connect worker while %s holds the lock (pid=%s, age=%ss); worker will wait for the lock\n' \
+				"$(date '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || date)" \
+				"${holder_action:-unknown}" "${holder_pid:-unknown}" "${holder_age_seconds:-0}" >> "$async_log" 2>/dev/null
 			;;
 	esac
 

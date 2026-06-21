@@ -3,6 +3,7 @@ plans/
 
 # Local diagnosis / timing analysis (lab only)
 diagnosi/
+diagnostics/
 
 # Local diagnostics exports
 nordvpn-easy-diagnostics-*.log

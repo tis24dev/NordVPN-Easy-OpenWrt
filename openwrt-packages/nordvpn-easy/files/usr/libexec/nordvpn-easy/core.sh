@@ -1022,16 +1022,13 @@ fi
 
 if [ "$ACTION" = 'status_json' ]; then
   LOG_PHASE='runtime'
-  if [ -f "${NORDVPN_EASY_CONNECT_APPLY_GUARD:-/tmp/run/nordvpn-easy/connect-apply-guard}" ]; then
-    nordvpn_easy_emit_status_json
-    nordvpn_easy_write_status_cache >/dev/null 2>&1 || true
-    exit 0
-  fi
-  if nordvpn_easy_write_status_cache >/dev/null 2>&1; then
-    nordvpn_easy_emit_cached_status_json
-  else
-    nordvpn_easy_emit_status_json
-  fi
+  # Single live emit. nordvpn_easy_emit_status_json reads the connect-apply guard
+  # (-> connect_apply_pending) and the connect-apply-result file fresh, so this is a
+  # full emit that honors the "full emit while the guard exists" contract with no
+  # special branch. The status cache is a post-action forensic snapshot (written by
+  # the action epilogue and connect-apply finish), never read on the poll path, so
+  # it is not written here.
+  nordvpn_easy_emit_status_json
   exit $?
 fi
 

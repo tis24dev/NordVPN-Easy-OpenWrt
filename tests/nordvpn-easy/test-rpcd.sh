@@ -306,8 +306,11 @@ if [ "$1" = '-q' ] && [ "$2" = 'get' ]; then
 fi
 exit 1
 EOF
+STATUS_WG_CAPTURE="$TMP_DIR/status-wg-calls"
+export STATUS_WG_CAPTURE
 cat > "$STATUS_BIN_DIR/wg" <<'EOF'
 #!/bin/sh
+printf '%s\n' "$*" >> "$STATUS_WG_CAPTURE"
 exit 0
 EOF
 cat > "$STATUS_BIN_DIR/logger" <<'EOF'
@@ -323,6 +326,7 @@ EOF
 chmod 755 "$STATUS_INIT"
 
 STATUS_STDERR="$TMP_DIR/status-stderr"
+: > "$STATUS_WG_CAPTURE"
 STATUS_JSON="$(
 	printf '{}' |
 		PATH="$STATUS_BIN_DIR:$PATH" \
@@ -347,7 +351,21 @@ printf '%s' "$STATUS_JSON" | jq -er '
 	printf '%s\n' 'FAIL: rpc status must not run runtime actions for saved-country drift' >&2
 	exit 1
 }
+# E-hybrid: rpc status is a single live emit -> exactly one WireGuard dump (HEAD
+# emitted then wrote the cache = 2) and it must NOT write the status cache on the
+# poll path (post-action writers keep the forensic snapshot; nothing reads it here).
+status_dumps="$(grep -c 'dump$' "$STATUS_WG_CAPTURE" 2>/dev/null || true)"
+[ "$status_dumps" = '1' ] || {
+	printf '%s\n' "FAIL: rpc status must collect the WireGuard dump once, got $status_dumps" >&2
+	cat "$STATUS_WG_CAPTURE" >&2
+	exit 1
+}
+[ ! -e "$STATUS_RUN_DIR/status.json" ] || {
+	printf '%s\n' 'FAIL: rpc status poll must NOT write the status cache' >&2
+	exit 1
+}
 
+: > "$STATUS_WG_CAPTURE"
 STATUS_JSON="$(
 	printf '{}' |
 		PATH="$STATUS_BIN_DIR:$PATH" \
@@ -358,6 +376,16 @@ STATUS_JSON="$(
 )"
 [ ! -s "$STATUS_CAPTURE" ] || {
 	printf '%s\n' 'FAIL: repeated rpc status must stay read-only for saved-country drift' >&2
+	exit 1
+}
+status_dumps="$(grep -c 'dump$' "$STATUS_WG_CAPTURE" 2>/dev/null || true)"
+[ "$status_dumps" = '1' ] || {
+	printf '%s\n' "FAIL: repeated rpc status must collect the WireGuard dump once, got $status_dumps" >&2
+	cat "$STATUS_WG_CAPTURE" >&2
+	exit 1
+}
+[ ! -e "$STATUS_RUN_DIR/status.json" ] || {
+	printf '%s\n' 'FAIL: repeated rpc status poll must NOT write the status cache' >&2
 	exit 1
 }
 
