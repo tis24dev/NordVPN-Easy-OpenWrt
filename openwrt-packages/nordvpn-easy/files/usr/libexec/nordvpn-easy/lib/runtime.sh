@@ -404,6 +404,7 @@ nordvpn_easy_vpn_status_value() {
 	local vpn_if="${2:-$VPN_IF}"
 	local operation="${3:-}"
 	local handshake_epoch='0'
+	local ifstatus_json=''
 
 	[ -n "$operation" ] || operation="$(nordvpn_easy_operation_status_value "${LOCK_DIR:-/tmp/nordvpn-easy.lock}")"
 
@@ -444,7 +445,16 @@ nordvpn_easy_vpn_status_value() {
 	fi
 
 	if command -v ifstatus >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
-		if ifstatus "$vpn_if" 2>/dev/null | jq -er '.up == true' >/dev/null 2>&1; then
+		# Empty ifstatus output (interface unknown to netifd, e.g. mid-teardown or
+		# a wg device created outside netifd) must NOT count as 'up': on jq <= 1.6
+		# `printf '' | jq -er '.up == true'` exits 0, which would falsely report
+		# 'active' during the exact transitional window this block guards. Only
+		# consult jq when ifstatus actually produced JSON.
+		# `|| true` keeps a failed ifstatus probe from aborting under `set -e`:
+		# the assignment inherits the command's exit status, and ifstatus exits
+		# non-zero when the interface is unknown to netifd.
+		ifstatus_json="$(ifstatus "$vpn_if" 2>/dev/null || true)"
+		if [ -n "$ifstatus_json" ] && printf '%s' "$ifstatus_json" | jq -er '.up == true' >/dev/null 2>&1; then
 			printf '%s\n' 'active'
 			return 0
 		fi
