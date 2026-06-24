@@ -72,6 +72,10 @@ nordvpn_easy_clear_provision_caches() {
 	PROVISION_ORDER="${PROVISION_ORDER}clear,"
 	return 0
 }
+nordvpn_easy_clear_connect_apply_caches() {
+	PROVISION_ORDER="${PROVISION_ORDER}clear,"
+	return 0
+}
 nordvpn_easy_teardown_vpn() {
 	PROVISION_ORDER="${PROVISION_ORDER}teardown,"
 	return 0
@@ -88,15 +92,15 @@ assert_eq 'fetch,teardown,configure,' "$PROVISION_ORDER" 'provision fetches prer
 
 PROVISION_ORDER=''
 nordvpn_easy_stop_vpn_for_server_change
-assert_eq 'shutdown,clear,teardown,' "$PROVISION_ORDER" 'stop_vpn shuts down VPN and clears caches before connect'
+assert_eq 'shutdown,clear,' "$PROVISION_ORDER" 'stop_vpn shuts down VPN and clears caches without tearing down the interface config'
 
 PROVISION_ORDER=''
 nordvpn_easy_provision_vpn connect_fresh
-assert_eq 'fetch,configure,' "$PROVISION_ORDER" 'connect_fresh fetches a new server list after stop_vpn'
+assert_eq 'fetch,teardown,configure,' "$PROVISION_ORDER" 'connect_fresh tears down only after a successful fetch'
 
 PROVISION_ORDER=''
 nordvpn_easy_provision_vpn server_change
-assert_eq 'shutdown,clear,teardown,fetch,configure,' "$PROVISION_ORDER" 'server_change runs stop_vpn then connect_fresh'
+assert_eq 'shutdown,clear,fetch,teardown,configure,' "$PROVISION_ORDER" 'server_change stops then tears down after fetch'
 
 PROVISION_ORDER=''
 FETCH_FAIL=1
@@ -105,6 +109,33 @@ if nordvpn_easy_provision_vpn; then
 	exit 1
 fi
 assert_eq 'fetch,' "$PROVISION_ORDER" 'provision fetch failure leaves existing VPN configuration untouched'
+FETCH_FAIL=0
+
+PROVISION_ORDER=''
+nordvpn_easy_provision_vpn_connect_apply
+assert_eq 'fetch,teardown,configure,' "$PROVISION_ORDER" 'connect_apply tears down only after a successful fetch'
+
+PROVISION_ORDER=''
+FETCH_FAIL=1
+if nordvpn_easy_provision_vpn_connect_apply; then
+	printf '%s\n' 'FAIL: connect_apply fetch failure must return non-zero' >&2
+	exit 1
+fi
+assert_eq 'fetch,' "$PROVISION_ORDER" 'connect_apply fetch failure never tears down wg0 (interface preserved)'
+FETCH_FAIL=0
+
+PROVISION_ORDER=''
+FETCH_FAIL=1
+if nordvpn_easy_provision_vpn connect_fresh; then
+	printf '%s\n' 'FAIL: connect_fresh fetch failure must return non-zero' >&2
+	exit 1
+fi
+assert_eq 'fetch,' "$PROVISION_ORDER" 'connect_fresh fetch failure never tears down wg0 (interface preserved)'
+FETCH_FAIL=0
+
+PROVISION_ORDER=''
+nordvpn_easy_stop_vpn_for_connect_apply
+assert_eq 'shutdown,clear,' "$PROVISION_ORDER" 'stop_vpn_for_connect_apply does not tear down the interface config'
 
 uci() { return 0; }
 

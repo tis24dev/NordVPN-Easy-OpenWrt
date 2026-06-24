@@ -47,6 +47,7 @@ SH_FILES=(
 	"$ROOT_DIR/openwrt-packages/nordvpn-easy/files/etc/uci-defaults/99-nordvpn-easy-rpcd-timeout"
 	"$ROOT_DIR/tests/nordvpn-easy/test-config-context.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-schema.sh"
+	"$ROOT_DIR/tests/nordvpn-easy/test-credentials-errors.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-catalog-fixtures.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-common-lock.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-common-temp.sh"
@@ -103,6 +104,7 @@ node "$ROOT_DIR/tests/nordvpn-easy/test-advanced.js"
 SHELL_TESTS=(
 	test-config-context.sh
 	test-schema.sh
+	test-credentials-errors.sh
 	test-catalog-fixtures.sh
 	test-common-lock.sh
 	test-common-temp.sh

@@ -76,6 +76,16 @@ assert_eq 'IT' "$(nordvpn_easy_normalize_value vpn_country IT)" 'valid country a
 assert_eq '*/10 * * * *' "$(nordvpn_easy_normalize_value check_cron_schedule '*/10 * * * *')" 'valid cron schedule accepted'
 assert_eq '' "$(nordvpn_easy_normalize_value check_cron_schedule 'bad;rm')" 'cron schedule with invalid characters normalizes to default'
 
+# The access token is used raw in the curl Basic-auth header; embedded CR/LF/Tab
+# or surrounding spaces corrupt it and make the credentials API answer 400, so
+# the token is hygiene-normalized at the schema boundary.
+assert_eq 'abc123def456' "$(nordvpn_easy_normalize_value nordvpn_token abc123def456)" 'clean token passed through unchanged'
+assert_eq 'abc123' "$(nordvpn_easy_normalize_value nordvpn_token '  abc123  ')" 'surrounding spaces trimmed from token'
+assert_eq 'abc123' "$(nordvpn_easy_normalize_value nordvpn_token "$(printf 'abc123\r\n')")" 'trailing CR/LF stripped from token'
+assert_eq 'abc123' "$(nordvpn_easy_normalize_value nordvpn_token "$(printf 'abc\r\n123')")" 'embedded CR/LF stripped from token'
+assert_eq 'abc123' "$(nordvpn_easy_normalize_value nordvpn_token "$(printf 'abc\t123')")" 'embedded tab stripped from token'
+assert_eq '' "$(nordvpn_easy_normalize_value nordvpn_token '')" 'empty token stays empty'
+
 assert_eq 'NORDVPN_TOKEN' "$(nordvpn_easy_env_name nordvpn_token)" 'runtime binding maps token env name'
 assert_eq 'VPN_IF' "$(nordvpn_easy_env_name vpn_if)" 'runtime binding maps vpn_if env name'
 assert_eq 'FALLBACK_SERVER_STATION' "$(nordvpn_easy_env_name fallback_server_station)" 'runtime binding maps fallback station env name'

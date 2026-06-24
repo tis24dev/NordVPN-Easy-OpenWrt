@@ -150,14 +150,17 @@ nordvpn_easy_wait_for_vpn_connectivity() { WAIT_COUNT=$((WAIT_COUNT + 1)); retur
 verify_public_country_selection() { VERIFY_COUNT=$((VERIFY_COUNT + 1)); return 0; }
 
 FETCH_COUNT=0
+TEARDOWN_COUNT=0
 CONFIGURE_COUNT=0
 PUBLIC_VERIFICATION_WRITES=0
 nordvpn_easy_fetch_provision_prerequisites() { FETCH_COUNT=$((FETCH_COUNT + 1)); return 0; }
+nordvpn_easy_teardown_vpn() { TEARDOWN_COUNT=$((TEARDOWN_COUNT + 1)); return 0; }
 nordvpn_easy_configure_vpn_interface() { CONFIGURE_COUNT=$((CONFIGURE_COUNT + 1)); return 0; }
 nordvpn_easy_public_verification_write() { PUBLIC_VERIFICATION_WRITES=$((PUBLIC_VERIFICATION_WRITES + 1)); return 0; }
 nordvpn_easy_provision_vpn_connect_apply
 
 assert_eq '1' "$FETCH_COUNT" 'connect_apply fetches provisioning prerequisites'
+assert_eq '1' "$TEARDOWN_COUNT" 'connect_apply tears down only after a successful fetch'
 assert_eq '1' "$CONFIGURE_COUNT" 'connect_apply configures WireGuard'
 assert_eq '1' "$WAIT_COUNT" 'connect_apply waits for WireGuard/runtime readiness'
 assert_eq '0' "$VERIFY_COUNT" 'connect_apply does not block on public IP verification'

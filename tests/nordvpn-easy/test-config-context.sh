@@ -114,6 +114,19 @@ assert_eq '10' "$WIREGUARD_PERSISTENT_KEEPALIVE" 'runtime context exports keepal
 assert_eq '1420' "$WIREGUARD_MTU" 'runtime context exports WireGuard MTU'
 assert_eq '1' "$FIREWALL_MTU_FIX" 'runtime context exports firewall MTU fix'
 
+# A token pasted into UCI with a leading space and a trailing newline must be
+# hygiene-normalized when the context is loaded, otherwise the curl Basic-auth
+# header is corrupted and the credentials API answers 400.
+set_uci_value 'nordvpn_easy.main.nordvpn_token' "$(printf ' abc123\n')"
+nordvpn_easy_load_service_context 'cfg_' 'nordvpn_easy' 'main'
+nordvpn_easy_export_runtime_context_from_service 'cfg_'
+assert_eq 'abc123' "$cfg_nordvpn_token" 'service context trims whitespace from token'
+assert_eq 'abc123' "$NORDVPN_TOKEN" 'runtime context exports a trimmed token'
+# Restore the original clean token so the later render/round-trip assertions hold.
+set_uci_value 'nordvpn_easy.main.nordvpn_token' 'abc123'
+nordvpn_easy_load_service_context 'cfg_' 'nordvpn_easy' 'main'
+nordvpn_easy_export_runtime_context_from_service 'cfg_'
+
 RUNTIME_FILE="$TMP_DIR/runtime.conf"
 umask 0022
 WRITTEN_OPTIONS="$(nordvpn_easy_render_runtime_config "$RUNTIME_FILE" 'cfg_')"

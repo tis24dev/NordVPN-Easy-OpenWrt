@@ -413,18 +413,22 @@ nordvpn_easy_configure_vpn_interface() {
 }
 
 nordvpn_easy_stop_vpn_for_server_change() {
-	log 'apply: stopping VPN and clearing server selection caches'
+	log 'apply: stopping VPN and clearing server selection caches (live tunnel down; interface config preserved until reprovision succeeds)'
 	nordvpn_easy_immediate_vpn_shutdown || return 1
 	nordvpn_easy_clear_provision_caches || return 1
-	nordvpn_easy_teardown_vpn || return 1
+	# The destructive UCI teardown now happens in the provision step AFTER a
+	# successful fetch (fetch -> teardown -> configure), so a failed fetch can
+	# never leave network.${VPN_IF} deleted.
 	return 0
 }
 
 nordvpn_easy_stop_vpn_for_connect_apply() {
-	log 'apply: stopping VPN for connect apply (preserving reusable server recommendation cache)'
+	log 'apply: stopping VPN for connect apply (live tunnel down; interface config preserved until reprovision succeeds, reusable server recommendation cache kept)'
 	nordvpn_easy_immediate_vpn_shutdown || return 1
 	nordvpn_easy_clear_connect_apply_caches || return 1
-	nordvpn_easy_teardown_vpn || return 1
+	# The destructive UCI teardown now happens in the provision step AFTER a
+	# successful credential/server fetch (fetch -> teardown -> configure), so a
+	# failed fetch can never leave network.${VPN_IF} deleted.
 	# Do not touch the connect-apply-result here: it is owned by the init
 	# connect_apply_guard_begin (which runs before this stop in the apply flow),
 	# clear_connect_apply_caches above does not remove it, and re-beginning it
@@ -458,6 +462,7 @@ nordvpn_easy_provision_vpn_connect_apply() {
 	log 'apply: provisioning VPN after connect apply stop (reusing server cache when valid for selected country)'
 	nordvpn_easy_fetch_provision_prerequisites || return 1
 	NORDVPN_EASY_PROVISION_FETCH_DONE=1
+	nordvpn_easy_teardown_vpn || return 1
 	nordvpn_easy_configure_vpn_interface || return 1
 	unset NORDVPN_EASY_PROVISION_FETCH_DONE
 
@@ -477,6 +482,7 @@ nordvpn_easy_provision_vpn_connect_fresh() {
 	log 'apply: connecting with a fresh server list and clean caches'
 	nordvpn_easy_fetch_provision_prerequisites || return 1
 	NORDVPN_EASY_PROVISION_FETCH_DONE=1
+	nordvpn_easy_teardown_vpn || return 1
 	nordvpn_easy_configure_vpn_interface || return 1
 	unset NORDVPN_EASY_PROVISION_FETCH_DONE NORDVPN_EASY_FORCE_FRESH_SERVER_LIST
 
