@@ -442,6 +442,21 @@ nordvpn_easy_normalize_value() {
 		config_schema_version)
 			printf '%s\n' "$NORDVPN_EASY_SCHEMA_VERSION"
 			;;
+		nordvpn_token)
+			# A token pasted with a trailing newline or an inner line break corrupts the
+			# curl Basic-auth header and makes the credentials API answer 400 instead of
+			# issuing the NordLynx key. Strip CR/LF/Tab anywhere (a real access token has
+			# no internal whitespace) and trim surrounding spaces. No bashisms.
+			value="$(printf '%s' "$value" | tr -d '\r\n\t')"
+			while :; do
+				case "$value" in
+					' '*) value="${value# }" ;;
+					*' ') value="${value% }" ;;
+					*) break ;;
+				esac
+			done
+			printf '%s\n' "$value"
+			;;
 		*)
 			printf '%s\n' "$value"
 			;;

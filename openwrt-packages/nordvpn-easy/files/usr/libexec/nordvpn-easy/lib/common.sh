@@ -131,6 +131,15 @@ nordvpn_easy_valid_wireguard_key() {
 	[ "${#key}" -eq 44 ] || return 1
 }
 
+nordvpn_easy_token_shape_is_canonical () {
+	# A NordVPN access token is 64 lowercase hex chars. Used ONLY to warn, never
+	# to reject, since the token format is owned by NordVPN and may change.
+	case "$1" in
+		''|*[!0-9a-f]*) return 1 ;;
+	esac
+	[ "${#1}" -eq 64 ]
+}
+
 nordvpn_easy_remove_app_firewall_sections() {
 	# Remove every firewall section this app owns (named nordvpn_*) so the VPN
 	# zone, lan->vpn forwarding and kill-switch rules can be rebuilt idempotently

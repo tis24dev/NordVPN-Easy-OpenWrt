@@ -175,6 +175,12 @@ validate_setup_runtime () {
   else
     log "Setup/runtime prerequisites verified ($(nordvpn_easy_runtime_env_debug_summary))"
   fi
+
+  if [ -n "$NORDVPN_TOKEN" ] && ! nordvpn_easy_token_shape_is_canonical "$NORDVPN_TOKEN"; then
+    log "WARNING: NORDVPN_TOKEN does not look like a 64-character access token (len=${#NORDVPN_TOKEN}); if apply fails with an auth error, regenerate it at my.nordaccount.com"
+  fi
+
+  return 0
 }
 
 validate_stop_runtime () {
@@ -409,6 +415,34 @@ fetch_credentials_json () {
   rm -rf -- "$credentials_temp_dir"
 }
 
+get_private_key_error_message () {
+  local rc="$1"
+  local code="$2"
+
+  if [ "$rc" != '22' ]; then
+    printf '%s' 'Could not reach the NordVPN API to fetch the NordLynx key. This is usually a temporary network/DNS/TLS problem on the router WAN; the VPN was left unchanged and apply will retry.'
+    return 0
+  fi
+
+  case "$code" in
+    400|401)
+      printf '%s' 'NordVPN rejected the access token (HTTP '"$code"'). Regenerate the token at my.nordaccount.com (Services > set up NordVPN manually > access token) and update it in NordVPN Easy. The existing VPN configuration was left in place.'
+      ;;
+    403)
+      printf '%s' 'NordVPN denied access to the credentials service (HTTP 403). The token may lack an active NordVPN subscription/service; verify the account at my.nordaccount.com.'
+      ;;
+    429)
+      printf '%s' 'NordVPN is rate-limiting credential requests (HTTP 429). This is temporary; wait a few minutes before applying again. The VPN was left unchanged.'
+      ;;
+    5??)
+      printf '%s' 'NordVPN API returned a server error (HTTP '"$code"'). This is a temporary problem on NordVPN side; the VPN was left unchanged and apply will retry.'
+      ;;
+    *)
+      printf '%s' 'NordVPN API returned an unexpected response (HTTP '"$code"') while fetching the NordLynx key. The VPN was left unchanged.'
+      ;;
+  esac
+}
+
 get_private_key () {
   local credentials_message=''
   local credentials_response_bytes='0'
@@ -416,7 +450,7 @@ get_private_key () {
   if [ -n "$NORDVPN_TOKEN" ]; then
     log 'apply: requesting NordLynx private key from NordVPN API'
     fetch_credentials_json || {
-      credentials_message="could not retrieve NordLynx private key from NordVPN API (curl_rc=${NORDVPN_EASY_CREDENTIALS_CURL_RC:-1}: $(curl_rc_meaning "${NORDVPN_EASY_CREDENTIALS_CURL_RC:-1}"), http_code=${NORDVPN_EASY_CREDENTIALS_HTTP_CODE:-000}"
+      credentials_message="could not retrieve NordLynx private key from NordVPN API: $(get_private_key_error_message "${NORDVPN_EASY_CREDENTIALS_CURL_RC:-1}" "${NORDVPN_EASY_CREDENTIALS_HTTP_CODE:-000}") (curl_rc=${NORDVPN_EASY_CREDENTIALS_CURL_RC:-1}: $(curl_rc_meaning "${NORDVPN_EASY_CREDENTIALS_CURL_RC:-1}"), http_code=${NORDVPN_EASY_CREDENTIALS_HTTP_CODE:-000}"
       [ -n "${NORDVPN_EASY_CREDENTIALS_CURL_ERROR:-}" ] && credentials_message="${credentials_message}, curl_error=${NORDVPN_EASY_CREDENTIALS_CURL_ERROR}"
       credentials_message="${credentials_message})"
       nordvpn_easy_record_last_error "$credentials_message"
