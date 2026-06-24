@@ -158,6 +158,13 @@ run_case 6 000
 assert_contains "$CAPTURED_MESSAGE" 'temporary network' 'curl DNS failure (rc=6) reports a temporary network problem'
 assert_not_contains "$CAPTURED_MESSAGE" 'rejected the access token' 'curl DNS failure must NOT claim the token was rejected'
 
+# rc=1: local setup/read failure (fetch_credentials_json temp-dir/body errors) ->
+# a local-error message, NOT a network outage and NOT a token rejection.
+run_case 1 000
+assert_contains "$CAPTURED_MESSAGE" 'locally' 'rc=1 reports a local request-preparation failure'
+assert_not_contains "$CAPTURED_MESSAGE" 'temporary network' 'rc=1 must NOT be labelled a network outage'
+assert_not_contains "$CAPTURED_MESSAGE" 'rejected the access token' 'rc=1 must NOT claim the token was rejected'
+
 # rc=22 with no usable HTTP code -> unexpected-response fallback.
 run_case 22 000
 assert_contains "$CAPTURED_MESSAGE" 'unexpected response' 'rc=22 http=000 falls back to the unexpected-response message'

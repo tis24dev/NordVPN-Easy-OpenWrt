@@ -419,6 +419,15 @@ get_private_key_error_message () {
   local rc="$1"
   local code="$2"
 
+  # fetch_credentials_json uses rc=1 for LOCAL setup/read failures (the temp dir
+  # or the response body), where the API was never actually unreachable -- do not
+  # mislabel those as a network outage. The specific cause is carried separately
+  # in the curl_error tail (NORDVPN_EASY_CREDENTIALS_CURL_ERROR).
+  if [ "$rc" = '1' ]; then
+    printf '%s' 'NordVPN Easy could not prepare the credentials request locally (temporary file or response handling failed); the VPN was left unchanged. Check the router free space/permissions and retry.'
+    return 0
+  fi
+
   if [ "$rc" != '22' ]; then
     printf '%s' 'Could not reach the NordVPN API to fetch the NordLynx key. This is usually a temporary network/DNS/TLS problem on the router WAN; the VPN was left unchanged and apply will retry.'
     return 0
