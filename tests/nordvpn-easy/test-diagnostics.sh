@@ -471,6 +471,81 @@ uci() {
 JSON="$(assert_scenario_primary 'config.not_wireguard' 'config.not_wireguard is primary for non-WireGuard proto')"
 assert_scenario_includes "$JSON" 'config.not_wireguard' 'config.not_wireguard appears in findings'
 
+# --- Incomplete interface: credentials blocker re-prioritizes over key editing ---
+
+primary_action() {
+	printf '%s' "$1" | jq -r '.primary_finding.action'
+}
+
+assert_not_contains() {
+	needle="$1"
+	haystack="$2"
+	label="$3"
+
+	case "$haystack" in
+		*"$needle"*)
+			printf '%s\n' "FAIL: $label" >&2
+			printf '%s\n' "unexpected: $needle" >&2
+			exit 1
+			;;
+	esac
+}
+
+# Drops force_link so the interface is reported incomplete (proto stays wireguard).
+uci_wg0_incomplete() {
+	case "$*" in
+		'get network.wg0.force_link') return 1 ;;
+		*) uci_complete "$@" ;;
+	esac
+}
+
+wg() { wg_connected "$@"; }
+ip() { ip_healthy "$@"; }
+nordvpn_easy_runtime_configured() { return 0; }
+uci() {
+	if [ "$1" = '-q' ]; then
+		shift
+	fi
+	uci_wg0_incomplete "$@"
+}
+
+printf '%s\n' 'could not retrieve NordLynx private key from NordVPN API (curl_rc=22: HTTP error response, http_code=400)' > "$NORDVPN_EASY_LAST_ERROR_CACHE"
+JSON="$(assert_scenario_primary 'config.connect_blocked_credentials' 'credentials blocker re-prioritizes over interface_incomplete')"
+assert_scenario_includes "$JSON" 'config.connect_blocked_credentials' 'config.connect_blocked_credentials appears in findings'
+assert_contains 'token' "$(primary_action "$JSON")" 'credentials blocker action points at the access token'
+assert_not_contains 'Complete the WireGuard interface keys' "$(primary_action "$JSON")" \
+	'credentials blocker action does not tell the user to edit keys'
+
+printf '%s\n' 'invalid NordLynx private key response received from NordVPN API (http_code=200, response_bytes=12)' > "$NORDVPN_EASY_LAST_ERROR_CACHE"
+JSON="$(assert_scenario_primary 'config.connect_blocked_credentials' 'invalid-response variant also re-prioritizes')"
+assert_scenario_includes "$JSON" 'config.connect_blocked_credentials' 'invalid-response variant appears in findings'
+
+printf '%s\n' 'could not retrieve VPN servers (curl_rc=6: name resolution failure, http_code=000)' > "$NORDVPN_EASY_LAST_ERROR_CACHE"
+JSON="$(assert_scenario_primary 'config.interface_incomplete' 'unrelated last_error keeps interface_incomplete primary')"
+assert_scenario_includes "$JSON" 'config.interface_incomplete' 'config.interface_incomplete appears in findings'
+assert_not_contains 'Complete the WireGuard interface keys' "$(primary_action "$JSON")" \
+	'corrected interface_incomplete action no longer tells the user to edit keys'
+
+printf '%s\n' 'could not retrieve NordLynx private key from NordVPN API (curl_rc=22: HTTP error response, http_code=400)' > "$NORDVPN_EASY_LAST_ERROR_CACHE"
+: >"$NORDVPN_EASY_CONNECT_APPLY_GUARD"
+JSON="$(emit_scenario_json)"
+# The credentials blocker keys off the incomplete-interface emission, which the
+# connect_apply guard suppresses; the unchanged operational.last_error gate then
+# surfaces the raw error as a generic fallback (never the suppressed blocker).
+assert_not_contains 'config.connect_blocked_credentials' "$(primary_code "$JSON")" \
+	'config.connect_blocked_credentials is not primary during connect_apply guard'
+if printf '%s' "$JSON" | jq -e '.findings[]? | select(.code == "config.connect_blocked_credentials")' >/dev/null 2>&1; then
+	printf '%s\n' 'FAIL: config.connect_blocked_credentials should not appear during connect_apply guard' >&2
+	exit 1
+fi
+rm -f "$NORDVPN_EASY_CONNECT_APPLY_GUARD"
+
+printf '%s\n' 'could not retrieve NordLynx private key from NordVPN API (curl_rc=6: name resolution failure, http_code=000)' > "$NORDVPN_EASY_LAST_ERROR_CACHE"
+JSON="$(assert_scenario_primary 'config.connect_blocked_credentials' 'credentials blocker maps on a stable substring regardless of curl tail')"
+assert_scenario_includes "$JSON" 'config.connect_blocked_credentials' 'stable-substring variant appears in findings'
+
+: > "$NORDVPN_EASY_LAST_ERROR_CACHE"
+
 assert_eq '2001:db8::1' "$(nordvpn_easy_diagnostics_endpoint_host '[2001:db8::1]:51820')" 'bracketed IPv6 endpoint host extraction'
 assert_eq 'hk270.nordvpn.com' "$(nordvpn_easy_diagnostics_endpoint_host 'hk270.nordvpn.com:51820')" 'host:port endpoint host extraction'
 

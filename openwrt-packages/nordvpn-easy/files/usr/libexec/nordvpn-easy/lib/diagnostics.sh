@@ -271,6 +271,7 @@ nordvpn_easy_diagnostics_finding_priority() {
 		runtime.no_peers) printf '%s\n' '70' ;;
 		runtime.no_handshake) printf '%s\n' '80' ;;
 		runtime.stuck_tunnel) printf '%s\n' '90' ;;
+		config.connect_blocked_credentials) printf '%s\n' '95' ;;
 		config.interface_incomplete) printf '%s\n' '100' ;;
 		config.peer_missing) printf '%s\n' '110' ;;
 		config.peer_incomplete) printf '%s\n' '120' ;;
@@ -914,6 +915,16 @@ nordvpn_easy_diagnostics_run_active_probes() {
 	esac
 }
 
+# True when last_error is a NordLynx credentials/token blocker from get_private_key
+# (core.sh records "...NordLynx private key..." for both the HTTP-error and the
+# invalid-response variants). Matches a STABLE substring, not the volatile curl text.
+nordvpn_easy_diagnostics_last_error_is_credentials_blocker() {
+	case "$DIAG_LAST_ERROR" in
+		*'NordLynx private key'*) return 0 ;;
+	esac
+	return 1
+}
+
 nordvpn_easy_diagnostics_compute_findings() {
 	DIAG_PRIMARY_FINDING_CODE='none'
 	DIAG_PRIMARY_FINDING_MESSAGE='none detected'
@@ -921,10 +932,17 @@ nordvpn_easy_diagnostics_compute_findings() {
 	DIAG_FINDINGS_CODES='none'
 
 	if [ -n "$DIAG_MISSING_INTERFACE" ] && ! nordvpn_easy_diagnostics_runtime_transition_active; then
-		nordvpn_easy_diagnostics_add_finding \
-			'config.interface_incomplete' \
-			"wireguard interface is incomplete (${DIAG_MISSING_INTERFACE})" \
-			'Complete the WireGuard interface keys in Network settings, then run Connect'
+		if nordvpn_easy_diagnostics_last_error_is_credentials_blocker; then
+			nordvpn_easy_diagnostics_add_finding \
+				'config.connect_blocked_credentials' \
+				"Connect could not finish because the NordVPN API rejected the credentials request, so the WireGuard interface was left incomplete (${DIAG_MISSING_INTERFACE}); last_error: ${DIAG_LAST_ERROR}" \
+				'Run Connect; the interface is rebuilt automatically. If Connect keeps failing, check that the NordVPN access token is valid and not expired (the API rejected the request). Do not edit the WireGuard keys by hand; Connect overwrites them.'
+		else
+			nordvpn_easy_diagnostics_add_finding \
+				'config.interface_incomplete' \
+				"wireguard interface is incomplete (${DIAG_MISSING_INTERFACE})" \
+				'Run Connect to rebuild the WireGuard interface automatically (Connect provisions addresses/peerdns/delegate/force_link and the peer). If Connect fails, check last_error below rather than editing keys by hand.'
+		fi
 	fi
 
 	if [ "$DIAG_PEER_SECTION_FOUND" != 'yes' ] && ! nordvpn_easy_diagnostics_runtime_transition_active; then
