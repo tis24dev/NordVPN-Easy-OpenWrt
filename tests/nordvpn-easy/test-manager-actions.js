@@ -323,6 +323,64 @@ async function testUpdateLocalStatusMarksSnapshotsStaleOnRejectedExec() {
 	assert.equal(state.currentLocalStatusLastUpdated, 0, 'rejected status_json clears the freshness timestamp');
 }
 
+function testStatusResponseIsOutOfOrderOrdering() {
+	const state = { lastStatusBootId: 'boot-a', lastStatusSeq: 2000 };
+
+	assert.equal(managerActions.statusResponseIsOutOfOrder(state, 'boot-a', 1000), true, 'a lower seq in the same boot is out of order');
+	assert.equal(managerActions.statusResponseIsOutOfOrder(state, 'boot-a', 2000), false, 'an equal seq is not out of order');
+	assert.equal(managerActions.statusResponseIsOutOfOrder(state, 'boot-a', 3000), false, 'a higher seq is in order');
+	assert.equal(managerActions.statusResponseIsOutOfOrder(state, 'boot-b', 5), false, 'a different boot_id is always newer');
+	assert.equal(managerActions.statusResponseIsOutOfOrder({}, 'boot-a', 1), false, 'with no recorded baseline nothing is out of order');
+}
+
+async function testUpdateLocalStatusDiscardsOutOfOrderResponses() {
+	function statusRes(extra) {
+		return {
+			code: 0,
+			stdout: JSON.stringify(Object.assign({}, healthyRuntime, {
+				desired_enabled: false,
+				operation_status: 'idle'
+			}, extra)),
+			stderr: ''
+		};
+	}
+
+	const responses = [
+		statusRes({ selected_country: 'IT', boot_id: 'boot-a', status_seq: 2000 }),
+		statusRes({ selected_country: 'DE', boot_id: 'boot-a', status_seq: 1000 }),
+		statusRes({ selected_country: 'FR', boot_id: 'boot-a', status_seq: 3000 }),
+		statusRes({ selected_country: 'ES', boot_id: 'boot-b', status_seq: 5 })
+	];
+	let i = 0;
+	const actions = buildUpdateLocalStatusHarness({
+		execService(action) {
+			if (action === 'status_json')
+				return Promise.resolve(responses[i++]);
+
+			return Promise.resolve({ code: 0, stdout: '{}', stderr: '' });
+		}
+	});
+	const state = buildUpdateLocalStatusState();
+
+	const s1 = await actions.updateLocalStatus(state);
+	assert.equal(String(s1.selected_country || ''), 'IT', 'the first response is applied');
+	assert.equal(state.lastStatusBootId, 'boot-a', 'the ordering baseline boot_id is recorded');
+	assert.equal(state.lastStatusSeq, 2000, 'the ordering baseline status_seq is recorded');
+
+	const s2 = await actions.updateLocalStatus(state);
+	assert.equal(String(s2.selected_country || ''), 'IT', 'a stale lower-seq response returns the last known status, not the stale one');
+	assert.equal(String((state.currentLocalStatus || {}).selected_country || ''), 'IT', 'a stale response does not overwrite currentLocalStatus');
+	assert.equal(state.lastStatusSeq, 2000, 'a stale response does not advance the baseline');
+
+	const s3 = await actions.updateLocalStatus(state);
+	assert.equal(String(s3.selected_country || ''), 'FR', 'a newer-seq response is applied');
+	assert.equal(state.lastStatusSeq, 3000, 'the baseline advances on a newer response');
+
+	const s4 = await actions.updateLocalStatus(state);
+	assert.equal(String(s4.selected_country || ''), 'ES', 'a different boot_id is treated as newer and applied');
+	assert.equal(state.lastStatusBootId, 'boot-b', 'the baseline boot_id updates on a new boot');
+}
+
 function testRenderLocalStatusSnapshotClearsDisabledPlaceholders() {
 	const replacements = {};
 	const indicators = {};
@@ -2488,6 +2546,8 @@ Promise.resolve().then(async function() {
 	testForcedCatalogRefreshUsesADistinctSlot();
 	await testUpdateLocalStatusPreservesSnapshotOnFailedResponse();
 	await testUpdateLocalStatusMarksSnapshotsStaleOnRejectedExec();
+	testStatusResponseIsOutOfOrderOrdering();
+	await testUpdateLocalStatusDiscardsOutOfOrderResponses();
 	testRenderLocalStatusSnapshotClearsDisabledPlaceholders();
 	testRenderLocalStatusSnapshotHonestDuringApply();
 	await testPublicLookupsReturnEarlyWhenRuntimeDisabled();

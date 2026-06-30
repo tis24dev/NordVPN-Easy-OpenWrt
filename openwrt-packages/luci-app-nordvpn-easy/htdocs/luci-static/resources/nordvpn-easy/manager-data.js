@@ -115,7 +115,9 @@ function parseLocalStatus(raw) {
 		connect_apply_rc: Number(status.connect_apply_rc || 0),
 		connect_apply_country: normalizeCountryCode(status.connect_apply_country || ''),
 		connect_apply_started_at: Number(status.connect_apply_started_at || 0),
-		connect_apply_finished_at: Number(status.connect_apply_finished_at || 0)
+		connect_apply_finished_at: Number(status.connect_apply_finished_at || 0),
+		boot_id: String(status.boot_id || ''),
+		status_seq: Number(status.status_seq || 0)
 	};
 }
 

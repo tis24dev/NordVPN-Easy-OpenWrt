@@ -1688,6 +1688,19 @@ function updateDiagnosticsSummary(state) {
 	});
 }
 
+function statusResponseIsOutOfOrder(state, incomingBootId, incomingStatusSeq) {
+	const lastBootId = String((state && state.lastStatusBootId) || '');
+	const lastStatusSeq = Number((state && state.lastStatusSeq) || 0);
+
+	// A different (or first-seen) boot_id is always newer: a reboot drops the
+	// uhttpd socket, so no pre-reboot response can arrive after a post-reboot one.
+	if (!lastBootId || incomingBootId !== lastBootId)
+		return false;
+
+	// Same boot: a strictly lower stamp is a stale, out-of-order response.
+	return incomingStatusSeq < lastStatusSeq;
+}
+
 function updateLocalStatus(state, options) {
 	const opts = options || {};
 
@@ -1699,6 +1712,21 @@ function updateLocalStatus(state, options) {
 				return handleLocalStatusUnavailable(state, statusResponseError(res));
 
 			const status = localStatusSnapshot.status;
+
+			// Discard out-of-order status responses so a slow/stale reply cannot
+			// roll the UI backward or finish an apply cycle on stale data. Order
+			// by (boot_id, status_seq): a different boot_id is always newer; within
+			// a boot a strictly lower seq is stale. When the backend does not stamp
+			// these fields, fall back to the existing wall-clock heuristics.
+			const incomingBootId = String(status.boot_id || '');
+			const incomingStatusSeq = Number(status.status_seq || 0);
+			if (incomingBootId && incomingStatusSeq > 0) {
+				if (statusResponseIsOutOfOrder(state, incomingBootId, incomingStatusSeq))
+					return state.currentLocalStatus || status;
+				state.lastStatusBootId = incomingBootId;
+				state.lastStatusSeq = incomingStatusSeq;
+			}
+
 			const desiredEnabled = !!status.desired_enabled;
 
 			managerStore.clearError(state);
@@ -2078,6 +2106,7 @@ return baseclass.extend({
 	loadServerCatalog: loadServerCatalog,
 	renderLocalStatusSnapshot: renderLocalStatusSnapshot,
 	renderLocalStatusUnavailable: renderLocalStatusUnavailable,
+	statusResponseIsOutOfOrder: statusResponseIsOutOfOrder,
 	renderDiagnosticsSnapshot: renderDiagnosticsSnapshot,
 	updatePublicIp: updatePublicIp,
 	updateLocalStatus: updateLocalStatus,
