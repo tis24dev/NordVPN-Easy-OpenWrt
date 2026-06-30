@@ -584,7 +584,20 @@ nordvpn_easy_check_once_finish() {
 	nordvpn_easy_log_enterprise_state_if_degraded "${VPN_IF:-wg0}" 'healthcheck' || true
 }
 
+# Cheap signature of the saved desired state, used by the health check to detect
+# a user Save & Apply / disconnect that landed while the lock was released for
+# the retry wait. Compared for equality only; the account token is filtered out
+# so it never transits into the captured value, and the signature is never
+# logged. enabled / country / mode / preferred server / kill switch all live in
+# nordvpn_easy.main; a disconnect additionally flips network.<vpn_if>.disabled.
+nordvpn_easy_desired_state_signature() {
+	uci -q show 'nordvpn_easy.main' 2>/dev/null | grep -v 'nordvpn_token=' || true
+	uci -q show "network.${VPN_IF:-wg0}.disabled" 2>/dev/null || true
+}
+
 nordvpn_easy_check_once() {
+	local healthcheck_pre_wait_signature=''
+
 	log "healthcheck: starting VPN health-check on interface $VPN_IF (failure_retry_delay=${FAILURE_RETRY_DELAY:-unset})"
 
 	if nordvpn_easy_ping_interface "$VPN_IF"; then
@@ -614,10 +627,20 @@ nordvpn_easy_check_once() {
 	# the lock (run via core.sh), release it around the sleep and reacquire after;
 	# if another operation took over meanwhile, yield to it.
 	if [ "${LOCK_ACQUIRED:-0}" = '1' ]; then
+		healthcheck_pre_wait_signature="$(nordvpn_easy_desired_state_signature)"
 		nordvpn_easy_release_lock
 		sleep "${FAILURE_RETRY_DELAY:-6}"
 		if ! nordvpn_easy_acquire_lock; then
 			log 'healthcheck: another operation took over during the retry wait; yielding'
+			nordvpn_easy_check_once_finish
+			return 0
+		fi
+		# A user Save & Apply or disconnect can complete while we hold no lock
+		# during the retry wait. Reprovisioning the pre-wait snapshot would undo
+		# that newer intent, so compare the desired-state signature and yield to
+		# the newer state instead of reverting it.
+		if [ "$(nordvpn_easy_desired_state_signature)" != "$healthcheck_pre_wait_signature" ]; then
+			log 'healthcheck: desired config changed during the retry wait; yielding to the newer state'
 			nordvpn_easy_check_once_finish
 			return 0
 		fi

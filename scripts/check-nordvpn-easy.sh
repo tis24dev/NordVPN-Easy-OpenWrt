@@ -110,6 +110,7 @@ SHELL_TESTS=(
 	test-common-temp.sh
 	test-diagnostics.sh
 	test-healthcheck-blackhole.sh
+	test-healthcheck-config-drift.sh
 	test-degraded-state-log.sh
 	test-init-cron.sh
 	test-init-run-core.sh
