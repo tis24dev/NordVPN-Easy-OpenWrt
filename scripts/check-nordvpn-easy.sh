@@ -108,6 +108,8 @@ SHELL_TESTS=(
 	test-schema.sh
 	test-generation.sh
 	test-journal.sh
+	test-journal-dualwrite.sh
+	test-json-escape.sh
 	test-credentials-errors.sh
 	test-catalog-fixtures.sh
 	test-common-lock.sh

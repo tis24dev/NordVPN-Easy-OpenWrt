@@ -239,7 +239,12 @@ nordvpn_easy_curl_error_summary() {
 }
 
 nordvpn_easy_json_escape() {
-	printf '%s' "$1" | sed ':a;N;$!ba;s/\\/\\\\/g;s/"/\\"/g;s/\n/\\n/g;s/\r/\\r/g'
+	# Escape backslash/quote/CR PER LINE first, then join lines with \n. A single
+	# slurp-then-substitute sed leaves single-line values UNescaped: at EOF `N`
+	# auto-prints the pattern space and ends the cycle before the s/// commands
+	# run, so a lone line with a " or \ (e.g. last_error from an API error) would
+	# pass through and break JSON.parse of the whole status document.
+	printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\r/\\r/g' | sed ':a;N;$!ba;s/\n/\\n/g'
 }
 
 nordvpn_easy_lock_contention_is_nonfatal() {

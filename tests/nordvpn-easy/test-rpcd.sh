@@ -345,7 +345,11 @@ if grep -qi 'not found' "$STATUS_STDERR"; then
 fi
 printf '%s' "$STATUS_JSON" | jq -er '
 	.selected_country == "BO" and
-	.current_server_country == "AU"
+	.current_server_country == "AU" and
+	(.status_seq | type == "number") and
+	(.status_seq > 0) and
+	(.boot_id | type == "string") and
+	(.recovery_cron_installed | type == "boolean")
 ' >/dev/null
 [ ! -s "$STATUS_CAPTURE" ] || {
 	printf '%s\n' 'FAIL: rpc status must not run runtime actions for saved-country drift' >&2
