@@ -118,6 +118,7 @@ SHELL_TESTS=(
 	test-timing-log-cgi.sh
 	test-init-start-soft-fail.sh
 	test-init-connect-hooks-order.sh
+	test-init-crontab-block.sh
 	test-rpcd.sh
 	test-core-dispatch.sh
 	test-uci-defaults-timeout.sh

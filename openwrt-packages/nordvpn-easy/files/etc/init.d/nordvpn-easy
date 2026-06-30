@@ -16,6 +16,11 @@ CORE_SCRIPT='/usr/libexec/nordvpn-easy/core.sh'
 PUBLIC_IP_POLL_SCRIPT='/usr/libexec/nordvpn-easy/public-ip-poll.sh'
 CONFIG_CONTEXT_LIB='/usr/libexec/nordvpn-easy/lib/config-context.sh'
 CRON_PATH='/etc/cron.d/nordvpn-easy'
+# BusyBox crond reads /etc/crontabs/<user>, never /etc/cron.d, so the recovery
+# hook must live in the shared root crontab as a delimited managed block we own.
+CRONTAB_PATH='/etc/crontabs/root'
+CRON_BLOCK_BEGIN='# BEGIN nordvpn-easy'
+CRON_BLOCK_END='# END nordvpn-easy'
 HOTPLUG_PATH='/etc/hotplug.d/iface/95-nordvpn-easy'
 RUN_STATE_DIR='/tmp/run/nordvpn-easy'
 CONNECT_SETUP_CONFIG_CACHE="${RUN_STATE_DIR}/connect-setup.conf"
@@ -232,6 +237,76 @@ restart_cron_service() {
 	/etc/init.d/cron restart >/dev/null 2>&1 ||
 	/etc/init.d/cron reload >/dev/null 2>&1 ||
 	true
+}
+
+enable_and_restart_cron() {
+	# crond only scans /etc/crontabs when the cron service is enabled and running.
+	/etc/init.d/cron enable >/dev/null 2>&1 || true
+	restart_cron_service
+}
+
+# Merge our recovery cron into the shared root crontab as a delimited managed
+# block, leaving any other crons untouched. Pass the desired cron line, or an
+# empty string to remove our block. Returns 0 when the crontab changed, 2 when
+# it was already up to date, 1 on error.
+apply_crontab_block() {
+	local desired_line="$1"
+	local tmp_crontab=''
+
+	mkdir -p "$(dirname "$CRONTAB_PATH")" 2>/dev/null || true
+	tmp_crontab="$(mktemp /tmp/nordvpn-easy.crontab.XXXXXX 2>/dev/null)" || {
+		log_service_error 'failed to create temporary crontab'
+		return 1
+	}
+
+	# Copy the existing crontab minus any previous nordvpn-easy block.
+	if [ -f "$CRONTAB_PATH" ]; then
+		awk -v b="$CRON_BLOCK_BEGIN" -v e="$CRON_BLOCK_END" '
+			$0 == b { skip = 1; next }
+			$0 == e { skip = 0; next }
+			!skip { print }
+		' "$CRONTAB_PATH" > "$tmp_crontab" || {
+			rm -f -- "$tmp_crontab"
+			return 1
+		}
+	fi
+
+	if [ -n "$desired_line" ]; then
+		{
+			printf '%s\n' "$CRON_BLOCK_BEGIN"
+			printf '%s\n' "$desired_line"
+			printf '%s\n' "$CRON_BLOCK_END"
+		} >> "$tmp_crontab" || {
+			rm -f -- "$tmp_crontab"
+			return 1
+		}
+	fi
+
+	# Retire the legacy /etc/cron.d hook BusyBox crond never executed.
+	rm -f "$CRON_PATH" 2>/dev/null || true
+
+	if [ -f "$CRONTAB_PATH" ] && cmp -s "$tmp_crontab" "$CRONTAB_PATH" 2>/dev/null; then
+		rm -f -- "$tmp_crontab"
+		return 2
+	fi
+
+	if [ ! -s "$tmp_crontab" ]; then
+		rm -f -- "$tmp_crontab"
+		if [ -f "$CRONTAB_PATH" ]; then
+			# Our block was the only content: drop the now-empty crontab.
+			rm -f "$CRONTAB_PATH"
+			return 0
+		fi
+		# Nothing of ours and no existing crontab: avoid creating an empty file.
+		return 2
+	fi
+
+	mv "$tmp_crontab" "$CRONTAB_PATH" || {
+		rm -f -- "$tmp_crontab"
+		return 1
+	}
+	chmod 0600 "$CRONTAB_PATH" 2>/dev/null || true
+	return 0
 }
 
 RUNTIME_TRANSACTION_LOCK_HELD=0
@@ -532,53 +607,54 @@ normalize_cron_schedule() {
 
 install_cron_hook() {
 	local config_ready="${1:-0}"
-	local tmp_cron=''
+	local tmp_line=''
+	local desired_line=''
 	local effective_cron_schedule=''
+	local rc=0
 
 	if [ "$config_ready" != '1' ]; then
 		load_service_config || return 1
 	fi
-	mkdir -p /etc/cron.d
 
-	tmp_cron="$(mktemp /tmp/nordvpn-easy.cron.XXXXXX 2>/dev/null)" || {
+	tmp_line="$(mktemp /tmp/nordvpn-easy.cron.XXXXXX 2>/dev/null)" || {
 		log_service_error 'failed to create temporary cron hook file'
 		return 1
 	}
 
-	if ! write_desired_cron_hook_to "$tmp_cron" "$config_ready"; then
-		rm -f "$CRON_PATH"
-		rm -f -- "$tmp_cron"
-		log_service_error "invalid cron schedule '$cfg_check_cron_schedule' (${CRON_VALIDATION_ERROR:-unknown error}); refusing to write $CRON_PATH"
+	if ! write_desired_cron_hook_to "$tmp_line" "$config_ready"; then
+		rm -f -- "$tmp_line"
+		log_service_error "invalid cron schedule '$cfg_check_cron_schedule' (${CRON_VALIDATION_ERROR:-unknown error}); refusing to update $CRONTAB_PATH"
 		return 1
 	fi
+	desired_line="$(cat "$tmp_line" 2>/dev/null)"
+	rm -f -- "$tmp_line"
 
-	if [ -f "$CRON_PATH" ] && cmp -s "$tmp_cron" "$CRON_PATH" 2>/dev/null; then
-		rm -f -- "$tmp_cron"
-		log_service_info "cron hook unchanged at $CRON_PATH"
-		return 0
-	fi
-
-	if [ -s "$tmp_cron" ]; then
+	if [ -n "$desired_line" ]; then
 		effective_cron_schedule="$(normalize_cron_schedule "$cfg_check_cron_schedule")"
 		if [ "$effective_cron_schedule" != "$cfg_check_cron_schedule" ]; then
 			log_service_info "cron schedule '$cfg_check_cron_schedule' is faster than the 5-minute minimum; using '$effective_cron_schedule'"
 		fi
-		mv "$tmp_cron" "$CRON_PATH" || {
-			rm -f -- "$tmp_cron"
-			return 1
-		}
-		log_service_info "installed cron hook at $CRON_PATH with schedule '$effective_cron_schedule'"
-		restart_cron_service
-	else
-		rm -f -- "$tmp_cron"
-		if [ -f "$CRON_PATH" ]; then
-			rm -f "$CRON_PATH"
-			log_service_info "removed cron hook from $CRON_PATH"
-			restart_cron_service
-		else
-			log_service_info "removed cron hook from $CRON_PATH"
-		fi
 	fi
+
+	apply_crontab_block "$desired_line"
+	rc=$?
+	case "$rc" in
+		0)
+			if [ -n "$desired_line" ]; then
+				log_service_info "installed cron hook in $CRONTAB_PATH with schedule '$effective_cron_schedule'"
+			else
+				log_service_info "removed cron hook from $CRONTAB_PATH"
+			fi
+			enable_and_restart_cron
+			;;
+		2)
+			log_service_info "cron hook unchanged in $CRONTAB_PATH"
+			;;
+		*)
+			return 1
+			;;
+	esac
+	return 0
 }
 
 install_hotplug_hook() {
@@ -714,8 +790,9 @@ install_hooks() {
 
 remove_hooks() {
 	log_service_info 'removing runtime hooks'
-	rm -f "$CRON_PATH" "$HOTPLUG_PATH"
-	restart_cron_service
+	apply_crontab_block '' >/dev/null 2>&1 || true
+	rm -f "$HOTPLUG_PATH"
+	enable_and_restart_cron
 	log_service_info 'runtime hooks removed'
 }
 

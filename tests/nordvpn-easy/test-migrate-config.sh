@@ -171,6 +171,7 @@ run_migrator() {
 	NORDVPN_EASY_LEGACY_CONFIG_FILE="$legacy_config_file" \
 	NORDVPN_EASY_TEMPLATE_FILE="$TEMPLATE_FILE" \
 	NORDVPN_EASY_LIB_DIR="$LIB_DIR" \
+	NORDVPN_EASY_RECOVERY_FLOOR_SCHEMA="${TEST_RECOVERY_FLOOR_SCHEMA:-4}" \
 	"$MIGRATOR"
 }
 
@@ -186,6 +187,7 @@ run_migrator
 assert_file_has_line "	option enabled '0'" "$FAKE_UCI_CONFIG_FILE" 'first install writes default enabled flag'
 assert_file_has_line "	option vpn_if 'wg0'" "$FAKE_UCI_CONFIG_FILE" 'first install writes default VPN interface'
 assert_file_has_line "	option config_schema_version '$NORDVPN_EASY_SCHEMA_VERSION'" "$FAKE_UCI_CONFIG_FILE" 'first install writes current schema version'
+assert_file_has_line "	option check_cron_schedule '*/15 * * * *'" "$FAKE_UCI_CONFIG_FILE" 'first install seeds the recovery cron floor'
 
 reset_fake_uci
 cat > "$FAKE_UCI_CONFIG_FILE" <<'EOF'
@@ -346,6 +348,66 @@ assert_file_has_line "	option post_restart_delay '60'" "$FAKE_UCI_CONFIG_FILE" '
 	printf '%s\n' 'FAIL: same-schema migrator did not remove stale legacy config file' >&2
 	exit 1
 }
+
+# Recovery-floor seeding: upgrading from a pre-floor schema with no cron set
+# seeds the default cadence so the install gains autonomous recovery.
+reset_fake_uci
+rm -f "$FAKE_LEGACY_CONFIG_FILE"
+cat > "$FAKE_UCI_CONFIG_FILE" <<'EOF'
+config nordvpn_easy 'main'
+	option enabled '1'
+	option check_cron_schedule ''
+	option config_schema_version '3'
+EOF
+set_store_value '__section__' 'nordvpn_easy'
+set_store_value 'enabled' '1'
+set_store_value 'check_cron_schedule' ''
+set_store_value 'config_schema_version' '3'
+
+run_migrator
+
+assert_file_has_line "	option check_cron_schedule '*/15 * * * *'" "$FAKE_UCI_CONFIG_FILE" 'upgrade from a pre-floor schema seeds the recovery cron floor when none was set'
+
+# A user-set cron schedule is preserved on upgrade, never overwritten by the seed.
+reset_fake_uci
+rm -f "$FAKE_LEGACY_CONFIG_FILE"
+cat > "$FAKE_UCI_CONFIG_FILE" <<'EOF'
+config nordvpn_easy 'main'
+	option enabled '1'
+	option check_cron_schedule '*/30 * * * *'
+	option config_schema_version '3'
+EOF
+set_store_value '__section__' 'nordvpn_easy'
+set_store_value 'enabled' '1'
+set_store_value 'check_cron_schedule' '*/30 * * * *'
+set_store_value 'config_schema_version' '3'
+
+run_migrator
+
+assert_file_has_line "	option check_cron_schedule '*/30 * * * *'" "$FAKE_UCI_CONFIG_FILE" 'upgrade preserves a user-set cron schedule instead of seeding the floor'
+
+# vuoto = off is preserved across a LATER schema bump: once the floor was
+# introduced (prior schema >= the floor version), a subsequent migration must
+# not re-seed a deliberately cleared schedule. Model a future bump by pinning the
+# floor below the current schema while the stored config sits at the floor.
+reset_fake_uci
+rm -f "$FAKE_LEGACY_CONFIG_FILE"
+cat > "$FAKE_UCI_CONFIG_FILE" <<'EOF'
+config nordvpn_easy 'main'
+	option enabled '1'
+	option check_cron_schedule ''
+	option config_schema_version '3'
+EOF
+set_store_value '__section__' 'nordvpn_easy'
+set_store_value 'enabled' '1'
+set_store_value 'check_cron_schedule' ''
+set_store_value 'config_schema_version' '3'
+
+TEST_RECOVERY_FLOOR_SCHEMA=3
+run_migrator
+TEST_RECOVERY_FLOOR_SCHEMA=4
+
+assert_file_has_line "	option check_cron_schedule ''" "$FAKE_UCI_CONFIG_FILE" 'a later schema bump does not re-seed a deliberately cleared schedule'
 
 # Atomic-swap durability: a failure during the build (here a commit failure)
 # must leave the ORIGINAL config byte-for-byte intact - never a template-only

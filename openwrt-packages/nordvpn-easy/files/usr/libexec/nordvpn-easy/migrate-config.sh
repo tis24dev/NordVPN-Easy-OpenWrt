@@ -15,6 +15,10 @@ TEMPLATE_FILE="${NORDVPN_EASY_TEMPLATE_FILE:-/usr/share/nordvpn-easy/defaults/no
 LIB_DIR="${NORDVPN_EASY_LIB_DIR:-/usr/libexec/nordvpn-easy/lib}"
 SCHEMA_LIB="${LIB_DIR}/schema.sh"
 BUILD_DIR=''
+# Schema version that introduces the autonomous-recovery cron floor, and the
+# default cadence to seed. See seed_recovery_floor_if_needed.
+NORDVPN_EASY_RECOVERY_FLOOR_SCHEMA="${NORDVPN_EASY_RECOVERY_FLOOR_SCHEMA:-4}"
+NORDVPN_EASY_RECOVERY_FLOOR_SCHEDULE="${NORDVPN_EASY_RECOVERY_FLOOR_SCHEDULE:-*/15 * * * *}"
 
 cleanup() {
 	[ -n "$BUILD_DIR" ] && rm -rf -- "$BUILD_DIR"
@@ -120,6 +124,32 @@ snapshot_existing_config() {
 	done
 }
 
+# One-time recovery-floor seeding. A periodic health check must exist by default,
+# but BusyBox crond never read the old /etc/cron.d hook, so existing installs ran
+# with no autonomous recovery. When this migration crosses the schema version that
+# introduces the floor (or on a fresh install), seed a default cron cadence ONLY
+# when the user has not set one. The migration short-circuits once the active
+# config already carries the current schema version, so this seeds exactly once:
+# a user who later clears check_cron_schedule keeps it empty (periodic checks off),
+# and a future schema bump (prior >= the floor version) does not re-seed it.
+seed_recovery_floor_if_needed() {
+	local prior_schema
+
+	[ -z "${snapshot_check_cron_schedule:-}" ] || return 0
+
+	prior_schema="$(read_active_option config_schema_version)"
+	case "$prior_schema" in
+		''|*[!0-9]*)
+			: # fresh install or unreadable prior version -> seed
+			;;
+		*)
+			[ "$prior_schema" -lt "$NORDVPN_EASY_RECOVERY_FLOOR_SCHEMA" ] || return 0
+			;;
+	esac
+
+	snapshot_check_cron_schedule="$(nordvpn_easy_normalize_value check_cron_schedule "$NORDVPN_EASY_RECOVERY_FLOOR_SCHEDULE")"
+}
+
 # Build the fully migrated config off to the side and swap it into place with a
 # single atomic rename. The new config is assembled in a sibling workspace on the
 # same filesystem as the live config (so the final mv is an atomic rename, not a
@@ -197,5 +227,6 @@ if [ -r "$CONFIG_FILE" ] && active_option_exists 'config_schema_version' &&
 fi
 
 snapshot_existing_config
+seed_recovery_floor_if_needed
 build_migrated_config || exit 1
 rm -f -- "$LEGACY_CONFIG_FILE"

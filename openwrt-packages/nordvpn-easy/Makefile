@@ -48,6 +48,15 @@ luci_app_installed() {
 nordvpn_easy_cleanup_files() {
 	rm -f /etc/config/nordvpn_easy /etc/config/nordvpn_easy-opkg
 	rm -f /etc/cron.d/nordvpn-easy /etc/hotplug.d/iface/95-nordvpn-easy
+	if [ -f /etc/crontabs/root ]; then
+		crontab_tmp="$$(mktemp 2>/dev/null)" && \
+			awk '
+				$$0 == "# BEGIN nordvpn-easy" { skip = 1; next }
+				$$0 == "# END nordvpn-easy" { skip = 0; next }
+				!skip { print }
+			' /etc/crontabs/root > "$$crontab_tmp" && mv "$$crontab_tmp" /etc/crontabs/root
+		/etc/init.d/cron restart >/dev/null 2>&1 || /etc/init.d/cron reload >/dev/null 2>&1 || true
+	fi
 	rm -f /var/etc/nordvpn-easy.conf
 	rm -f /tmp/nordvpn.json \
 		/tmp/nordvpn-easy-countries.json \
