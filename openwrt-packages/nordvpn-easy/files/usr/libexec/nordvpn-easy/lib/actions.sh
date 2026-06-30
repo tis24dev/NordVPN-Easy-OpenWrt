@@ -538,35 +538,36 @@ nordvpn_easy_provision_vpn() {
 	fi
 
 	if [ "$mode" = 'server_change' ]; then
-		nordvpn_easy_provision_vpn_server_change
-		return $?
+		nordvpn_easy_provision_vpn_server_change || return $?
+	elif [ "$mode" = 'connect_fresh' ]; then
+		nordvpn_easy_provision_vpn_connect_fresh || return $?
+	elif [ "$mode" = 'connect_apply' ]; then
+		nordvpn_easy_provision_vpn_connect_apply || return $?
+	else
+		nordvpn_easy_fetch_provision_prerequisites || return 1
+		NORDVPN_EASY_PROVISION_FETCH_DONE=1
+		nordvpn_easy_teardown_vpn || return 1
+		nordvpn_easy_configure_vpn_interface || return 1
+		unset NORDVPN_EASY_PROVISION_FETCH_DONE
+
+		if ! nordvpn_easy_wait_for_vpn_connectivity "$VPN_IF" "$POST_RESTART_DELAY" "provisioning $VPN_IF"; then
+			log 'apply: VPN connection is not OK after provisioning'
+			return 1
+		fi
+
+		verify_public_country_selection ||
+			log 'apply: public IP/country verification did not pass; leaving the tunnel up (status reflects the result)'
+		nordvpn_easy_commit_pending_server_preference
+		log 'apply: VPN provisioning completed'
 	fi
 
-	if [ "$mode" = 'connect_fresh' ]; then
-		nordvpn_easy_provision_vpn_connect_fresh
-		return $?
+	# Record that the live runtime now matches the desired config (durable
+	# applied_fingerprint + tmpfs runtime-token sentinel). Additive: no control
+	# path keys on it yet, and a failure here must never fail an otherwise
+	# successful provision.
+	if command -v nordvpn_easy_mark_applied >/dev/null 2>&1; then
+		nordvpn_easy_mark_applied "$(nordvpn_easy_config_fingerprint)" 2>/dev/null || true
 	fi
-
-	if [ "$mode" = 'connect_apply' ]; then
-		nordvpn_easy_provision_vpn_connect_apply
-		return $?
-	fi
-
-	nordvpn_easy_fetch_provision_prerequisites || return 1
-	NORDVPN_EASY_PROVISION_FETCH_DONE=1
-	nordvpn_easy_teardown_vpn || return 1
-	nordvpn_easy_configure_vpn_interface || return 1
-	unset NORDVPN_EASY_PROVISION_FETCH_DONE
-
-	if ! nordvpn_easy_wait_for_vpn_connectivity "$VPN_IF" "$POST_RESTART_DELAY" "provisioning $VPN_IF"; then
-		log 'apply: VPN connection is not OK after provisioning'
-		return 1
-	fi
-
-	verify_public_country_selection ||
-		log 'apply: public IP/country verification did not pass; leaving the tunnel up (status reflects the result)'
-	nordvpn_easy_commit_pending_server_preference
-	log 'apply: VPN provisioning completed'
 }
 
 nordvpn_easy_reconcile_action() {

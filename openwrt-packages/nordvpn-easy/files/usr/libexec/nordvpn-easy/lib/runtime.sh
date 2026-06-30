@@ -527,6 +527,10 @@ nordvpn_easy_emit_status_json() {
 	local connect_apply_started_at='0'
 	local connect_apply_finished_at='0'
 	local recovery_cron_installed='false'
+	local config_fingerprint=''
+	local applied_fingerprint=''
+	local runtime_token=''
+	local applied_current='false'
 
 	nordvpn_easy_load_lock_metadata "${LOCK_DIR:-/tmp/nordvpn-easy.lock}"
 	operation="$(nordvpn_easy_operation_status_from_loaded_lock)"
@@ -673,6 +677,19 @@ nordvpn_easy_emit_status_json() {
 		recovery_cron_installed='true'
 	fi
 
+	# Config-identity fields (additive, observability only). config_fingerprint is
+	# the desired-config identity; applied_fingerprint the last one provisioned;
+	# applied_current is true when the live runtime is caught up to the desired
+	# config. Empty when the fingerprint hasher is unavailable.
+	if command -v nordvpn_easy_config_fingerprint >/dev/null 2>&1; then
+		config_fingerprint="$(nordvpn_easy_config_fingerprint 2>/dev/null || printf '')"
+		applied_fingerprint="$(nordvpn_easy_applied_fingerprint 2>/dev/null || printf '')"
+		runtime_token="$(nordvpn_easy_runtime_token_value 2>/dev/null || printf '')"
+		if [ -n "$config_fingerprint" ] && [ "$config_fingerprint" = "$applied_fingerprint" ]; then
+			applied_current='true'
+		fi
+	fi
+
 	cat <<EOF
 {
   "updated_at": $updated_at,
@@ -685,6 +702,10 @@ nordvpn_easy_emit_status_json() {
   "server_selection_mode": "$(nordvpn_easy_json_escape "${SERVER_SELECTION_MODE:-auto}")",
   "kill_switch_enabled": $([ "${KILL_SWITCH_ENABLED:-0}" = '1' ] && printf '%s' 'true' || printf '%s' 'false'),
   "recovery_cron_installed": $recovery_cron_installed,
+  "config_fingerprint": "$(nordvpn_easy_json_escape "$config_fingerprint")",
+  "applied_fingerprint": "$(nordvpn_easy_json_escape "$applied_fingerprint")",
+  "runtime_token": "$(nordvpn_easy_json_escape "$runtime_token")",
+  "applied_current": $applied_current,
   "selected_country": "$(nordvpn_easy_json_escape "${VPN_COUNTRY:-}")",
   "interface": "$(nordvpn_easy_json_escape "${VPN_IF:-}")",
   "vpn_status": "$(nordvpn_easy_json_escape "$vpn_state")",
