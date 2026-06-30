@@ -531,6 +531,10 @@ nordvpn_easy_emit_status_json() {
 	local applied_fingerprint=''
 	local runtime_token=''
 	local applied_current='false'
+	local status_seq='0'
+	local boot_id=''
+	local journal_phase=''
+	local journal_txn_id=''
 
 	nordvpn_easy_load_lock_metadata "${LOCK_DIR:-/tmp/nordvpn-easy.lock}"
 	operation="$(nordvpn_easy_operation_status_from_loaded_lock)"
@@ -690,6 +694,19 @@ nordvpn_easy_emit_status_json() {
 		fi
 	fi
 
+	# Ordering stamps and shadow journal phase (additive). status_seq + boot_id let
+	# the LuCI poller discard out-of-order status responses; journal_phase/txn_id
+	# expose the (not yet authoritative) apply transaction.
+	if command -v nordvpn_easy_journal_next_seq >/dev/null 2>&1; then
+		status_seq="$(nordvpn_easy_journal_next_seq 2>/dev/null || printf '0')"
+		boot_id="$(nordvpn_easy_journal_boot_id 2>/dev/null || printf '')"
+		journal_phase="$(nordvpn_easy_journal_get phase 2>/dev/null || printf '')"
+		journal_txn_id="$(nordvpn_easy_journal_get txn_id 2>/dev/null || printf '')"
+	fi
+	case "$status_seq" in
+		''|*[!0-9]*) status_seq='0' ;;
+	esac
+
 	cat <<EOF
 {
   "updated_at": $updated_at,
@@ -706,6 +723,10 @@ nordvpn_easy_emit_status_json() {
   "applied_fingerprint": "$(nordvpn_easy_json_escape "$applied_fingerprint")",
   "runtime_token": "$(nordvpn_easy_json_escape "$runtime_token")",
   "applied_current": $applied_current,
+  "status_seq": $status_seq,
+  "boot_id": "$(nordvpn_easy_json_escape "$boot_id")",
+  "journal_phase": "$(nordvpn_easy_json_escape "$journal_phase")",
+  "journal_txn_id": "$(nordvpn_easy_json_escape "$journal_txn_id")",
   "selected_country": "$(nordvpn_easy_json_escape "${VPN_COUNTRY:-}")",
   "interface": "$(nordvpn_easy_json_escape "${VPN_IF:-}")",
   "vpn_status": "$(nordvpn_easy_json_escape "$vpn_state")",

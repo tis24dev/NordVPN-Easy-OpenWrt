@@ -438,6 +438,12 @@ EOF
 		rm -f "$tmp" 2>/dev/null || true
 		return 1
 	}
+
+	# Shadow dual-write: mirror the apply lifecycle into the journal (not yet
+	# authoritative). A journal error must never fail the result write.
+	if command -v nordvpn_easy_journal_begin >/dev/null 2>&1; then
+		nordvpn_easy_journal_begin apply >/dev/null 2>&1 || true
+	fi
 }
 
 nordvpn_easy_connect_apply_result_finish() {
@@ -472,6 +478,12 @@ EOF
 		rm -f "$tmp" 2>/dev/null || true
 		return 1
 	}
+
+	# Shadow dual-write of the terminal phase before refreshing the status cache,
+	# so the cached status reflects the finished journal state.
+	if command -v nordvpn_easy_journal_finish >/dev/null 2>&1; then
+		nordvpn_easy_journal_finish "$rc" "$country" >/dev/null 2>&1 || true
+	fi
 
 	if command -v nordvpn_easy_write_status_cache >/dev/null 2>&1; then
 		nordvpn_easy_write_status_cache >/dev/null 2>&1 || true
