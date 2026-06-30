@@ -80,7 +80,6 @@ function fallbackStatusLabel(fallbackStation, preferredStation, configuredCountr
 return view.extend({
 	load: function() {
 		return Promise.all([
-			L.resolveDefault(fs.stat('/etc/cron.d/nordvpn-easy'), null),
 			L.resolveDefault(fs.stat('/etc/hotplug.d/iface/95-nordvpn-easy'), null),
 			L.resolveDefault(service.execService('status_json'), null),
 			uci.load('nordvpn_easy'),
@@ -89,14 +88,14 @@ return view.extend({
 	},
 
 	render: function(stats) {
-		const cronInstalled = !!stats[0];
-		const hotplugInstalled = !!stats[1];
-		const statusPayload = service.parseExecJsonResponse(stats[2], null);
+		const hotplugInstalled = !!stats[0];
+		const statusPayload = service.parseExecJsonResponse(stats[1], null);
+		const cronInstalled = !!(statusPayload && statusPayload.recovery_cron_installed);
 		const runtimeBusy = managerData.runtimeStatusIsBusy(statusPayload);
 		const operationStatus = String((statusPayload && statusPayload.operation_status) || 'idle');
 		const configuredCountry = managerData.normalizeCountryCode(uci.get('nordvpn_easy', 'main', 'vpn_country') || '');
 		const preferredStation = String(uci.get('nordvpn_easy', 'main', 'preferred_server_station') || '');
-		let fallbackCatalog = managerData.parseServerCatalog(stats[4] || '{}');
+		let fallbackCatalog = managerData.parseServerCatalog(stats[3] || '{}');
 
 		if (configuredCountry && fallbackCatalog.country_code !== configuredCountry)
 			fallbackCatalog = managerData.emptyServerCatalog();

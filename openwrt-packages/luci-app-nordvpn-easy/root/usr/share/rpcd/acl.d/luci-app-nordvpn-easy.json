@@ -6,9 +6,6 @@
 				"nordvpn_easy"
 			],
 			"file": {
-				"/etc/cron.d/nordvpn-easy": [
-					"read"
-				],
 				"/etc/hotplug.d/iface/95-nordvpn-easy": [
 					"read"
 				],

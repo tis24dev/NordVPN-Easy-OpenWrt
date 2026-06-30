@@ -384,7 +384,6 @@ function loadAdvancedView(options) {
 		notifications: notifications,
 		stats: [
 			{},
-			{},
 			{
 				code: 0,
 				stdout: JSON.stringify(statusPayload),

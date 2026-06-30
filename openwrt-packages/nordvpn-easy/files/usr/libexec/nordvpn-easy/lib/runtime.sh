@@ -526,6 +526,7 @@ nordvpn_easy_emit_status_json() {
 	local connect_apply_country=''
 	local connect_apply_started_at='0'
 	local connect_apply_finished_at='0'
+	local recovery_cron_installed='false'
 
 	nordvpn_easy_load_lock_metadata "${LOCK_DIR:-/tmp/nordvpn-easy.lock}"
 	operation="$(nordvpn_easy_operation_status_from_loaded_lock)"
@@ -665,6 +666,13 @@ nordvpn_easy_emit_status_json() {
 		connect_apply_pending='true'
 	fi
 
+	# Reflect whether our managed recovery cron block is present in the shared root
+	# crontab (BusyBox crond reads /etc/crontabs/root, never /etc/cron.d). The
+	# marker must match the CRON_BLOCK_BEGIN written by the init service.
+	if grep -Fxq '# BEGIN nordvpn-easy' "${NORDVPN_EASY_CRONTAB_PATH:-/etc/crontabs/root}" 2>/dev/null; then
+		recovery_cron_installed='true'
+	fi
+
 	cat <<EOF
 {
   "updated_at": $updated_at,
@@ -676,6 +684,7 @@ nordvpn_easy_emit_status_json() {
   "runtime_configured": $runtime_configured,
   "server_selection_mode": "$(nordvpn_easy_json_escape "${SERVER_SELECTION_MODE:-auto}")",
   "kill_switch_enabled": $([ "${KILL_SWITCH_ENABLED:-0}" = '1' ] && printf '%s' 'true' || printf '%s' 'false'),
+  "recovery_cron_installed": $recovery_cron_installed,
   "selected_country": "$(nordvpn_easy_json_escape "${VPN_COUNTRY:-}")",
   "interface": "$(nordvpn_easy_json_escape "${VPN_IF:-}")",
   "vpn_status": "$(nordvpn_easy_json_escape "$vpn_state")",
