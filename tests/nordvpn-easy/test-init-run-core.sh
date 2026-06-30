@@ -178,7 +178,7 @@ RC=0
 connect || RC=$?
 assert_eq '1' "$RC" 'connect propagates setup failure'
 assert_eq '1' "$SETUP_COUNT" 'connect runs setup once'
-assert_eq '0' "$INSTALL_HOOKS_COUNT" 'connect does not install hooks when setup fails'
+assert_eq '1' "$INSTALL_HOOKS_COUNT" 'connect installs recovery hooks before setup so a setup failure still has a retry path'
 case "$UCI_SET_VALUES" in
 	*nordvpn_easy.main.enabled=1\;*)
 		;;

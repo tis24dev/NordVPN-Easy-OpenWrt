@@ -839,6 +839,19 @@ connect() {
 		return 1
 	}
 
+	# Install the cron/hotplug recovery hooks right after persisting enabled=1
+	# and BEFORE setup. setup brings the tunnel up (fetch/teardown/configure/
+	# bringup); if it fails transiently, the hooks already exist so cron/hotplug
+	# recovery can converge the runtime. Installing hooks only after setup would
+	# leave a persisted enabled=1 with no retry path whenever setup fails. The
+	# connect-apply guard and the held transaction lock both suppress the hotplug
+	# hook from re-entering during our own setup ifup/ifdown.
+	install_hooks_if_needed || {
+		connect_apply_result_finish 1
+		connect_apply_guard_end
+		return 1
+	}
+
 	export NORDVPN_EASY_SETUP_CONFIG_CACHE="$CONNECT_SETUP_CONFIG_CACHE"
 	setup || rc=$?
 	unset NORDVPN_EASY_SETUP_CONFIG_CACHE
@@ -849,12 +862,6 @@ connect() {
 		connect_apply_guard_end
 		return "$rc"
 	fi
-
-	install_hooks_if_needed || {
-		connect_apply_result_finish 1
-		connect_apply_guard_end
-		return 1
-	}
 
 	connect_apply_result_finish 0
 	connect_apply_guard_end
