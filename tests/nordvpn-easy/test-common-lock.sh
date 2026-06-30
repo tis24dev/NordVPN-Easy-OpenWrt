@@ -146,6 +146,81 @@ assert_eq "$$" "$(cat "$LOCK_DIR/pid")" 'fallthrough acquisition records this pi
 nordvpn_easy_release_lock
 unset NORDVPN_EASY_LOCK_INHERITED
 
+# --- S6 owner-token fence ---------------------------------------------------
+# A fresh acquisition mints a token, persists it, and sets the in-memory owner
+# token to match, so owner_assert passes and release deletes the dir.
+LOCK_DIR="$TMP_DIR/lock"
+LOCK_ACQUIRED=0
+NORDVPN_EASY_OWNER_TOKEN=''
+tok_rc=0
+nordvpn_easy_acquire_lock >/dev/null 2>&1 || tok_rc=$?
+assert_eq '0' "$tok_rc" 'token-fence: fresh acquisition succeeds'
+[ -f "$LOCK_DIR/token" ] || { printf '%s\n' 'FAIL: acquisition must write a token file' >&2; exit 1; }
+[ -n "$NORDVPN_EASY_OWNER_TOKEN" ] || { printf '%s\n' 'FAIL: acquisition must set the in-memory owner token' >&2; exit 1; }
+assert_eq "$NORDVPN_EASY_OWNER_TOKEN" "$(cat "$LOCK_DIR/token")" 'token-fence: on-disk token matches the minted owner token'
+nordvpn_easy_owner_assert || { printf '%s\n' 'FAIL: owner_assert must pass for the legitimate holder' >&2; exit 1; }
+
+# A superseded holder (its on-disk token was replaced by a recoverer) must NOT
+# delete the live owner's dir -- the B-2 load-bearing guarantee.
+printf '%s\n' 'someone-elses-token' > "$LOCK_DIR/token"
+if nordvpn_easy_owner_assert; then
+	printf '%s\n' 'FAIL: owner_assert must fail when the on-disk token differs' >&2
+	exit 1
+fi
+nordvpn_easy_release_lock
+[ -d "$LOCK_DIR" ] || { printf '%s\n' 'FAIL: a superseded holder must not delete the live owner lock' >&2; exit 1; }
+assert_eq '0' "$LOCK_ACQUIRED" 'token-fence: a superseded release clears the local flag'
+rm -rf "$LOCK_DIR"
+
+# owner_assert fails closed when the token file is missing entirely.
+mkdir -p "$LOCK_DIR"
+NORDVPN_EASY_OWNER_TOKEN='claim:1:2'
+if nordvpn_easy_owner_assert; then
+	printf '%s\n' 'FAIL: owner_assert must fail when no token file exists' >&2
+	exit 1
+fi
+rm -rf "$LOCK_DIR"
+NORDVPN_EASY_OWNER_TOKEN=''
+
+# Two minted tokens are distinct (the uuid claim_id is the uniqueness guarantor).
+tok_a="$(nordvpn_easy_new_owner_token)"
+tok_b="$(nordvpn_easy_new_owner_token)"
+[ "$tok_a" != "$tok_b" ] || { printf '%s\n' 'FAIL: two minted owner tokens must differ' >&2; exit 1; }
+
+# proc_starttime returns a number for a live pid and fails closed on a dead one.
+start_self="$(nordvpn_easy_proc_starttime "$$")"
+case "$start_self" in
+	''|*[!0-9]*) printf '%s\n' "FAIL: proc_starttime must return a numeric start time for self: $start_self" >&2; exit 1 ;;
+esac
+assert_eq 'NOSTAT' "$(nordvpn_easy_proc_starttime 999999)" 'proc_starttime fails closed on a dead pid'
+
+# Child-on-exit (LOAD-BEARING): an adopting child keeps LOCK_ACQUIRED=0 even
+# though it adopts the parent's MATCHING token, so its on_exit/release must NEVER
+# delete the live parent's lock. If a future edit set LOCK_ACQUIRED=1 here, the
+# adopted matching token would let owner_assert pass and the child would delete
+# the parent lock (B-2 in reverse) -- this test pins the invariant.
+mkdir -p "$LOCK_DIR"
+parent_token="$(nordvpn_easy_new_owner_token)"
+printf '%s\n' "$$" > "$LOCK_DIR/pid"
+printf '%s\n' 'connect' > "$LOCK_DIR/action"
+printf '%s\n' "$(date +%s)" > "$LOCK_DIR/started_at"
+printf '%s\n' 'held' > "$LOCK_DIR/state"
+printf '%s\n' "$parent_token" > "$LOCK_DIR/token"
+LOCK_ACQUIRED=0
+NORDVPN_EASY_OWNER_TOKEN=''
+NORDVPN_EASY_LOCK_INHERITED=1
+child_rc=0
+nordvpn_easy_acquire_lock >/dev/null 2>&1 || child_rc=$?
+assert_eq '0' "$child_rc" 'child adopts the inherited lock'
+assert_eq '0' "$LOCK_ACQUIRED" 'child-on-exit: adopting child never takes ownership'
+assert_eq "$parent_token" "$NORDVPN_EASY_OWNER_TOKEN" 'child-on-exit: child adopts the parent token from disk'
+nordvpn_easy_on_exit
+[ -d "$LOCK_DIR" ] || { printf '%s\n' 'FAIL: child on_exit must not delete the live parent lock' >&2; exit 1; }
+assert_eq "$$" "$(cat "$LOCK_DIR/pid")" 'child-on-exit: parent lock metadata preserved'
+unset NORDVPN_EASY_LOCK_INHERITED
+rm -rf "$LOCK_DIR"
+NORDVPN_EASY_OWNER_TOKEN=''
+
 # --- Bounded-wait acquire (nordvpn_easy_acquire_lock wrapper) ---------------
 # Deliberate apply actions (connect/reconnect) wait briefly for a TRANSIENT lock
 # holder instead of aborting busy. Drive the wrapper with a stubbed try function

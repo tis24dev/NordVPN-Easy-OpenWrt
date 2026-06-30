@@ -358,6 +358,11 @@ acquire_runtime_transaction_lock() {
 	NORDVPN_EASY_LOCK_WAIT_SECONDS="$lock_wait_seconds" nordvpn_easy_acquire_lock || rc=$?
 	if [ "$rc" -eq 0 ]; then
 		RUNTIME_TRANSACTION_LOCK_HELD=1
+		# Export ONLY the inherited flag, never NORDVPN_EASY_OWNER_TOKEN: child
+		# core.sh runs must adopt the parent's lock token by reading it off disk
+		# (the adopt path), not inherit it via env. If the token ever leaked into a
+		# child's env and that child set LOCK_ACQUIRED=1, its release_lock could
+		# delete the live parent lock (B-2 in reverse).
 		export NORDVPN_EASY_LOCK_INHERITED=1
 		return 0
 	fi

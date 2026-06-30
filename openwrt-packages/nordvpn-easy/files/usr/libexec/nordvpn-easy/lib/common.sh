@@ -373,9 +373,100 @@ nordvpn_easy_server_cache_ttl_value() {
 	esac
 }
 
+# Field 22 of /proc/PID/stat (process start time, jiffies since boot) -- the
+# PID-reuse discriminator in the owner token. The comm (field 2) is wrapped in
+# parens and may contain spaces, parens or newlines, so strip through the LAST
+# ") " (the true comm close) before counting fields; a naive `awk '{print $22}'`
+# misparses a spaced comm. Fail CLOSED with a NOSTAT sentinel that never silently
+# matches a healthy holder.
+nordvpn_easy_proc_starttime() {
+	local pid="${1:-$$}"
+	local stat rest tok i=1
+
+	stat="$(cat "/proc/${pid}/stat" 2>/dev/null)" || { printf '%s' 'NOSTAT'; return 1; }
+	rest="${stat##*) }"
+	[ "$rest" = "$stat" ] && { printf '%s' 'NOSTAT'; return 1; }
+	# shellcheck disable=SC2086
+	set -- $rest
+	[ "$#" -lt 20 ] && { printf '%s' 'NOSTAT'; return 1; }
+	for tok in "$@"; do
+		if [ "$i" -eq 20 ]; then
+			case "$tok" in
+				''|*[!0-9]*) printf '%s' 'NOSTAT'; return 1 ;;
+				*) printf '%s' "$tok"; return 0 ;;
+			esac
+		fi
+		i=$((i + 1))
+	done
+	printf '%s' 'NOSTAT'
+	return 1
+}
+
+# A per-transaction owner identity: claim_id:pid:starttime. claim_id is a random
+# uuid (the primary uniqueness guarantor: even PID reuse yields a distinct token);
+# pid+starttime make the token PID-reuse-proof. Self-contained (reads the uuid
+# directly) so any caller that sources only common.sh still mints a unique id.
+nordvpn_easy_new_owner_token() {
+	local claim_id
+
+	# `|| true` so an unreadable uuid (failed redirect) never aborts a set -e
+	# caller; a failed read just yields an empty claim_id and the fallback below
+	# takes over.
+	claim_id="$(tr -d '\n' < /proc/sys/kernel/random/uuid 2>/dev/null || true)"
+	[ -n "$claim_id" ] || claim_id="fallback-$$-$(date +%s 2>/dev/null || printf '0')"
+	printf '%s:%s:%s' "$claim_id" "$$" "$(nordvpn_easy_proc_starttime "$$")"
+}
+
+# Fail-closed ownership check: true only when the on-disk lock token equals this
+# process's minted token. Consulted ONLY by release_lock and the fenced_* helpers
+# -- never on the acquire/recover path -- so it can never block reclamation of a
+# foreign, tokenless or half-written dir (preserves the no-deadlock invariant).
+nordvpn_easy_owner_assert() {
+	local on_disk
+
+	[ -n "${NORDVPN_EASY_OWNER_TOKEN:-}" ] || return 1
+	[ -n "${LOCK_DIR:-}" ] || return 1
+	on_disk="$(cat "${LOCK_DIR}/token" 2>/dev/null)" || return 1
+	[ -n "$on_disk" ] || return 1
+	[ "$on_disk" = "$NORDVPN_EASY_OWNER_TOKEN" ]
+}
+
+# Owner-fenced mutation wrappers. DEFINED for the S7 supervisor; NOT wired into
+# any legacy uci/ifup/journal site in S6 (the TTL reaper that revokes a live
+# holder's token -- which makes the fence meaningful for long-running writes --
+# lands in S7). A superseded/PID-reused writer that calls these refuses with no
+# side effect.
+nordvpn_easy_fenced_journal_set() {
+	nordvpn_easy_owner_assert || { nordvpn_easy_log_phase 'runtime' 'refusing journal write: not execution-lock owner'; return 1; }
+	nordvpn_easy_journal_write_full "$@"
+}
+
+nordvpn_easy_fenced_uci_commit() {
+	nordvpn_easy_owner_assert || { nordvpn_easy_log_blocker 'runtime' 'refusing uci commit: not execution-lock owner'; return 1; }
+	uci commit "$@"
+}
+
+nordvpn_easy_fenced_ifupdown() {
+	nordvpn_easy_owner_assert || { nordvpn_easy_log_blocker 'runtime' 'refusing ifup/ifdown: not execution-lock owner'; return 1; }
+	case "${1:-}" in
+		up) ifup "${2:-}" ;;
+		down) ifdown "${2:-}" ;;
+		*) return 2 ;;
+	esac
+}
+
 nordvpn_easy_release_lock() {
 	[ "${LOCK_ACQUIRED:-0}" -eq 1 ] || return 0
 	[ -n "${LOCK_DIR:-}" ] || return 0
+	# B-2 LOAD-BEARING GATE: only delete the dir when its on-disk token is still
+	# ours. A thawed/superseded/PID-reused ex-holder whose LOCK_ACQUIRED is still 1
+	# in its own memory finds a different token on disk and must NOT delete the
+	# live owner's lock.
+	if ! nordvpn_easy_owner_assert; then
+		LOCK_ACQUIRED=0
+		nordvpn_easy_log_phase 'runtime' "execution lock at $LOCK_DIR is no longer owned by this process; not releasing (superseded)"
+		return 0
+	fi
 	rm -rf "${LOCK_DIR:-}"
 	LOCK_ACQUIRED=0
 	nordvpn_easy_log_phase 'runtime' "execution lock released at $LOCK_DIR"
@@ -535,11 +626,18 @@ nordvpn_easy_write_lock_metadata() {
 	local lock_action="$3"
 	local lock_started_at="$4"
 	local lock_state="$5"
+	local lock_token="${6:-}"
 
 	printf '%s\n' "$lock_pid" > "${lock_dir}/pid" || return 1
 	printf '%s\n' "$lock_action" > "${lock_dir}/action" || return 1
 	printf '%s\n' "$lock_started_at" > "${lock_dir}/started_at" || return 1
 	printf '%s\n' "$lock_state" > "${lock_dir}/state" || return 1
+	# B-3 invariant: the token is the STRICTLY LAST write, after pid. A dir seen
+	# without a token is therefore pre-pid (pidless-grace) or post-pid-pre-token
+	# (live-busy/dead-recover) -- always reclaimable by the existing pid/age paths.
+	if [ -n "$lock_token" ]; then
+		printf '%s\n' "$lock_token" > "${lock_dir}/token" || return 1
+	fi
 }
 
 _nordvpn_easy_try_acquire_lock() {
@@ -552,6 +650,7 @@ _nordvpn_easy_try_acquire_lock() {
 	local lock_age='0'
 	local now_ts=0
 	local stale_reason='unknown'
+	local owner_token=''
 
 	# Adopt a lock a parent transaction already holds. The init service's
 	# acquire_runtime_transaction_lock takes the runtime lock once for the whole
@@ -569,6 +668,13 @@ _nordvpn_easy_try_acquire_lock() {
 			*)
 				if kill -0 "$lock_pid" 2>/dev/null; then
 					LOCK_ACQUIRED=0
+					# Adopt the parent transaction's identity from disk so this
+					# child's S7 owner-fenced writes count as the same transaction.
+					# LOCK_ACQUIRED=0 (not the token) is what stops the child from
+					# ever releasing the parent's lock: release_lock short-circuits
+					# on it BEFORE owner_assert is consulted. The parent keeps the
+					# token UNEXPORTED, so it reaches the child only via this read.
+					NORDVPN_EASY_OWNER_TOKEN="$(cat "${LOCK_DIR}/token" 2>/dev/null || printf '')"
 					nordvpn_easy_install_exit_trap
 					nordvpn_easy_log_phase 'runtime' "adopting inherited execution lock at $LOCK_DIR (holder pid=$lock_pid)"
 					return 0
@@ -582,11 +688,13 @@ _nordvpn_easy_try_acquire_lock() {
 
 	now_ts="$(date +%s 2>/dev/null || printf '0')"
 	if mkdir "$LOCK_DIR" 2>/dev/null; then
-		if ! nordvpn_easy_write_lock_metadata "$LOCK_DIR" "$$" "${ACTION:-unknown}" "$now_ts" 'held'; then
+		owner_token="$(nordvpn_easy_new_owner_token)"
+		if ! nordvpn_easy_write_lock_metadata "$LOCK_DIR" "$$" "${ACTION:-unknown}" "$now_ts" 'held' "$owner_token"; then
 			rm -rf "$LOCK_DIR" 2>/dev/null
 			nordvpn_easy_log_blocker 'runtime' "could not write execution lock metadata into $LOCK_DIR"
 			return 1
 		fi
+		NORDVPN_EASY_OWNER_TOKEN="$owner_token"
 		LOCK_ACQUIRED=1
 		nordvpn_easy_install_exit_trap
 		nordvpn_easy_log_phase 'runtime' "execution lock acquired at $LOCK_DIR"
@@ -665,7 +773,8 @@ _nordvpn_easy_try_acquire_lock() {
 		nordvpn_easy_log_blocker 'runtime' "could not recreate execution lock directory at $LOCK_DIR"
 		return 1
 	fi
-	if ! nordvpn_easy_write_lock_metadata "$LOCK_DIR" "$$" "${ACTION:-unknown}" "$now_ts" 'stale_recovered'; then
+	owner_token="$(nordvpn_easy_new_owner_token)"
+	if ! nordvpn_easy_write_lock_metadata "$LOCK_DIR" "$$" "${ACTION:-unknown}" "$now_ts" 'stale_recovered' "$owner_token"; then
 		rm -rf "$LOCK_DIR" 2>/dev/null
 		nordvpn_easy_log_blocker 'runtime' "could not write execution lock metadata into $LOCK_DIR"
 		return 1
@@ -679,6 +788,7 @@ _nordvpn_easy_try_acquire_lock() {
 		return 2
 	fi
 
+	NORDVPN_EASY_OWNER_TOKEN="$owner_token"
 	LOCK_ACQUIRED=1
 	nordvpn_easy_install_exit_trap
 	nordvpn_easy_log_phase 'runtime' "recovered and acquired execution lock at $LOCK_DIR (reason: ${stale_reason})"
