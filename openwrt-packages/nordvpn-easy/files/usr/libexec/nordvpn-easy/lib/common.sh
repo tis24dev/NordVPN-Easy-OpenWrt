@@ -238,12 +238,25 @@ nordvpn_easy_curl_error_summary() {
 		nordvpn_easy_sanitize_diagnostics_stream
 }
 
+# Single newline / carriage-return sentinels for the json-escape fast path,
+# computed once (command substitution strips the trailing 'x', not the control
+# character before it).
+NORDVPN_EASY_JSON_NL="$(printf '\nx')"; NORDVPN_EASY_JSON_NL="${NORDVPN_EASY_JSON_NL%x}"
+NORDVPN_EASY_JSON_CR="$(printf '\rx')"; NORDVPN_EASY_JSON_CR="${NORDVPN_EASY_JSON_CR%x}"
+
 nordvpn_easy_json_escape() {
-	# Escape backslash/quote/CR PER LINE first, then join lines with \n. A single
-	# slurp-then-substitute sed leaves single-line values UNescaped: at EOF `N`
-	# auto-prints the pattern space and ends the cycle before the s/// commands
-	# run, so a lone line with a " or \ (e.g. last_error from an API error) would
-	# pass through and break JSON.parse of the whole status document.
+	# Fast path: a value with no backslash, double quote, newline or CR needs no
+	# escaping and no subprocess. This is the common case on the status hot path
+	# (json_escape is called ~30x per status emit), so it must not fork.
+	case "$1" in
+		*\\*|*\"*|*"$NORDVPN_EASY_JSON_NL"*|*"$NORDVPN_EASY_JSON_CR"*) ;;
+		*) printf '%s' "$1"; return 0 ;;
+	esac
+	# Slow path: escape backslash/quote/CR PER LINE first, then join lines with
+	# \n. A single slurp-then-substitute sed leaves a single-line value UNescaped
+	# (at EOF `N` auto-prints the pattern space before the s/// commands run), so
+	# a lone line with a " or \ (e.g. last_error from an API error) would break
+	# JSON.parse of the whole status document.
 	printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\r/\\r/g' | sed ':a;N;$!ba;s/\n/\\n/g'
 }
 
