@@ -18,6 +18,11 @@ trap cleanup EXIT HUP INT TERM
 # shellcheck disable=SC1090
 . "$WIREGUARD_LIB"
 
+# This unit test exercises teardown/bring-up/firewall directly without taking the
+# execution lock, so bypass the S7a owner fence (fenced_* wrappers) here -- the
+# fence itself is covered by test-common-lock.sh.
+nordvpn_easy_owner_assert() { return 0; }
+
 assert_eq() {
 	expected="$1"
 	actual="$2"

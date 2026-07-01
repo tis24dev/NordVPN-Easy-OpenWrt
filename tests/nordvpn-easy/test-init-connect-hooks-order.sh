@@ -86,6 +86,9 @@ connect_apply_guard_end() { printf '%s\n' 'guard_end' >> "$CALL_LOG"; }
 prepare_connect_setup_config_cache() { return 0; }
 connect_apply_result_finish() { printf '%s\n' "result_finish:${1:-}" >> "$RESULT_LOG"; }
 uci() { return 0; }
+# connect() commits enabled=1 through the S7a owner fence (defined in common.sh,
+# not sourced here); pass it through to the mocked uci.
+nordvpn_easy_fenced_uci_commit() { uci commit "$@"; }
 
 reset_logs() {
 	: > "$CALL_LOG"

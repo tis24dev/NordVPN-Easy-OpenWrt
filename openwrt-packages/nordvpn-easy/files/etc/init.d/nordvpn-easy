@@ -914,7 +914,7 @@ connect() {
 		connect_apply_guard_end
 		return 1
 	}
-	uci commit "$UCI_CONFIG" || {
+	nordvpn_easy_fenced_uci_commit "$UCI_CONFIG" || {
 		log_service_error 'connect failed while committing enabled=1'
 		connect_apply_result_finish 1
 		connect_apply_guard_end
@@ -957,7 +957,7 @@ disconnect() {
 		log_service_error 'disconnect failed while setting enabled=0'
 		return 1
 	}
-	uci commit "$UCI_CONFIG" || {
+	nordvpn_easy_fenced_uci_commit "$UCI_CONFIG" || {
 		log_service_error 'disconnect failed while committing enabled=0'
 		return 1
 	}

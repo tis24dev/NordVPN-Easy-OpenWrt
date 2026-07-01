@@ -153,6 +153,10 @@ uci() {
 	esac
 	return 1
 }
+# connect()/disconnect() commit the enabled flag through the S7a owner fence
+# (defined in common.sh, which this test extracts from rather than sources);
+# pass it through to the mocked uci.
+nordvpn_easy_fenced_uci_commit() { uci commit "$@"; }
 setup() {
 	SETUP_COUNT=$((SETUP_COUNT + 1))
 	return "$SETUP_RC"

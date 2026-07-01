@@ -47,13 +47,13 @@ nordvpn_easy_immediate_vpn_shutdown() {
 	log "apply: stopping VPN interface $VPN_IF before server change"
 
 	if nordvpn_easy_vpn_link_is_present; then
-		ifdown "$VPN_IF" >/dev/null 2>&1 || true
+		nordvpn_easy_fenced_ifupdown down "$VPN_IF" >/dev/null 2>&1 || true
 		if command -v wg >/dev/null 2>&1 &&
 			wg show "$VPN_IF" >/dev/null 2>&1; then
 			ip link del dev "$VPN_IF" >/dev/null 2>&1 || true
 		fi
 	elif nordvpn_easy_vpn_is_configured; then
-		ifdown "$VPN_IF" >/dev/null 2>&1 || true
+		nordvpn_easy_fenced_ifupdown down "$VPN_IF" >/dev/null 2>&1 || true
 	fi
 
 	return 0
@@ -69,7 +69,7 @@ nordvpn_easy_teardown_vpn() {
 	nordvpn_easy_log_vpn_interface_state 'before-teardown'
 
 	if nordvpn_easy_vpn_link_is_present; then
-		ifdown "$VPN_IF" >/dev/null 2>&1 || true
+		nordvpn_easy_fenced_ifupdown down "$VPN_IF" >/dev/null 2>&1 || true
 		sleep "${INTERFACE_RESTART_DELAY:-2}"
 	fi
 
@@ -90,7 +90,7 @@ EOF
 	wan_metric="$(uci -q get "network.${WAN_IF}.metric" 2>/dev/null || true)"
 	[ "$wan_metric" = '1024' ] && uci -q delete "network.${WAN_IF}.metric" || true
 
-	uci commit network || {
+	nordvpn_easy_fenced_uci_commit network || {
 		nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "could not commit network configuration while tearing down $VPN_IF"
 		return 1
 	}
@@ -180,7 +180,7 @@ nordvpn_easy_bring_up_vpn_interface() {
 		return 1
 	}
 
-	if ifup "$vpn_if" >/dev/null 2>&1; then
+	if nordvpn_easy_fenced_ifupdown up "$vpn_if" >/dev/null 2>&1; then
 		return 0
 	fi
 
@@ -591,7 +591,7 @@ nordvpn_easy_ensure_vpn_firewall() {
 		uci set "firewall.nordvpn_ks4_${idx}.target=DROP"
 	done
 
-	uci commit firewall || {
+	nordvpn_easy_fenced_uci_commit firewall || {
 		log 'ERROR: COULD NOT COMMIT FIREWALL CONFIGURATION'
 		return 1
 	}

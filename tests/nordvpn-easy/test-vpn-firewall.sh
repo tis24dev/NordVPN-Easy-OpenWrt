@@ -14,6 +14,10 @@ trap cleanup EXIT HUP INT TERM
 # shellcheck disable=SC1090
 . "$LIB_DIR/wireguard.sh"
 
+# This unit test exercises ensure_vpn_firewall directly without taking the
+# execution lock, so bypass the S7a owner fence (fenced_* wrappers) here.
+nordvpn_easy_owner_assert() { return 0; }
+
 log() { :; }
 
 FW_STORE="$TMP_DIR/fw"

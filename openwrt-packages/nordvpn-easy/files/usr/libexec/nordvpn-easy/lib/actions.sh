@@ -400,7 +400,7 @@ nordvpn_easy_configure_vpn_interface() {
 
 	uci set "network.${WAN_IF}.metric"='1024'
 	log "apply: committing network configuration for $VPN_IF"
-	uci commit network || {
+	nordvpn_easy_fenced_uci_commit network || {
 		nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" 'could not commit network configuration while creating the VPN interface'
 		return 1
 	}
@@ -508,7 +508,7 @@ nordvpn_easy_commit_pending_server_preference() {
 	nordvpn_easy_set_server_preference_in_uci \
 		"${NORDVPN_EASY_PENDING_PREFERENCE_HOSTNAME:-}" \
 		"$NORDVPN_EASY_PENDING_PREFERENCE_STATION"
-	uci commit nordvpn_easy ||
+	nordvpn_easy_fenced_uci_commit nordvpn_easy ||
 		log 'WARNING: COULD NOT COMMIT ROTATED SERVER PREFERENCE AFTER VERIFICATION'
 	nordvpn_easy_harden_secret_config_perms nordvpn_easy
 	NORDVPN_EASY_PENDING_PREFERENCE_HOSTNAME=''

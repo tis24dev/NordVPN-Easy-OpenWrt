@@ -71,6 +71,10 @@ uci() {
 	esac
 }
 
+# mark_applied now commits through the S7a owner fence (defined in common.sh,
+# which this test does not source). Provide a passthrough to the mocked uci.
+nordvpn_easy_fenced_uci_commit() { uci commit "$@"; }
+
 # Desired-config environment (a subset; the rest hash as empty).
 NORDVPN_TOKEN='secret-one'
 VPN_COUNTRY='IT'

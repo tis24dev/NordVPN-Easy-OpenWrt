@@ -65,7 +65,7 @@ nordvpn_easy_mark_applied() {
 	current="$(nordvpn_easy_applied_fingerprint)"
 	if [ "$current" != "$fingerprint" ]; then
 		if uci set "nordvpn_easy.main.applied_fingerprint=${fingerprint}" 2>/dev/null &&
-			uci commit nordvpn_easy 2>/dev/null; then
+			nordvpn_easy_fenced_uci_commit nordvpn_easy 2>/dev/null; then
 			command -v nordvpn_easy_harden_secret_config_perms >/dev/null 2>&1 &&
 				nordvpn_easy_harden_secret_config_perms nordvpn_easy >/dev/null 2>&1 || true
 		fi

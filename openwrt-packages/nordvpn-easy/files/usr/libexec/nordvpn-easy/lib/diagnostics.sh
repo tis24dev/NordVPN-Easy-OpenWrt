@@ -1107,7 +1107,7 @@ nordvpn_easy_try_clear_routing_blackhole() {
 	fi
 
 	log "$phase: default route uses $vpn_if without WireGuard handshake; running ifdown to restore WAN connectivity"
-	ifdown "$vpn_if" 2>/dev/null || log "WARNING: $phase: ifdown failed for $vpn_if while clearing routing blackhole"
+	nordvpn_easy_fenced_ifupdown down "$vpn_if" 2>/dev/null || log "WARNING: $phase: ifdown failed for $vpn_if while clearing routing blackhole"
 	sleep "${INTERFACE_RESTART_DELAY:-2}"
 	nordvpn_easy_diagnostics_reset_state
 	return 0

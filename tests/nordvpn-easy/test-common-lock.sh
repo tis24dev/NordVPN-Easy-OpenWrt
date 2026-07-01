@@ -221,6 +221,38 @@ unset NORDVPN_EASY_LOCK_INHERITED
 rm -rf "$LOCK_DIR"
 NORDVPN_EASY_OWNER_TOKEN=''
 
+# --- S7a effect fence: the fenced_* wrappers gate the effect on ownership ----
+# This is the contract that protects a reaped/superseded writer once the reaper
+# (S7b) can revoke a live token: the effect runs for the legit owner and is
+# refused (no side effect) when the on-disk token no longer matches.
+mkdir -p "$LOCK_DIR"
+printf '%s\n' 'owner-tok' > "$LOCK_DIR/token"
+NORDVPN_EASY_OWNER_TOKEN='owner-tok'
+FENCED_UCI_RAN=0
+FENCED_IF_RAN=0
+uci() { FENCED_UCI_RAN=1; }
+ifdown() { FENCED_IF_RAN=1; }
+
+nordvpn_easy_fenced_uci_commit network
+assert_eq '1' "$FENCED_UCI_RAN" 'fenced_uci_commit runs the commit for the legit owner'
+nordvpn_easy_fenced_ifupdown down wg0
+assert_eq '1' "$FENCED_IF_RAN" 'fenced_ifupdown runs the effect for the legit owner'
+
+# Superseded: the on-disk token was replaced by a recoverer/reaper.
+printf '%s\n' 'someone-else' > "$LOCK_DIR/token"
+FENCED_UCI_RAN=0
+FENCED_IF_RAN=0
+fenced_uci_rc=0
+nordvpn_easy_fenced_uci_commit network || fenced_uci_rc=$?
+assert_eq '0' "$FENCED_UCI_RAN" 'fenced_uci_commit refuses (no commit) when superseded'
+[ "$fenced_uci_rc" -ne 0 ] || { printf '%s\n' 'FAIL: fenced_uci_commit must return non-zero when superseded' >&2; exit 1; }
+nordvpn_easy_fenced_ifupdown down wg0 || true
+assert_eq '0' "$FENCED_IF_RAN" 'fenced_ifupdown refuses the effect when superseded'
+
+unset -f uci ifdown 2>/dev/null || true
+rm -rf "$LOCK_DIR"
+NORDVPN_EASY_OWNER_TOKEN=''
+
 # --- Bounded-wait acquire (nordvpn_easy_acquire_lock wrapper) ---------------
 # Deliberate apply actions (connect/reconnect) wait briefly for a TRANSIENT lock
 # holder instead of aborting busy. Drive the wrapper with a stubbed try function

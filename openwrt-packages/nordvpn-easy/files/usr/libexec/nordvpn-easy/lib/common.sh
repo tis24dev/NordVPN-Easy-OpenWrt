@@ -431,11 +431,16 @@ nordvpn_easy_owner_assert() {
 	[ "$on_disk" = "$NORDVPN_EASY_OWNER_TOKEN" ]
 }
 
-# Owner-fenced mutation wrappers. DEFINED for the S7 supervisor; NOT wired into
-# any legacy uci/ifup/journal site in S6 (the TTL reaper that revokes a live
-# holder's token -- which makes the fence meaningful for long-running writes --
-# lands in S7). A superseded/PID-reused writer that calls these refuses with no
-# side effect.
+# Owner-fenced mutation wrappers: refuse (no side effect) unless this process
+# still owns the execution lock. fenced_uci_commit and fenced_ifupdown are wired
+# (S7a) into the runtime-mutating sites that provably run under the lock (provision
+# interface/firewall commits, ifup/ifdown), so a superseded/reaped writer cannot
+# corrupt the live owner's runtime. They are a behavioral no-op until the S7b TTL
+# reaper can actually revoke a live holder's token (nothing supersedes a live
+# holder before then). fenced_journal_set stays defined-but-unwired for the S7
+# supervisor. NOTE for S7b: when the reaper lands, the callers that abort on a
+# fenced refusal must `uci revert <pkg>` first, so a refused staged delta cannot
+# be flushed by a later unfenced same-package commit (cf. service-config.sh).
 nordvpn_easy_fenced_journal_set() {
 	nordvpn_easy_owner_assert || { nordvpn_easy_log_phase 'runtime' 'refusing journal write: not execution-lock owner'; return 1; }
 	nordvpn_easy_journal_write_full "$@"
