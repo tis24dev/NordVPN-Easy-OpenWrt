@@ -269,6 +269,7 @@ assert_eq '' "$UCI_MTU" 'transport repair removes MTU when automatic is selected
 
 IFDOWN_COUNT=0
 UCI_DELETE_COUNT=0
+UCI_REVERT_COUNT=0
 NETWORK_RELOAD_COUNT=0
 ifdown() { IFDOWN_COUNT=$((IFDOWN_COUNT + 1)); }
 nordvpn_easy_vpn_link_is_present() { return 0; }
@@ -289,6 +290,10 @@ uci() {
 					return 0
 					;;
 				commit)
+					return 0
+					;;
+				revert)
+					UCI_REVERT_COUNT=$((UCI_REVERT_COUNT + 1))
 					return 0
 					;;
 				get)
@@ -323,6 +328,20 @@ nordvpn_easy_teardown_vpn
 assert_eq '1' "$IFDOWN_COUNT" 'teardown runs ifdown when the VPN link is present'
 assert_eq '4' "$UCI_DELETE_COUNT" 'teardown removes the interface and all wireguard peer sections'
 assert_eq '1' "$(cat "$NETWORK_RELOAD_COUNT_FILE")" 'teardown reloads network after UCI cleanup'
+
+# When the fence refuses the network commit (a reaped/superseded writer, i.e. this
+# process HOLDS a token that no longer matches the on-disk lock), teardown discards
+# the staged deletes so a later unfenced network commit cannot flush them.
+UCI_REVERT_COUNT=0
+INTERFACE_RESTART_DELAY=0
+NORDVPN_EASY_OWNER_TOKEN='stale-token'
+nordvpn_easy_owner_assert() { return 1; }
+superseded_teardown_rc=0
+nordvpn_easy_teardown_vpn >/dev/null 2>&1 || superseded_teardown_rc=$?
+assert_eq '1' "$superseded_teardown_rc" 'teardown aborts when the fence refuses the network commit'
+assert_eq '1' "$UCI_REVERT_COUNT" 'a fence-refused teardown reverts the staged network delta'
+nordvpn_easy_owner_assert() { return 0; }
+NORDVPN_EASY_OWNER_TOKEN=''
 
 wg() {
 	case "$1 $2 $3" in

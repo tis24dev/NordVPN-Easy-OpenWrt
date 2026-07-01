@@ -50,7 +50,7 @@ nordvpn_easy_immediate_vpn_shutdown() {
 		nordvpn_easy_fenced_ifupdown down "$VPN_IF" >/dev/null 2>&1 || true
 		if command -v wg >/dev/null 2>&1 &&
 			wg show "$VPN_IF" >/dev/null 2>&1; then
-			ip link del dev "$VPN_IF" >/dev/null 2>&1 || true
+			nordvpn_easy_fenced_ip_link_del "$VPN_IF" >/dev/null 2>&1 || true
 		fi
 	elif nordvpn_easy_vpn_is_configured; then
 		nordvpn_easy_fenced_ifupdown down "$VPN_IF" >/dev/null 2>&1 || true
@@ -91,6 +91,10 @@ EOF
 	[ "$wan_metric" = '1024' ] && uci -q delete "network.${WAN_IF}.metric" || true
 
 	nordvpn_easy_fenced_uci_commit network || {
+		# Discard the staged deletes so a superseded (reaped) writer whose commit
+		# the fence refused cannot leave them for a later unfenced network commit
+		# to flush; also cleans up after a genuine commit failure.
+		uci -q revert network 2>/dev/null || true
 		nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "could not commit network configuration while tearing down $VPN_IF"
 		return 1
 	}
@@ -106,7 +110,7 @@ EOF
 		# gone so a failed reload cannot leave a live wg device behind with its
 		# config stripped (a split runtime/config state).
 		if nordvpn_easy_vpn_link_is_present; then
-			ip link del "$VPN_IF" 2>/dev/null || true
+			nordvpn_easy_fenced_ip_link_del "$VPN_IF" 2>/dev/null || true
 		fi
 		if nordvpn_easy_vpn_link_is_present; then
 			nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "VPN interface $VPN_IF is still present after teardown reload/restart fallback"
@@ -592,6 +596,10 @@ nordvpn_easy_ensure_vpn_firewall() {
 	done
 
 	nordvpn_easy_fenced_uci_commit firewall || {
+		# Discard the staged zone/forwarding/killswitch edits so a superseded
+		# (reaped) writer whose commit the fence refused cannot leave them for a
+		# later unfenced firewall commit to flush; also cleans up a genuine failure.
+		uci -q revert firewall 2>/dev/null || true
 		log 'ERROR: COULD NOT COMMIT FIREWALL CONFIGURATION'
 		return 1
 	}

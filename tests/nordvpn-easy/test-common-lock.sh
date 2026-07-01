@@ -93,18 +93,83 @@ assert_eq "$$" "$(cat "$LOCK_DIR/pid")" 'recovered pid-less lock is owned by the
 nordvpn_easy_release_lock
 rm -rf "$LOCK_DIR"
 
+now_mono="$(nordvpn_easy_uptime_seconds)"
+
+# A live holder WITHIN the TTL is a legitimately in-flight operation: contention
+# is reported and the lock is never stolen. Age is measured from the MONOTONIC
+# started_mono anchor, so an NTP wall-clock step cannot fake an expiry.
 mkdir -p "$LOCK_DIR"
 printf '%s\n' "$$" > "$LOCK_DIR/pid"
 printf '%s\n' 'check' > "$LOCK_DIR/action"
-printf '%s\n' '1' > "$LOCK_DIR/started_at"
+printf '%s\n' "$(date +%s)" > "$LOCK_DIR/started_at"
+printf '%s\n' "$now_mono" > "$LOCK_DIR/started_mono"
 printf '%s\n' 'held' > "$LOCK_DIR/state"
 LOCK_ACQUIRED=0
 
-alive_old_rc=0
-nordvpn_easy_acquire_lock >/dev/null 2>&1 || alive_old_rc=$?
-assert_eq '2' "$alive_old_rc" 'alive lock is never stolen even when old'
-assert_eq "$$" "$(cat "$LOCK_DIR/pid")" 'alive lock ownership preserved'
+alive_young_rc=0
+nordvpn_easy_acquire_lock >/dev/null 2>&1 || alive_young_rc=$?
+assert_eq '2' "$alive_young_rc" 'a live holder within the TTL is not stolen'
+assert_eq "$$" "$(cat "$LOCK_DIR/pid")" 'live-within-TTL lock ownership preserved'
 rm -rf "$LOCK_DIR"
+
+# A live holder aged PAST the TTL is WEDGED: the reaper reclaims the lock
+# (mv-aside + a fresh token that revokes the old holder), keyed on the MONOTONIC
+# age. Safe because the S7a effect fence neutralizes the old holder if it thaws.
+mkdir -p "$LOCK_DIR"
+printf '%s\n' "$$" > "$LOCK_DIR/pid"
+printf '%s\n' 'connect' > "$LOCK_DIR/action"
+printf '%s\n' "$(date +%s)" > "$LOCK_DIR/started_at"
+printf '%s\n' "$(( now_mono - 5 ))" > "$LOCK_DIR/started_mono"
+printf '%s\n' 'held' > "$LOCK_DIR/state"
+printf '%s\n' 'stale-owner-token' > "$LOCK_DIR/token"
+LOCK_ACQUIRED=0
+NORDVPN_EASY_OWNER_TOKEN=''
+NORDVPN_EASY_LOCK_TTL=2
+
+reap_mono_rc=0
+nordvpn_easy_acquire_lock >/dev/null 2>&1 || reap_mono_rc=$?
+assert_eq '0' "$reap_mono_rc" 'a live holder aged past the TTL is reaped (monotonic age)'
+assert_eq "$$" "$(cat "$LOCK_DIR/pid")" 'reaped lock is owned by the reaper'
+[ "$(cat "$LOCK_DIR/token")" != 'stale-owner-token' ] || {
+	printf '%s\n' 'FAIL: reaping must mint a fresh token that revokes the old holder' >&2
+	exit 1
+}
+unset NORDVPN_EASY_LOCK_TTL
+nordvpn_easy_release_lock
+rm -rf "$LOCK_DIR"
+NORDVPN_EASY_OWNER_TOKEN=''
+
+# Fallback: a lock written by a pre-reaper build has no started_mono, so the
+# reaper measures the wall-clock age instead -- an ancient started_at is still
+# reaped (bounded by the default TTL) rather than blocking forever.
+mkdir -p "$LOCK_DIR"
+printf '%s\n' "$$" > "$LOCK_DIR/pid"
+printf '%s\n' 'connect' > "$LOCK_DIR/action"
+printf '%s\n' '1' > "$LOCK_DIR/started_at"
+printf '%s\n' 'held' > "$LOCK_DIR/state"
+LOCK_ACQUIRED=0
+NORDVPN_EASY_OWNER_TOKEN=''
+
+reap_fallback_rc=0
+nordvpn_easy_acquire_lock >/dev/null 2>&1 || reap_fallback_rc=$?
+assert_eq '0' "$reap_fallback_rc" 'a wedged holder with no monotonic anchor is reaped via the wall-clock fallback'
+nordvpn_easy_release_lock
+rm -rf "$LOCK_DIR"
+NORDVPN_EASY_OWNER_TOKEN=''
+
+# The TTL override is normalized so a garbage value cannot expire every holder.
+assert_eq '300' "$(nordvpn_easy_lock_ttl_seconds)" 'default lock TTL is 300s'
+NORDVPN_EASY_LOCK_TTL=45
+assert_eq '45' "$(nordvpn_easy_lock_ttl_seconds)" 'a numeric lock TTL override is honored'
+NORDVPN_EASY_LOCK_TTL='not-a-number'
+assert_eq '300' "$(nordvpn_easy_lock_ttl_seconds)" 'a garbage lock TTL override falls back to 300s'
+unset NORDVPN_EASY_LOCK_TTL
+
+# The monotonic uptime anchor is a non-negative integer.
+uptime_val="$(nordvpn_easy_uptime_seconds)"
+case "$uptime_val" in
+	''|*[!0-9]*) printf '%s\n' "FAIL: uptime_seconds must be a non-negative integer: $uptime_val" >&2; exit 1 ;;
+esac
 
 # Inherited lock: a parent transaction holds the lock and hands it down to a
 # child core.sh via NORDVPN_EASY_LOCK_INHERITED. The child adopts the live
@@ -156,6 +221,12 @@ tok_rc=0
 nordvpn_easy_acquire_lock >/dev/null 2>&1 || tok_rc=$?
 assert_eq '0' "$tok_rc" 'token-fence: fresh acquisition succeeds'
 [ -f "$LOCK_DIR/token" ] || { printf '%s\n' 'FAIL: acquisition must write a token file' >&2; exit 1; }
+# A real acquisition must persist the monotonic anchor the reaper keys on; without
+# it every lock silently degrades to the NTP-vulnerable wall-clock fallback.
+[ -f "$LOCK_DIR/started_mono" ] || { printf '%s\n' 'FAIL: acquisition must write the started_mono anchor' >&2; exit 1; }
+case "$(cat "$LOCK_DIR/started_mono")" in
+	''|*[!0-9]*) printf '%s\n' 'FAIL: started_mono must be a non-negative integer' >&2; exit 1 ;;
+esac
 [ -n "$NORDVPN_EASY_OWNER_TOKEN" ] || { printf '%s\n' 'FAIL: acquisition must set the in-memory owner token' >&2; exit 1; }
 assert_eq "$NORDVPN_EASY_OWNER_TOKEN" "$(cat "$LOCK_DIR/token")" 'token-fence: on-disk token matches the minted owner token'
 nordvpn_easy_owner_assert || { printf '%s\n' 'FAIL: owner_assert must pass for the legitimate holder' >&2; exit 1; }
@@ -248,6 +319,16 @@ assert_eq '0' "$FENCED_UCI_RAN" 'fenced_uci_commit refuses (no commit) when supe
 [ "$fenced_uci_rc" -ne 0 ] || { printf '%s\n' 'FAIL: fenced_uci_commit must return non-zero when superseded' >&2; exit 1; }
 nordvpn_easy_fenced_ifupdown down wg0 || true
 assert_eq '0' "$FENCED_IF_RAN" 'fenced_ifupdown refuses the effect when superseded'
+
+# Tokenless: a process holding NO owner token is not a lock owner at all (a
+# lock-free boot-disable or the disable_runtime verb), so the effect is ALLOWED
+# through even though the on-disk token does not match it. This is what lets the
+# dual-use disable path be fenced without breaking its legitimate lock-free
+# callers -- and pins the load-bearing "no token -> proceed" guard.
+FENCED_UCI_RAN=0
+NORDVPN_EASY_OWNER_TOKEN=''
+nordvpn_easy_fenced_uci_commit network
+assert_eq '1' "$FENCED_UCI_RAN" 'fenced_uci_commit is allowed through for a tokenless (non-owner) caller'
 
 unset -f uci ifdown 2>/dev/null || true
 rm -rf "$LOCK_DIR"

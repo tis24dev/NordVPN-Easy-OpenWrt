@@ -154,7 +154,12 @@ nordvpn_easy_teardown_vpn_firewall() {
 	# Tear the app's firewall objects down and reload, restoring plain LAN->WAN so
 	# a disabled VPN does not leave the kill switch blocking the user's internet.
 	nordvpn_easy_remove_app_firewall_sections
-	uci commit firewall 2>/dev/null || {
+	# Fenced: reached both under the transaction lock (disconnect/reconcile) and
+	# lock-free (boot-disable / the disable_runtime verb). A superseded/reaped
+	# disconnect must NOT strip the new owner's kill-switch (that would leak); the
+	# revert restores the staged section deletes so the kill-switch stays. A
+	# tokenless (lock-free) caller is allowed through and commits normally.
+	nordvpn_easy_fenced_uci_commit firewall 2>/dev/null || {
 		uci revert firewall >/dev/null 2>&1 || true
 		return 1
 	}
@@ -314,6 +319,60 @@ nordvpn_easy_lock_age_seconds() {
 	printf '%s\n' "$age"
 }
 
+# Seconds since boot from /proc/uptime -- a MONOTONIC clock, immune to the NTP
+# step that jumps the wall clock forward minutes after an OpenWrt router boots.
+# The lock records this at acquire so the reaper measures a true elapsed age
+# instead of a clock-jump artifact. Zero-fork (read is a builtin); fails to 0.
+nordvpn_easy_uptime_seconds() {
+	local up
+
+	read -r up < /proc/uptime 2>/dev/null || up=''
+	up="${up%%.*}"
+	case "$up" in
+		''|*[!0-9]*) printf '0' ;;
+		*) printf '%s' "$up" ;;
+	esac
+}
+
+# The TTL (seconds) after which a still-LIVE lock holder is treated as wedged and
+# reaped. Generously above any legitimate hold (a full provision + bringup, well
+# past the rpcd ceiling); an override is normalized so a garbage
+# NORDVPN_EASY_LOCK_TTL cannot make every holder look expired.
+nordvpn_easy_lock_ttl_seconds() {
+	local ttl="${NORDVPN_EASY_LOCK_TTL:-300}"
+
+	case "$ttl" in
+		''|*[!0-9]*) printf '300' ;;
+		*) printf '%s' "$ttl" ;;
+	esac
+}
+
+# The reaper's age for a live holder: prefer the MONOTONIC anchor (started_mono)
+# so an NTP step cannot inflate it into a false reap; fall back to the wall-clock
+# age only for a lock written by a pre-reaper build mid-upgrade (no started_mono).
+# If uptime is unreadable the age clamps to 0 (fail-safe: never reap when we
+# cannot measure elapsed time).
+nordvpn_easy_lock_wedge_age_seconds() {
+	local lock_path="$1"
+	local started_at="${2:-}"
+	local started_mono now_mono age
+
+	started_mono="$(cat "${lock_path}/started_mono" 2>/dev/null)" || started_mono=''
+	case "$started_mono" in
+		''|*[!0-9]*)
+			nordvpn_easy_lock_age_seconds "$lock_path" "$started_at"
+			return 0
+			;;
+	esac
+	now_mono="$(nordvpn_easy_uptime_seconds)"
+	case "$now_mono" in
+		''|*[!0-9]*) now_mono=0 ;;
+	esac
+	age=$((now_mono - started_mono))
+	[ "$age" -lt 0 ] && age=0
+	printf '%s\n' "$age"
+}
+
 nordvpn_easy_server_selection_is_manual() {
 	[ "$SERVER_SELECTION_MODE" = 'manual' ]
 }
@@ -431,33 +490,58 @@ nordvpn_easy_owner_assert() {
 	[ "$on_disk" = "$NORDVPN_EASY_OWNER_TOKEN" ]
 }
 
-# Owner-fenced mutation wrappers: refuse (no side effect) unless this process
-# still owns the execution lock. fenced_uci_commit and fenced_ifupdown are wired
-# (S7a) into the runtime-mutating sites that provably run under the lock (provision
-# interface/firewall commits, ifup/ifdown), so a superseded/reaped writer cannot
-# corrupt the live owner's runtime. They are a behavioral no-op until the S7b TTL
-# reaper can actually revoke a live holder's token (nothing supersedes a live
-# holder before then). fenced_journal_set stays defined-but-unwired for the S7
-# supervisor. NOTE for S7b: when the reaper lands, the callers that abort on a
-# fenced refusal must `uci revert <pkg>` first, so a refused staged delta cannot
-# be flushed by a later unfenced same-package commit (cf. service-config.sh).
+# Deny a fenced mutation ONLY when this process holds an owner token that no longer
+# matches the on-disk lock -- i.e. it acquired the execution lock and was then
+# superseded/reaped. A process holding NO token is not a lock owner at all (the
+# boot-disable path and the disable_runtime rpcd verb legitimately run OUTSIDE any
+# lock), so it is allowed through. This "fence only what you claimed" rule is what
+# lets the dual-use teardown effects (reached both under the transaction lock AND
+# lock-free) be fenced without breaking their tokenless callers. For the provision
+# effects, which always run with a token, it is identical to a bare owner_assert.
+nordvpn_easy_owner_fence_denied() {
+	[ -n "${NORDVPN_EASY_OWNER_TOKEN:-}" ] || return 1
+	nordvpn_easy_owner_assert && return 1
+	return 0
+}
+
+# Owner-fenced mutation wrappers: refuse (no side effect) when a superseded/reaped
+# owner would otherwise mutate the new owner's runtime. fenced_uci_commit,
+# fenced_ifupdown and fenced_ip_link_del are wired (S7a/S7b) into the
+# runtime-mutating sites (provision interface/firewall commits, ifup/ifdown, wg
+# device deletion, and the dual-use disable-runtime firewall/network commits), so
+# once the S7b TTL reaper can revoke a live holder's token a superseded writer's
+# effects refuse instead of corrupting the new owner's runtime. Callers that abort
+# on a fenced uci-commit refusal `uci -q revert <pkg>` first (S7b), so a refused
+# staged delta cannot be flushed by a later unfenced same-package commit (cf.
+# service-config.sh). fenced_journal_set stays defined-but-unwired for the S7
+# supervisor.
 nordvpn_easy_fenced_journal_set() {
-	nordvpn_easy_owner_assert || { nordvpn_easy_log_phase 'runtime' 'refusing journal write: not execution-lock owner'; return 1; }
+	nordvpn_easy_owner_fence_denied && { nordvpn_easy_log_phase 'runtime' 'refusing journal write: superseded execution-lock owner'; return 1; }
 	nordvpn_easy_journal_write_full "$@"
 }
 
 nordvpn_easy_fenced_uci_commit() {
-	nordvpn_easy_owner_assert || { nordvpn_easy_log_blocker 'runtime' 'refusing uci commit: not execution-lock owner'; return 1; }
+	nordvpn_easy_owner_fence_denied && { nordvpn_easy_log_blocker 'runtime' 'refusing uci commit: superseded execution-lock owner'; return 1; }
 	uci commit "$@"
 }
 
 nordvpn_easy_fenced_ifupdown() {
-	nordvpn_easy_owner_assert || { nordvpn_easy_log_blocker 'runtime' 'refusing ifup/ifdown: not execution-lock owner'; return 1; }
+	nordvpn_easy_owner_fence_denied && { nordvpn_easy_log_blocker 'runtime' 'refusing ifup/ifdown: superseded execution-lock owner'; return 1; }
 	case "${1:-}" in
 		up) ifup "${2:-}" ;;
 		down) ifdown "${2:-}" ;;
 		*) return 2 ;;
 	esac
+}
+
+# Deleting the kernel wireguard device is a runtime mutation just like ifdown, but
+# it sits behind a non-aborting `|| true` at its call sites, so a fence-refused
+# ifdown does not stop it. Fence it too: a reaped-then-thawed holder must not delete
+# the new owner's freshly-created $VPN_IF device (a split-brain teardown of a live
+# tunnel). No-op for the legitimate owner (fence_denied is false).
+nordvpn_easy_fenced_ip_link_del() {
+	nordvpn_easy_owner_fence_denied && { nordvpn_easy_log_blocker 'runtime' 'refusing ip link del: superseded execution-lock owner'; return 1; }
+	ip link del dev "${1:-}"
 }
 
 nordvpn_easy_release_lock() {
@@ -637,6 +721,9 @@ nordvpn_easy_write_lock_metadata() {
 	printf '%s\n' "$lock_action" > "${lock_dir}/action" || return 1
 	printf '%s\n' "$lock_started_at" > "${lock_dir}/started_at" || return 1
 	printf '%s\n' "$lock_state" > "${lock_dir}/state" || return 1
+	# Monotonic acquire time for the reaper's NTP-immune age check, written BEFORE
+	# the token so the B-3 token-last invariant below still holds.
+	printf '%s\n' "$(nordvpn_easy_uptime_seconds)" > "${lock_dir}/started_mono" || return 1
 	# B-3 invariant: the token is the STRICTLY LAST write, after pid. A dir seen
 	# without a token is therefore pre-pid (pidless-grace) or post-pid-pre-token
 	# (live-busy/dead-recover) -- always reclaimable by the existing pid/age paths.
@@ -653,6 +740,7 @@ _nordvpn_easy_try_acquire_lock() {
 	local lock_action=''
 	local lock_started_at=''
 	local lock_age='0'
+	local lock_ttl='300'
 	local now_ts=0
 	local stale_reason='unknown'
 	local owner_token=''
@@ -739,11 +827,31 @@ _nordvpn_easy_try_acquire_lock() {
 				if kill -0 "$lock_pid" 2>/dev/null; then
 					lock_action="$(cat "$lock_action_file" 2>/dev/null)"
 					lock_started_at="$(cat "$lock_started_at_file" 2>/dev/null)"
-					lock_age="$(nordvpn_easy_lock_age_seconds "$LOCK_DIR" "$lock_started_at")"
-					nordvpn_easy_log_blocker 'runtime' "execution lock is already held by PID $lock_pid (action=${lock_action:-unknown}, age=${lock_age}s)"
-					return 2
+					lock_age="$(nordvpn_easy_lock_wedge_age_seconds "$LOCK_DIR" "$lock_started_at")"
+					case "$lock_age" in
+						''|*[!0-9]*) lock_age=0 ;;
+					esac
+					lock_ttl="$(nordvpn_easy_lock_ttl_seconds)"
+					# TTL REAPER: a live holder WITHIN the TTL is a legitimately
+					# in-flight operation -> report contention. A live holder aged
+					# PAST a generous TTL (well above any real apply) is WEDGED (a
+					# D-state syscall, a hung child) and would otherwise block every
+					# future operation forever, so fall through to the mv-aside
+					# recovery, which mints a NEW token. This is safe because the S7a
+					# effect fence neutralizes the wedged holder: on thaw its
+					# owner_assert fails against the new token, so it can neither
+					# release the lock nor commit/ifupdown the runtime. The recovery's
+					# live-different-pid restore still protects a DIFFERENT holder that
+					# legitimately re-acquired in the window (moved_pid != lock_pid),
+					# so only this exact wedged holder is reaped.
+					if [ "$lock_age" -le "$lock_ttl" ]; then
+						nordvpn_easy_log_blocker 'runtime' "execution lock is already held by PID $lock_pid (action=${lock_action:-unknown}, age=${lock_age}s)"
+						return 2
+					fi
+					stale_reason="owner PID $lock_pid alive but wedged (age=${lock_age}s > TTL ${lock_ttl}s); reclaiming"
+				else
+					stale_reason="owner PID $lock_pid is no longer alive"
 				fi
-				stale_reason="owner PID $lock_pid is no longer alive"
 				;;
 		esac
 	fi

@@ -401,6 +401,10 @@ nordvpn_easy_configure_vpn_interface() {
 	uci set "network.${WAN_IF}.metric"='1024'
 	log "apply: committing network configuration for $VPN_IF"
 	nordvpn_easy_fenced_uci_commit network || {
+		# Discard the staged interface/peer edits so a superseded (reaped) writer
+		# whose commit the fence refused cannot leave them for a later unfenced
+		# network commit to flush; also cleans up after a genuine commit failure.
+		uci -q revert network 2>/dev/null || true
 		nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" 'could not commit network configuration while creating the VPN interface'
 		return 1
 	}

@@ -817,13 +817,18 @@ disable_vpn_runtime() {
 
 	log_service_info "WireGuard interface $cfg_vpn_if will be marked disabled; the UCI configuration is kept and the interface is not removed"
 	uci set "network.${cfg_vpn_if}.disabled"='1'
-	uci commit network || {
+	# Fenced (S7b): under the transaction lock a superseded/reaped disconnect must
+	# not persist disabled=1 over the new owner's freshly-provisioned interface;
+	# revert the staged flag so a later unfenced network commit cannot flush it. A
+	# tokenless lock-free disable (boot / disable_runtime verb) is allowed through.
+	nordvpn_easy_fenced_uci_commit network || {
+		uci -q revert network 2>/dev/null || true
 		log_service_error "failed to commit network while disabling ${cfg_vpn_if}"
 		return 1
 	}
 	log_service_info "marked network.${cfg_vpn_if}.disabled=1"
 
-	ifdown "$cfg_vpn_if" >/dev/null 2>&1 || true
+	nordvpn_easy_fenced_ifupdown down "$cfg_vpn_if" >/dev/null 2>&1 || true
 	log_service_info "requested ifdown for $cfg_vpn_if"
 
 	/etc/init.d/network reload >/dev/null 2>&1 ||
