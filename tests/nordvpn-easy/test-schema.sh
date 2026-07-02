@@ -110,4 +110,37 @@ assert_eq '' "$CHECK_CRON_SCHEDULE" 'cron default disabled'
 assert_eq '86400' "$SERVER_CACHE_TTL" 'environment ttl default'
 assert_eq '15' "$WIREGUARD_PERSISTENT_KEEPALIVE" 'environment keepalive default'
 
+# orchestrator mode reader (S7 increment 1): exact 'supervisor' -> supervisor;
+# absent or any other value (incl. wrong case) -> legacy (fail-safe inert default).
+uci() {
+	case "$*" in
+		'-q get nordvpn_easy.main.orchestrator')
+			[ -n "${MOCK_ORCHESTRATOR:-}" ] && printf '%s\n' "$MOCK_ORCHESTRATOR" || return 1
+			;;
+		*) return 1 ;;
+	esac
+}
+MOCK_ORCHESTRATOR=''
+assert_eq 'legacy' "$(nordvpn_easy_orchestrator_mode)" 'orchestrator absent resolves to legacy'
+MOCK_ORCHESTRATOR='legacy'
+assert_eq 'legacy' "$(nordvpn_easy_orchestrator_mode)" 'orchestrator legacy resolves to legacy'
+MOCK_ORCHESTRATOR='supervisor'
+assert_eq 'supervisor' "$(nordvpn_easy_orchestrator_mode)" 'orchestrator supervisor resolves to supervisor'
+MOCK_ORCHESTRATOR='garbage'
+assert_eq 'legacy' "$(nordvpn_easy_orchestrator_mode)" 'a garbage orchestrator value resolves to legacy'
+MOCK_ORCHESTRATOR='Supervisor'
+assert_eq 'legacy' "$(nordvpn_easy_orchestrator_mode)" 'a wrong-case orchestrator value resolves to legacy'
+MOCK_ORCHESTRATOR='supervisord'
+assert_eq 'legacy' "$(nordvpn_easy_orchestrator_mode)" 'a superstring of supervisor resolves to legacy (exact match only)'
+MOCK_ORCHESTRATOR=' supervisor'
+assert_eq 'legacy' "$(nordvpn_easy_orchestrator_mode)" 'a leading-space supervisor value resolves to legacy (exact match only)'
+unset -f uci
+unset MOCK_ORCHESTRATOR
+
+# The defaults template must seed the flag so fresh installs are explicitly legacy.
+grep -q "option orchestrator 'legacy'" "$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/share/nordvpn-easy/defaults/nordvpn_easy" || {
+	printf '%s\n' 'FAIL: the defaults template must seed option orchestrator legacy' >&2
+	exit 1
+}
+
 printf '%s\n' 'test-schema.sh: ok'

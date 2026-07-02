@@ -104,6 +104,28 @@ FP_COUNTRY_CHANGED="$(nordvpn_easy_config_fingerprint)"
 assert_ne "$FP1" "$FP_COUNTRY_CHANGED" 'changing the country changes the fingerprint'
 VPN_COUNTRY='IT'
 
+# The orchestrator engine is an OPERATIONAL toggle, never config: it must stay OUT
+# of every config-identity set, or a legacy<->supervisor switch would look like a
+# config change (spurious reprovision / applied!=config). Assert membership
+# DIRECTLY -- this unambiguously catches a one-line addition to ANY set. (A
+# fingerprint-flip alone is vacuous: config_fingerprint does `env_name || continue`
+# and env_name has no orchestrator mapping, so a runtime_options-only addition is
+# silently skipped and would not flip the hash.)
+for orch_set in nordvpn_easy_uci_options nordvpn_easy_runtime_options nordvpn_easy_runtime_bindings nordvpn_easy_runtime_env_keys; do
+	if "$orch_set" | grep -qiw 'orchestrator'; then
+		printf '%s\n' "FAIL: orchestrator must not appear in $orch_set (it must stay out of the config fingerprint/env)" >&2
+		exit 1
+	fi
+done
+
+# Belt-and-suspenders: flipping the mode leaves the fingerprint byte-identical.
+ORCHESTRATOR='legacy'
+FP_ORCH_LEGACY="$(nordvpn_easy_config_fingerprint)"
+ORCHESTRATOR='supervisor'
+assert_eq "$FP_ORCH_LEGACY" "$(nordvpn_easy_config_fingerprint)" 'flipping the orchestrator mode leaves the config fingerprint unchanged'
+assert_eq "$FP1" "$FP_ORCH_LEGACY" 'orchestrator mode is not part of the config fingerprint'
+unset ORCHESTRATOR
+
 # --- mark_applied + boot_needs_bringup -------------------------------------
 nordvpn_easy_vpn_link_is_present() { return 0; }
 

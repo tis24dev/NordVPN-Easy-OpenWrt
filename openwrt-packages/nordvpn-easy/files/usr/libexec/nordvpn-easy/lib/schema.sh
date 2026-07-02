@@ -141,6 +141,21 @@ nordvpn_easy_runtime_env_keys() {
 		'POST_RESTART_DELAY'
 }
 
+# The orchestrator mode selects the apply engine: 'legacy' (the shipped 3-RPC
+# choreography) or 'supervisor' (the async state machine). It is an OPERATIONAL
+# toggle, deliberately kept OUT of uci_options/runtime_options/bindings/env_keys so
+# it never enters the config fingerprint (generation.sh iterates runtime_options)
+# or the runtime env -- flipping it must NOT look like a config change and trigger
+# a spurious reprovision. Absent or any non-'supervisor' value resolves to
+# 'legacy', so an upgrader who never seeded it stays on the inert legacy path with
+# no migration.
+nordvpn_easy_orchestrator_mode() {
+	case "$(uci -q get nordvpn_easy.main.orchestrator 2>/dev/null || printf 'legacy')" in
+		supervisor) printf 'supervisor' ;;
+		*) printf 'legacy' ;;
+	esac
+}
+
 nordvpn_easy_default() {
 	case "$1" in
 		enabled) printf '%s\n' '0' ;;
