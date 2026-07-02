@@ -184,24 +184,35 @@ if ! nordvpn_easy_vpn_is_configured; then
 	exit 1
 fi
 
-printf '%s\n' '100' > "$FAKE_NOW_FILE"
-SLEEP_CALLS=''
-PING_ATTEMPTS=0
-SUCCESS_ON_ATTEMPT=2
-nordvpn_easy_wait_for_vpn_connectivity "$VPN_IF" "$POST_RESTART_DELAY" 'unit-test'
+# These two cases exercise the ping PROBE LOOP (sleep/retry accounting). On a real
+# router `wg` exists and the live tunnel has a fresh handshake, so the real
+# wait_for_vpn_handshake would short-circuit and the probe loop would never run
+# the way these cases assume; on a host without `wg` it returns 1 and it does.
+# Pin the handshake path to "not connected" so the accounting is bench-independent.
+# (Subshell so the stub does not leak into the later real-handshake tests; set -e
+# still propagates an inner assertion failure.)
+(
+	nordvpn_easy_wait_for_vpn_handshake() { return 1; }
 
-assert_eq '2' "$PING_ATTEMPTS" 'wait helper exits as soon as connectivity is restored'
-assert_eq '1,' "$SLEEP_CALLS" 'wait helper sleeps only until the next successful probe'
+	printf '%s\n' '100' > "$FAKE_NOW_FILE"
+	SLEEP_CALLS=''
+	PING_ATTEMPTS=0
+	SUCCESS_ON_ATTEMPT=2
+	nordvpn_easy_wait_for_vpn_connectivity "$VPN_IF" "$POST_RESTART_DELAY" 'unit-test'
 
-printf '%s\n' '200' > "$FAKE_NOW_FILE"
-SLEEP_CALLS=''
-PING_ATTEMPTS=0
-SUCCESS_ON_ATTEMPT=0
-WAIT_RC=0
-nordvpn_easy_wait_for_vpn_connectivity "$VPN_IF" '3' 'timeout-test' || WAIT_RC=$?
+	assert_eq '2' "$PING_ATTEMPTS" 'wait helper exits as soon as connectivity is restored'
+	assert_eq '1,' "$SLEEP_CALLS" 'wait helper sleeps only until the next successful probe'
 
-assert_eq '1' "$WAIT_RC" 'wait helper fails when connectivity never returns'
-assert_eq '1,1,' "$SLEEP_CALLS" 'wait helper retries until the timeout window is exhausted'
+	printf '%s\n' '200' > "$FAKE_NOW_FILE"
+	SLEEP_CALLS=''
+	PING_ATTEMPTS=0
+	SUCCESS_ON_ATTEMPT=0
+	WAIT_RC=0
+	nordvpn_easy_wait_for_vpn_connectivity "$VPN_IF" '3' 'timeout-test' || WAIT_RC=$?
+
+	assert_eq '1' "$WAIT_RC" 'wait helper fails when connectivity never returns'
+	assert_eq '1,1,' "$SLEEP_CALLS" 'wait helper retries until the timeout window is exhausted'
+)
 
 # A fresh handshake must not short-circuit readiness on its own: connectivity is
 # still confirmed with a ping through the interface before the tunnel is ready.
