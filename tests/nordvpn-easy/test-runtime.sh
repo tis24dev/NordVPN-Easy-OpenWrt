@@ -165,6 +165,10 @@ assert_eq '2026-02-01T00:00:00Z' "$(printf '%s' "$STATUS_JSON" | jq -r '.public_
 assert_eq 'https://ifconfig.me/ip' "$(printf '%s' "$STATUS_JSON" | jq -r '.public_ip_source')" 'status json exposes public IP lookup source'
 assert_eq 'ok' "$(printf '%s' "$STATUS_JSON" | jq -r '.public_verification_status')" 'status json exposes public verification status'
 assert_eq '1770000002' "$(printf '%s' "$STATUS_JSON" | jq -r '.public_verification_checked_at')" 'status json exposes public verification timestamp'
+# Capability probe (S7 increment 2): the backend advertises its RPC contract level
+# so the LuCI client can gate the supervised apply path on >= 2. Level 1 = legacy.
+assert_eq '1' "$(printf '%s' "$STATUS_JSON" | jq -r '.rpc_contract_level')" 'status json advertises the RPC contract level (1 = legacy-only)'
+assert_eq 'number' "$(printf '%s' "$STATUS_JSON" | jq -r '.rpc_contract_level | type')" 'rpc_contract_level is a JSON number so the client compares it numerically'
 assert_eq '0' "$(nordvpn_easy_wg_runtime_non_negative_int 'not-a-number')" 'non-numeric epoch sanitizes to zero'
 assert_eq '1770000000' "$(nordvpn_easy_wg_runtime_non_negative_int '1770000000')" 'numeric epoch is preserved'
 

@@ -535,6 +535,7 @@ nordvpn_easy_emit_status_json() {
 	local boot_id=''
 	local journal_phase=''
 	local journal_txn_id=''
+	local rpc_contract_level='1'
 
 	nordvpn_easy_load_lock_metadata "${LOCK_DIR:-/tmp/nordvpn-easy.lock}"
 	operation="$(nordvpn_easy_operation_status_from_loaded_lock)"
@@ -707,6 +708,16 @@ nordvpn_easy_emit_status_json() {
 		''|*[!0-9]*) status_seq='0' ;;
 	esac
 
+	# Capability probe (additive): the RPC contract level the LuCI client gates the
+	# supervised apply path on (>= 2). Defaults to 1 (legacy-only) if the getter is
+	# somehow unsourced, so a client never sees a spurious high level.
+	if command -v nordvpn_easy_rpc_contract_level >/dev/null 2>&1; then
+		rpc_contract_level="$(nordvpn_easy_rpc_contract_level 2>/dev/null || printf '1')"
+	fi
+	case "$rpc_contract_level" in
+		''|*[!0-9]*) rpc_contract_level='1' ;;
+	esac
+
 	cat <<EOF
 {
   "updated_at": $updated_at,
@@ -727,6 +738,7 @@ nordvpn_easy_emit_status_json() {
   "boot_id": "$(nordvpn_easy_json_escape "$boot_id")",
   "journal_phase": "$(nordvpn_easy_json_escape "$journal_phase")",
   "journal_txn_id": "$(nordvpn_easy_json_escape "$journal_txn_id")",
+  "rpc_contract_level": $rpc_contract_level,
   "selected_country": "$(nordvpn_easy_json_escape "${VPN_COUNTRY:-}")",
   "interface": "$(nordvpn_easy_json_escape "${VPN_IF:-}")",
   "vpn_status": "$(nordvpn_easy_json_escape "$vpn_state")",

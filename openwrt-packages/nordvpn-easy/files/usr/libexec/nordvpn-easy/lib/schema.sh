@@ -156,6 +156,15 @@ nordvpn_easy_orchestrator_mode() {
 	esac
 }
 
+# The RPC contract level the backend advertises in its status. The LuCI client uses
+# it as a capability probe: it only routes the supervised `apply` path when the
+# backend advertises >= 2 (bumped in the SAME tag that lands the apply method + its
+# ACL + the JS consumer). Level 1 = only the legacy 3-RPC choreography is supported,
+# so every client stays on the legacy path. Kept an integer so JS can compare it.
+nordvpn_easy_rpc_contract_level() {
+	printf '1'
+}
+
 nordvpn_easy_default() {
 	case "$1" in
 		enabled) printf '%s\n' '0' ;;
