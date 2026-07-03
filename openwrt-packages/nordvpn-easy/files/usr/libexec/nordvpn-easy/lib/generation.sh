@@ -44,6 +44,19 @@ nordvpn_easy_config_fingerprint() {
 	} | nordvpn_easy_fingerprint_hash
 }
 
+# The identity of the target runtime state the supervisor must converge to: the
+# desired-config fingerprint PAIRED with the desired enabled flag. config_fingerprint
+# deliberately excludes `enabled` (a config toggle, not a hashed config field), so an
+# identity keyed on the fingerprint ALONE cannot distinguish IDLE_DISABLED from
+# IDLE_CONNECTED -- an enable-only change (0<->1 at the same config) would be swallowed
+# by a supersede/caught-up gate keyed on it, leaving the supervisor applying a stale
+# target. Pairing with DESIRED_ENABLED makes enable and disable DISTINCT targets, so a
+# newer one supersedes the one in flight. (The bringup DECISION additionally consults
+# boot_needs_bringup for runtime liveness; this identity is for supersede detection.)
+nordvpn_easy_target_identity() {
+	printf '%s:%s' "$(nordvpn_easy_config_fingerprint)" "${DESIRED_ENABLED:-0}"
+}
+
 nordvpn_easy_applied_fingerprint() {
 	uci -q get 'nordvpn_easy.main.applied_fingerprint' 2>/dev/null || printf ''
 }

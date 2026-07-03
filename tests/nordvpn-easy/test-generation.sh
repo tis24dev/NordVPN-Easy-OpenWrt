@@ -126,6 +126,24 @@ assert_eq "$FP_ORCH_LEGACY" "$(nordvpn_easy_config_fingerprint)" 'flipping the o
 assert_eq "$FP1" "$FP_ORCH_LEGACY" 'orchestrator mode is not part of the config fingerprint'
 unset ORCHESTRATOR
 
+# --- target_identity pairs the fingerprint with DESIRED_ENABLED (blocker fix) ---
+# An enable-only toggle (0<->1, same config) MUST change the TARGET identity, or the
+# supervisor's supersede/caught-up gate would swallow it (IDLE_DISABLED and
+# IDLE_CONNECTED look identical on the fingerprint alone). config_fingerprint itself
+# stays enabled-agnostic; only the paired identity moves.
+DESIRED_ENABLED='1'
+TID_ENABLED="$(nordvpn_easy_target_identity)"
+DESIRED_ENABLED='0'
+TID_DISABLED="$(nordvpn_easy_target_identity)"
+assert_ne "$TID_ENABLED" "$TID_DISABLED" 'an enable-only toggle changes the target identity (same config)'
+DESIRED_ENABLED='1'
+assert_eq "$TID_ENABLED" "$(nordvpn_easy_target_identity)" 'the target identity is stable for an unchanged desired state'
+VPN_COUNTRY='FR'
+assert_ne "$TID_ENABLED" "$(nordvpn_easy_target_identity)" 'a config change still changes the target identity'
+VPN_COUNTRY='IT'
+assert_eq "$FP1" "$(nordvpn_easy_config_fingerprint)" 'config_fingerprint stays enabled-agnostic (identity pairs it, not folds it)'
+unset DESIRED_ENABLED
+
 # --- mark_applied + boot_needs_bringup -------------------------------------
 nordvpn_easy_vpn_link_is_present() { return 0; }
 
