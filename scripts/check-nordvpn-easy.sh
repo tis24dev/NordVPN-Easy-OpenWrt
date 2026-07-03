@@ -40,6 +40,7 @@ SH_FILES=(
 	"$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/common.sh"
 	"$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/generation.sh"
 	"$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/journal.sh"
+	"$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/supervise.sh"
 	"$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/catalog.sh"
 	"$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/runtime.sh"
 	"$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/wireguard.sh"
@@ -52,6 +53,7 @@ SH_FILES=(
 	"$ROOT_DIR/tests/nordvpn-easy/test-credentials-errors.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-catalog-fixtures.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-common-lock.sh"
+	"$ROOT_DIR/tests/nordvpn-easy/test-run-phase.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-common-temp.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-init-cron.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-init-run-core.sh"
@@ -109,6 +111,7 @@ SHELL_TESTS=(
 	test-generation.sh
 	test-journal.sh
 	test-journal-dualwrite.sh
+	test-run-phase.sh
 	test-json-escape.sh
 	test-credentials-errors.sh
 	test-catalog-fixtures.sh
