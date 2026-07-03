@@ -71,6 +71,7 @@ SH_FILES=(
 	"$ROOT_DIR/tests/nordvpn-easy/test-vpn-firewall.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-service-config.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-actions.sh"
+	"$ROOT_DIR/tests/nordvpn-easy/test-configure-split.sh"
 )
 
 printf '%s\n' 'Checking LuCI JavaScript syntax'
@@ -139,6 +140,7 @@ SHELL_TESTS=(
 	test-vpn-firewall.sh
 	test-service-config.sh
 	test-actions.sh
+	test-configure-split.sh
 	test-provision.sh
 )
 for t in "${SHELL_TESTS[@]}"; do

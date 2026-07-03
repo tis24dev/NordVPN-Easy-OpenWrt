@@ -362,7 +362,14 @@ nordvpn_easy_fetch_provision_prerequisites() {
 	return 0
 }
 
-nordvpn_easy_configure_vpn_interface() {
+# Everything up to (but NOT including) the interface bring-up: fetch-if-needed,
+# firewall, the network UCI + peer sections, the fenced network commit and the perm
+# hardening. Split out (S7 increment 5a) so the supervisor state machine can run the
+# CONFIGURE phase separately from BRINGUP while the legacy connect() path stays
+# byte-identical -- the wrapper below re-composes the exact legacy sequence
+# (configure -> bring up -> success log -> post-bring-up state snapshot), including
+# emitting NO 'created successfully' log when bring-up fails.
+nordvpn_easy_configure_vpn_interface_no_bringup() {
 	nordvpn_easy_require_core_action_helpers get_private_key || return 1
 	log "apply: creating WireGuard interface $VPN_IF with address $VPN_ADDR and endpoint port $VPN_PORT"
 	nordvpn_easy_log_vpn_interface_state 'before-create'
@@ -409,6 +416,10 @@ nordvpn_easy_configure_vpn_interface() {
 		return 1
 	}
 	nordvpn_easy_harden_secret_config_perms network
+}
+
+nordvpn_easy_configure_vpn_interface() {
+	nordvpn_easy_configure_vpn_interface_no_bringup || return 1
 
 	nordvpn_easy_bring_up_vpn_interface "$VPN_IF" || return 1
 
