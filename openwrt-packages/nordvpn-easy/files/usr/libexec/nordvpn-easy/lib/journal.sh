@@ -64,7 +64,12 @@ nordvpn_easy_journal_write_full() {
 	now="$(date +%s 2>/dev/null || printf '%s' '0')"
 	tmp="$(mktemp "${dir}/.journal.XXXXXX" 2>/dev/null)" || return 1
 	{
-		printf 'schema=1\n'
+		# schema 2 formally carries the supervisor phase-record fields
+		# (target_fingerprint, phase, phase_attempt, phase_deadline, fetch_done,
+		# last_error) in addition to the schema-1 begin/finish fields. write_full is
+		# a pass-through, so no reader is required to change; the bump is a forward
+		# signal only (nothing gates on it -- the journal is still SHADOW).
+		printf 'schema=2\n'
 		printf 'boot_id=%s\n' "$(nordvpn_easy_journal_boot_id)"
 		for kv in "$@"; do
 			printf '%s\n' "$kv"
@@ -74,6 +79,38 @@ nordvpn_easy_journal_write_full() {
 	} > "$tmp" || { rm -f -- "$tmp"; return 1; }
 	chmod 0600 "$tmp" 2>/dev/null || true
 	mv "$tmp" "$file" || { rm -f -- "$tmp"; return 1; }
+}
+
+# Merge key=value fields into the existing journal, PRESERVING every other field
+# (write_full replaces the whole document; this keeps the transaction identity --
+# txn_id/started_at/origin/owner_pid -- while a phase advances). The re-stamped
+# fields (schema/boot_id/status_seq/updated_at) and any key the caller overwrites
+# are dropped from the kept set; write_full re-stamps them. If the journal does not
+# exist yet this degenerates to a plain write of the caller's fields.
+nordvpn_easy_journal_set() {
+	local file line lkey new_keys=' '
+	file="$(nordvpn_easy_journal_path)"
+
+	# The keys the caller is setting (space-padded for whole-word matching).
+	for line in "$@"; do
+		new_keys="${new_keys}${line%%=*} "
+	done
+
+	if [ -r "$file" ]; then
+		while IFS= read -r line || [ -n "$line" ]; do
+			lkey="${line%%=*}"
+			[ -n "$lkey" ] || continue
+			case "$lkey" in
+				schema|boot_id|status_seq|updated_at) continue ;;
+			esac
+			case "$new_keys" in
+				*" $lkey "*) continue ;;
+			esac
+			set -- "$@" "$line"
+		done < "$file"
+	fi
+
+	nordvpn_easy_journal_write_full "$@"
 }
 
 nordvpn_easy_journal_begin() {

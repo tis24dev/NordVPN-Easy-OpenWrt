@@ -516,6 +516,10 @@ nordvpn_easy_owner_fence_denied() {
 # service-config.sh). fenced_journal_set stays defined-but-unwired for the S7
 # supervisor.
 nordvpn_easy_fenced_journal_set() {
+	# NOTE (for the S7 supervisor wiring): this fences a FULL-DOCUMENT write
+	# (journal_write_full), NOT the identity-preserving merge (journal_set). When
+	# run_phase's per-phase merge becomes owner-fenced it must gate journal_set (or a
+	# fenced merge), not this, or a phase boundary would clobber the txn identity.
 	nordvpn_easy_owner_fence_denied && { nordvpn_easy_log_phase 'runtime' 'refusing journal write: superseded execution-lock owner'; return 1; }
 	nordvpn_easy_journal_write_full "$@"
 }
