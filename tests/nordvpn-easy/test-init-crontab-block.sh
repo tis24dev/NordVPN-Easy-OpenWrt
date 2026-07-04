@@ -4,6 +4,8 @@ set -eu
 
 ROOT_DIR="$(CDPATH='' cd -- "$(dirname "$0")/../.." && pwd)"
 INIT_SCRIPT="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/etc/init.d/nordvpn-easy"
+# apply_crontab_block was extracted to a shared library (S7 inc 5c).
+HOOKS_LIB="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/hooks.sh"
 TMP_DIR="$(mktemp -d)"
 
 cleanup() {
@@ -46,10 +48,10 @@ extract_function() {
 		$0 ~ ("^" fn "\\(\\)") { capture = 1 }
 		capture { print }
 		capture && /^}/ { exit }
-	' "$INIT_SCRIPT"
+	' "${2:-$INIT_SCRIPT}"
 }
 
-eval "$(extract_function apply_crontab_block)"
+eval "$(extract_function apply_crontab_block "$HOOKS_LIB")"
 
 CRONTAB_PATH="$TMP_DIR/crontabs/root"
 CRON_PATH="$TMP_DIR/cron.d/nordvpn-easy"

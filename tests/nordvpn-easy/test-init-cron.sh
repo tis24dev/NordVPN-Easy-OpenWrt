@@ -4,6 +4,9 @@ set -eu
 
 ROOT_DIR="$(CDPATH='' cd -- "$(dirname "$0")/../.." && pwd)"
 INIT_SCRIPT="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/etc/init.d/nordvpn-easy"
+# The cron/hotplug installers were extracted to a shared library (S7 inc 5c); the
+# cron helpers this test exercises now live there, not in the init script.
+HOOKS_LIB="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/hooks.sh"
 
 assert_eq() {
 	expected="$1"
@@ -23,12 +26,12 @@ extract_function() {
 		$0 ~ ("^" fn "\\(\\)") { capture = 1 }
 		capture { print }
 		capture && /^}/ { exit }
-	' "$INIT_SCRIPT"
+	' "${2:-$INIT_SCRIPT}"
 }
 
-eval "$(extract_function validate_cron_schedule)"
-eval "$(extract_function normalize_cron_minute_field)"
-eval "$(extract_function normalize_cron_schedule)"
+eval "$(extract_function validate_cron_schedule "$HOOKS_LIB")"
+eval "$(extract_function normalize_cron_minute_field "$HOOKS_LIB")"
+eval "$(extract_function normalize_cron_schedule "$HOOKS_LIB")"
 
 CRON_VALIDATION_ERROR=''
 validate_cron_schedule '* * * * *'
@@ -109,7 +112,7 @@ esac
 # The generated cron command must skip when a connect-apply transaction is in
 # progress (so cron 'check' cannot interleave the client-driven Save & Apply
 # window) and stay busy-tolerant otherwise.
-eval "$(extract_function write_desired_cron_hook_to)"
+eval "$(extract_function write_desired_cron_hook_to "$HOOKS_LIB")"
 SERVICE_NAME='nordvpn-easy'
 CONNECT_APPLY_GUARD='/tmp/run/nordvpn-easy/connect-apply-guard'
 cfg_enabled=1
