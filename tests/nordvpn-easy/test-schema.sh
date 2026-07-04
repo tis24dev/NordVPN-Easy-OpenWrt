@@ -143,11 +143,12 @@ grep -q "option orchestrator 'legacy'" "$ROOT_DIR/openwrt-packages/nordvpn-easy/
 	exit 1
 }
 
-# RPC contract level getter (S7 increment 2): pinned to 1 (legacy-only) here where
-# schema.sh IS sourced -- test-runtime.sh only exercises emit_status_json's fallback
-# default, so a premature bump of the getter must fail HERE. It must stay 1 until the
-# coordinated tag that lands the apply method + its ACL + the JS consumer bumps it.
-assert_eq '1' "$(nordvpn_easy_rpc_contract_level)" 'the advertised RPC contract level is 1 (legacy-only until the apply-method tag)'
+# RPC contract level getter (S7 tag 11): the build now supports contract 2 (the async
+# supervised apply method + its ACL + the JS callApply consumer all shipped), so the raw
+# getter returns 2. emit_status_json CLAMPS the advertised level back to 1 unless
+# orchestrator=supervisor (covered in test-runtime.sh), so a legacy device still routes
+# the legacy 3-RPC path -- this getter is the raw build capability.
+assert_eq '2' "$(nordvpn_easy_rpc_contract_level)" 'the advertised RPC contract level is 2 (async apply method shipped)'
 case "$(nordvpn_easy_rpc_contract_level)" in
 	''|*[!0-9]*|0?*) printf '%s\n' 'FAIL: rpc_contract_level must be a bare non-zero-padded integer (valid JSON number)' >&2; exit 1 ;;
 esac

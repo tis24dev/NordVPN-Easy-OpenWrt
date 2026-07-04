@@ -717,6 +717,15 @@ nordvpn_easy_emit_status_json() {
 	case "$rpc_contract_level" in
 		''|*[!0-9]*) rpc_contract_level='1' ;;
 	esac
+	# S7 tag 11: CLAMP the advertised level to 1 unless the supervisor is engaged, so a
+	# legacy device advertises the legacy 3-RPC contract and the JS never routes the
+	# async apply path there. This folds the orchestrator-capable gate into the single
+	# contract signal the JS reads (no separate status field).
+	if command -v nordvpn_easy_orchestrator_mode >/dev/null 2>&1; then
+		[ "$(nordvpn_easy_orchestrator_mode)" = 'supervisor' ] || rpc_contract_level='1'
+	else
+		rpc_contract_level='1'
+	fi
 
 	cat <<EOF
 {

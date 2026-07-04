@@ -214,6 +214,19 @@ const healthyRuntime = {
 assert.equal(typeof managerActions.runApplyCycle, 'function', 'runApplyCycle is exported');
 assert.equal(typeof managerActions.renderLocalStatusSnapshot, 'function', 'renderLocalStatusSnapshot is exported');
 
+// S7 tag 11: the supervised-apply capability GATE decides the apply route. The backend
+// clamps rpc_contract_level to >=2 only under orchestrator=supervisor, so this single
+// check gates the async apply on both "supervisor engaged" and "apply method available";
+// contract 1 / absent / no status -> the legacy begin_connect_apply path.
+assert.equal(typeof managerActions.applyIsSupervisorCapable, 'function', 'applyIsSupervisorCapable is exported');
+assert.equal(managerActions.applyIsSupervisorCapable({ currentLocalStatus: { rpc_contract_level: 2 } }), true, 'contract 2 -> supervised (async) apply');
+assert.equal(managerActions.applyIsSupervisorCapable({ currentLocalStatus: { rpc_contract_level: 3 } }), true, 'contract >2 -> supervised apply');
+assert.equal(managerActions.applyIsSupervisorCapable({ currentLocalStatus: { rpc_contract_level: 1 } }), false, 'contract 1 -> legacy apply');
+assert.equal(managerActions.applyIsSupervisorCapable({ currentLocalStatus: {} }), false, 'contract absent -> legacy apply');
+assert.equal(managerActions.applyIsSupervisorCapable({ currentLocalStatus: null }), false, 'no runtime status -> legacy apply');
+assert.equal(managerActions.applyIsSupervisorCapable({}), false, 'no currentLocalStatus -> legacy apply');
+assert.equal(managerActions.applyIsSupervisorCapable(null), false, 'no state -> legacy apply');
+
 assert.equal(managerData.parseEnabledFlag(undefined), false, 'missing enabled option is treated as disabled');
 assert.equal(managerData.parseEnabledFlag('0'), false, 'explicit disabled value is treated as disabled');
 assert.equal(managerData.parseEnabledFlag('1'), true, 'explicit enabled value is treated as enabled');

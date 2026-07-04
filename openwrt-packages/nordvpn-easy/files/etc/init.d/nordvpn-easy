@@ -38,7 +38,7 @@ SERVICE_BACKEND_PAYLOAD_SIGNATURE='render-contract-v3'
 NORDVPN_EASY_RC_BUSY="${NORDVPN_EASY_RC_BUSY:-75}"
 # OpenWrt rc.common consumes the command/help metadata.
 # shellcheck disable=SC2034
-EXTRA_COMMANDS='connect disconnect stop_vpn begin_connect_apply abort_connect_apply reconnect reconcile setup check rotate refresh_countries refresh_countries_force server_catalog public_ip operation_status vpn_status status_json diagnostics_log diagnostics_summary install_hooks remove_hooks disable_runtime render_runtime_config supervise'
+EXTRA_COMMANDS='connect disconnect stop_vpn begin_connect_apply abort_connect_apply reconnect reconcile setup check rotate refresh_countries refresh_countries_force server_catalog public_ip operation_status vpn_status status_json diagnostics_log diagnostics_summary install_hooks remove_hooks disable_runtime render_runtime_config supervise apply'
 # shellcheck disable=SC2034
 EXTRA_HELP='  connect               Enable, run setup, then install hooks transactionally
   disconnect            Disable runtime and remove hooks
@@ -691,6 +691,35 @@ supervise() {
 		return 0
 	fi
 	run_core_action supervise
+}
+
+# S7 tag 9: async entry for the supervised apply (the RPC apply method + the CLI both
+# reach the supervisor here). Gate on orchestrator mode BEFORE forking (legacy spawns
+# nothing = structural inertness), then setsid-reparent the SYNCHRONOUS supervise
+# worker into a NEW SESSION with its fds detached (</dev/null >/dev/null 2>&1), so it
+# survives rpcd tearing down the handler's process group and this verb -- and thus the
+# rpc handler -- returns in <1s while the worker runs ~60s detached. The trailing & is
+# load-bearing: BusyBox setsid execs PROG and returns only when PROG exits. setsid is a
+# compile-time BusyBox applet; fall back to a bare backgrounded subshell on an image
+# that lacks it. cfg_enabled/DESIRED gates stay authoritative inside supervise().
+apply() {
+	load_service_config || return 1
+	if [ "$(nordvpn_easy_orchestrator_mode)" != 'supervisor' ]; then
+		log_service_info 'orchestrator mode is legacy; apply verb is a no-op (staying on legacy path)'
+		return 0
+	fi
+	# S7 tag 11: clear the last-error cache SYNCHRONOUSLY, before dispatching the async
+	# worker, so the JS status_json poll that immediately follows this apply RPC cannot
+	# read a STALE error from a prior failed apply and report a false failure. The legacy
+	# path clears it synchronously in its stop phase; the async worker would only clear it
+	# in its success epilogue (~60s later), racing the first poll. mirrors core.sh's cache.
+	rm -f "${RUN_STATE_DIR:-/tmp/run/nordvpn-easy}/last_error" 2>/dev/null || true
+	if command -v setsid >/dev/null 2>&1; then
+		setsid /etc/init.d/"$SERVICE_NAME" supervise </dev/null >/dev/null 2>&1 &
+	else
+		( /etc/init.d/"$SERVICE_NAME" supervise </dev/null >/dev/null 2>&1 ) &
+	fi
+	return 0
 }
 
 rotate() {

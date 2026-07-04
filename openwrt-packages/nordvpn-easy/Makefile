@@ -106,6 +106,16 @@ fi
 # /etc/config/nordvpn_easy holds the NordVPN account token; keep it root-only.
 chmod 0600 /etc/config/nordvpn_easy 2>/dev/null || true
 
+# S7 tag 9: this package ships the rpcd plugin (usr/libexec/rpcd/nordvpn.easy), so a
+# backend-only upgrade that adds the async `apply` method needs rpcd reloaded to
+# register it (the luci-app postinst reloads too, but it may not be upgraded in lockstep).
+RPCD_OUTPUT="$$(/etc/init.d/rpcd reload 2>&1)"
+RPCD_STATUS=$$?
+if [ "$$RPCD_STATUS" -ne 0 ]; then
+	printf "%s\n" "nordvpn-easy: rpcd reload failed with exit code $$RPCD_STATUS" >&2
+	[ -n "$$RPCD_OUTPUT" ] && printf "%s\n" "$$RPCD_OUTPUT" >&2
+fi
+
 exit 0
 endef
 

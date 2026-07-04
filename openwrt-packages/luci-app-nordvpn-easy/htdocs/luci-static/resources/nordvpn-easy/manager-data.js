@@ -102,6 +102,12 @@ function parseLocalStatus(raw) {
 		public_verification_status: String(status.public_verification_status || 'unknown'),
 		public_verification_checked_at: Number(status.public_verification_checked_at || 0),
 		last_error: String(status.last_error || ''),
+		// S7 tag 11: the capability probe (rpc_contract_level>=2 -> the async supervised
+		// apply is available) + the supervisor progress (journal phase/txn), surfaced so
+		// the apply cycle can route + poll. Absent on an old backend -> defaults to 1.
+		rpc_contract_level: Number(status.rpc_contract_level || 1),
+		journal_phase: String(status.journal_phase || ''),
+		journal_txn_id: String(status.journal_txn_id || ''),
 		current_server_hostname: String(status.current_server_hostname || ''),
 		current_server_station: String(status.current_server_station || ''),
 		current_server_city: String(status.current_server_city || ''),

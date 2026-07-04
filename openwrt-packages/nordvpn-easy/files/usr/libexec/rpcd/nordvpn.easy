@@ -258,6 +258,15 @@ rpc_stop_vpn() {
 	rpc_command_result 'stop_vpn' "$INIT_SCRIPT" stop_vpn
 }
 
+# S7 tag 9: dispatch the ASYNC supervised apply. The init `apply` verb setsid-forks the
+# supervise worker (fds detached) and returns in <1s, so rpc_command_result captures an
+# empty stdout/stderr and yields the standard envelope well under the rpcd 180s ceiling
+# while the worker runs detached; the JS then polls status_json for convergence. Under
+# orchestrator=legacy the init apply verb forks nothing (benign no-op).
+rpc_apply() {
+	rpc_command_result 'apply' "$INIT_SCRIPT" apply
+}
+
 rpc_public_ip() {
 	local tmp_dir out_file err_file rc stdout_json stderr_json message_json
 
@@ -393,6 +402,9 @@ rpc_call() {
 		stop_vpn)
 			rpc_stop_vpn
 			;;
+		apply)
+			rpc_apply
+			;;
 		reconcile)
 			rpc_command_result 'reconcile' "$INIT_SCRIPT" reconcile
 			;;
@@ -447,6 +459,7 @@ case "$1" in
   "begin_connect_apply": {},
   "abort_connect_apply": {},
   "stop_vpn": {},
+  "apply": {},
   "reconcile": {},
   "rotate": {},
   "setup": {},

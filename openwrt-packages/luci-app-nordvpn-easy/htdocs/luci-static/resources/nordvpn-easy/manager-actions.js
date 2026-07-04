@@ -509,7 +509,7 @@ function applyRuntimeConvergenceSucceeded(savedConfig, status, state) {
 	return runtimeActionRecoverySucceeded(savedConfig, status, state);
 }
 
-function awaitRuntimeConvergenceAfterDispatch(state, savedConfig, applyAttemptId, successMessage) {
+function awaitRuntimeConvergenceAfterDispatch(state, savedConfig, applyAttemptId, successMessage, dispatchAction) {
 	const deadline = Date.now() + SAVE_APPLY_TIMEOUT_MS;
 
 	const pollForConvergence = function() {
@@ -561,7 +561,7 @@ function awaitRuntimeConvergenceAfterDispatch(state, savedConfig, applyAttemptId
 		});
 	};
 
-	return service.runAction('start_connect').then(function(dispatchResult) {
+	return service.runAction(dispatchAction || 'start_connect').then(function(dispatchResult) {
 		if (!applyAttemptIsCurrent(state, applyAttemptId))
 			return rejectStaleApplyAttempt();
 
@@ -799,6 +799,36 @@ function runtimeSelectionChanged(state, viewState, submitted) {
 		baseline.preferredStation !== nextStation;
 }
 
+// S7 tag 11: the backend clamps rpc_contract_level to >=2 ONLY under orchestrator=
+// supervisor, so this single check gates the async supervised apply on both "the
+// supervisor is engaged" and "the apply method is available". Reads the parsed local
+// status the poller stores (state.currentLocalStatus); absent/old backend -> defaults
+// to 1 -> legacy path.
+function applyIsSupervisorCapable(state) {
+	const rs = state && state.currentLocalStatus;
+	return !!rs && Number(rs.rpc_contract_level || 1) >= 2;
+}
+
+// A capability-absent RPC error (an inconsistent partial upgrade: the backend advertised
+// contract 2 but the apply method or its ACL grant is missing) -> fall back to legacy.
+function isCapabilityAbsentError(err) {
+	const m = (err && err.message) ? String(err.message) : String(err);
+	return m.indexOf('Object not found') !== -1 ||
+		m.indexOf('Access denied') !== -1 ||
+		m.indexOf('Method not found') !== -1;
+}
+
+// Dispatch the async supervised apply ONCE. awaitRuntimeConvergenceAfterDispatch does
+// the single service.runAction('apply'), checks its result (throwing on failure so the
+// caller's capability-absent fallback can fire), and reuses the same status_json
+// convergence poll as the legacy path -- no separate start_connect.
+function runApplyCycleSupervisedApply(state, savedConfig, applyAttemptId) {
+	if (!applyAttemptIsCurrent(state, applyAttemptId))
+		return rejectStaleApplyAttempt();
+
+	return awaitRuntimeConvergenceAfterDispatch(state, savedConfig, applyAttemptId, APPLY_CYCLE_SUCCESS_CONNECTED, 'apply');
+}
+
 function runApplyCycleStopPhase(viewState, state, submitted, applyAttemptId) {
 	if (!applyAttemptIsCurrent(state, applyAttemptId))
 		return rejectStaleApplyAttempt();
@@ -881,6 +911,22 @@ function runApplyCycle(viewState, state, ev, options) {
 					suppressAutoReconcile: true,
 					applyAttemptId: applyAttemptId
 				});
+			});
+		}
+
+		// S7 tag 11: when the backend advertises rpc_contract_level>=2 (only under
+		// orchestrator=supervisor), route the enable apply through the ASYNC supervised
+		// apply (one RPC that returns fast + a status_json poll) instead of the blocking
+		// legacy begin_connect_apply 3-RPC. Fall back to legacy if the apply method/ACL is
+		// somehow absent (an inconsistent partial upgrade).
+		if (applyIsSupervisorCapable(state)) {
+			return runApplyCycleSupervisedApply(state, savedConfig, applyAttemptId).catch(function(err) {
+				if (isCapabilityAbsentError(err)) {
+					return runApplyCycleStopPhase(viewState, state, submitted, applyAttemptId).then(function() {
+						return runApplyCycleConnectPhase(state, savedConfig, applyAttemptId);
+					});
+				}
+				throw err;
 			});
 		}
 
@@ -2098,6 +2144,8 @@ function handleSaveApply(viewState, state, ev) {
 
 return baseclass.extend({
 	runApplyCycle: runApplyCycle,
+	applyIsSupervisorCapable: applyIsSupervisorCapable,
+	runApplyCycleSupervisedApply: runApplyCycleSupervisedApply,
 	applyRuntimeConvergenceSucceeded: applyRuntimeConvergenceSucceeded,
 	maybeRecoverOrphanedRuntime: maybeRecoverOrphanedRuntime,
 	maybeEnsureEnabledRuntime: maybeEnsureEnabledRuntime,
