@@ -58,9 +58,16 @@ nordvpn_easy_run_phase() {
 		deadline=$((now + timeout))
 
 		# Journal boundary BEFORE the body, so a concurrent status/reaper sees the
-		# phase and its deadline. Merge to keep the txn identity; best-effort (the
-		# journal is shadow until the state machine makes it authoritative).
-		if command -v nordvpn_easy_journal_set >/dev/null 2>&1; then
+		# phase and its deadline. OWNER-FENCED identity-preserving merge: a reaped
+		# worker's boundary refuses (owner_assert fails) so it cannot advance the new
+		# owner's journal; a legit or tokenless owner merges (keeps the txn identity).
+		# Fall back to the unfenced merge where common.sh is not sourced (unit tests).
+		if command -v nordvpn_easy_fenced_journal_merge >/dev/null 2>&1; then
+			nordvpn_easy_fenced_journal_merge \
+				"phase=$name" \
+				"phase_attempt=$attempt" \
+				"phase_deadline=$deadline" >/dev/null 2>&1 || true
+		elif command -v nordvpn_easy_journal_set >/dev/null 2>&1; then
 			nordvpn_easy_journal_set \
 				"phase=$name" \
 				"phase_attempt=$attempt" \

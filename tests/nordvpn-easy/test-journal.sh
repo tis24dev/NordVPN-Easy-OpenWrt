@@ -139,4 +139,24 @@ nordvpn_easy_fenced_journal_set 'phase=done' 'target_fingerprint=fp-stolen' || f
 assert_eq 'fp-owned' "$(nordvpn_easy_journal_get target_fingerprint)" 'a superseded fenced_journal_set does not overwrite the journal'
 NORDVPN_EASY_OWNER_TOKEN=''
 
+# --- fenced_journal_merge: owner-fenced identity-preserving MERGE (run_phase's
+# phase boundary). A legit owner merges (updates fields, PRESERVES the txn id); a
+# superseded owner refuses and leaves the journal intact (so a reaped worker cannot
+# advance the new owner's txn, and a thaw cannot fork the txn_id).
+printf '%s\n' 'mtok' > "$LOCK_DIR/token"
+NORDVPN_EASY_OWNER_TOKEN='mtok'
+rm -f "$NORDVPN_EASY_JOURNAL_FILE"
+nordvpn_easy_journal_write_full 'phase=validate' 'txn_id=merge-fence-txn' 'target_fingerprint=fp-a'
+nordvpn_easy_fenced_journal_merge 'phase=configure' 'phase_attempt=2'
+assert_eq 'configure' "$(nordvpn_easy_journal_get phase)" 'fenced_journal_merge updates the phase for the owner'
+assert_eq 'merge-fence-txn' "$(nordvpn_easy_journal_get txn_id)" 'fenced_journal_merge preserves the txn id'
+assert_eq 'fp-a' "$(nordvpn_easy_journal_get target_fingerprint)" 'fenced_journal_merge preserves the other fields'
+
+printf '%s\n' 'someone-else' > "$LOCK_DIR/token"
+merge_rc=0
+nordvpn_easy_fenced_journal_merge 'phase=done' 'phase_attempt=9' || merge_rc=$?
+[ "$merge_rc" -ne 0 ] || { printf '%s\n' 'FAIL: fenced_journal_merge must refuse when superseded' >&2; exit 1; }
+assert_eq 'configure' "$(nordvpn_easy_journal_get phase)" 'a superseded fenced_journal_merge does not advance the journal'
+NORDVPN_EASY_OWNER_TOKEN=''
+
 printf '%s\n' 'test-journal.sh: ok'

@@ -516,12 +516,20 @@ nordvpn_easy_owner_fence_denied() {
 # service-config.sh). fenced_journal_set stays defined-but-unwired for the S7
 # supervisor.
 nordvpn_easy_fenced_journal_set() {
-	# NOTE (for the S7 supervisor wiring): this fences a FULL-DOCUMENT write
-	# (journal_write_full), NOT the identity-preserving merge (journal_set). When
-	# run_phase's per-phase merge becomes owner-fenced it must gate journal_set (or a
-	# fenced merge), not this, or a phase boundary would clobber the txn identity.
+	# Fences a FULL-DOCUMENT write (journal_write_full = fresh txn / supersede open);
+	# for an identity-preserving per-phase update use fenced_journal_merge below.
 	nordvpn_easy_owner_fence_denied && { nordvpn_easy_log_phase 'runtime' 'refusing journal write: superseded execution-lock owner'; return 1; }
 	nordvpn_easy_journal_write_full "$@"
+}
+
+# The owner-fenced identity-preserving MERGE (journal_set): a superseded/reaped owner
+# REFUSES; a legit owner -- or a tokenless caller (if-claimed) -- merges the given
+# fields, preserving the transaction identity (txn_id/started_at). The supervisor's
+# per-phase boundary uses this so a reaped worker cannot advance the new owner's
+# journal, and a thaw cannot fork the txn_id (correction 4).
+nordvpn_easy_fenced_journal_merge() {
+	nordvpn_easy_owner_fence_denied && { nordvpn_easy_log_phase 'runtime' 'refusing journal merge: superseded execution-lock owner'; return 1; }
+	nordvpn_easy_journal_set "$@"
 }
 
 nordvpn_easy_fenced_uci_commit() {
