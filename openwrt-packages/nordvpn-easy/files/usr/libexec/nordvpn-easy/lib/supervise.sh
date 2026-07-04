@@ -313,6 +313,36 @@ _supervise_hooks() {
 	return 0
 }
 
+# S7 inc 7: write the self-ifevent sentinel the hotplug hook reads to recognise -- and
+# skip -- an interface event the supervisor generated itself (its own bring-up). The
+# lock-busy check the hook already does covers the event WHILE this apply holds the
+# execution lock; this sentinel additionally covers the window where the async ifup
+# hotplug fires AFTER the apply has released the lock. It is TTL-based (wall-clock, to
+# match the hook's `date +%s`), so a crash self-expires it -- no cleanup needed. The
+# sentinel lives in the shared run dir (same one the generated hook hardcodes).
+nordvpn_easy_supervise_mark_self_ifevent() {
+	local iface="${1:-${VPN_IF:-wg0}}" rundir now ttl expiry
+	rundir="${NORDVPN_EASY_RUN_DIR:-/tmp/run/nordvpn-easy}"
+	mkdir -p "$rundir" 2>/dev/null || true
+	now="$(date +%s 2>/dev/null || printf '0')"
+	case "$now" in ''|*[!0-9]*) now=0 ;; esac
+	# The TTL must outlast the REST of this apply (bring-up + the connectivity wait +
+	# VERIFYING, ~40s) so the sentinel is still valid at lock release AND covers the
+	# window just after -- while the apply holds the lock the hook's lock-busy check
+	# already suppresses the ifup, so the sentinel's real job is the post-release tail.
+	# 60s covers a typical apply-plus-settle; the trade-off is that a genuine external
+	# flap of this iface within 60s of an apply defers only the fast-path health-check
+	# (the cron check still recovers it). Tunable via NORDVPN_EASY_SELF_IFEVENT_TTL.
+	ttl="${NORDVPN_EASY_SELF_IFEVENT_TTL:-60}"
+	case "$ttl" in ''|*[!0-9]*) ttl=60 ;; esac
+	expiry=$((now + ttl))
+	{
+		printf 'iface=%s\n' "$iface"
+		printf 'expires=%s\n' "$expiry"
+		printf 'target_fingerprint=%s\n' "$(nordvpn_easy_target_identity 2>/dev/null || printf '')"
+	} > "${rundir}/self-ifevent" 2>/dev/null || true
+}
+
 # CONVERGE: ONE run_phase body = ONE background subshell, so the PRIVATE_KEY
 # global that FETCH sets survives into CONFIGURE within THIS subshell (the
 # same-process handoff the split configure requires). Order preserves the
@@ -337,6 +367,10 @@ _supervise_converge() {
 		nordvpn_easy_supervise_record_error 'config.configure' 'interface configure/commit failed (fenced refusal or invalid config)'
 		return 1
 	fi
+	# S7 inc 7: mark the imminent bring-up as a SELF-generated interface event so the
+	# hotplug hook skips it (see nordvpn_easy_supervise_mark_self_ifevent). Written
+	# BEFORE the ifup so the sentinel is already in place when the async hotplug fires.
+	nordvpn_easy_supervise_mark_self_ifevent "$VPN_IF"
 	if ! nordvpn_easy_bring_up_vpn_interface "$VPN_IF"; then
 		nordvpn_easy_supervise_record_error 'local.bringup' 'interface bring-up failed'
 		return 1

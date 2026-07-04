@@ -34,6 +34,7 @@ fail() {
 }
 
 NORDVPN_EASY_JOURNAL_FILE="$TMP_DIR/journal"
+NORDVPN_EASY_RUN_DIR="$TMP_DIR/rundir"
 NORDVPN_EASY_PHASE_BACKOFF_BASE=0
 CALL_LOG="$TMP_DIR/calls"
 SENTINEL="$TMP_DIR/teardown-ran"
@@ -54,7 +55,7 @@ nordvpn_easy_log_blocker() { :; }
 nordvpn_easy_record_last_error() { printf '%s\n' "${1:-}" > "$TMP_DIR/last_error_cache"; }
 
 reset_journal() {
-	rm -f "$NORDVPN_EASY_JOURNAL_FILE" "$CALL_LOG" "$SENTINEL"
+	rm -f "$NORDVPN_EASY_JOURNAL_FILE" "$CALL_LOG" "$SENTINEL" "$NORDVPN_EASY_RUN_DIR/self-ifevent"
 	NORDVPN_EASY_OWNER_TOKEN=''
 }
 
@@ -145,6 +146,12 @@ FETCH_RC=0 TEARDOWN_RC=0 CONFIGURE_RC=0 BRINGUP_RC=0 WAIT_RC=0
 _supervise_converge || fail 'converge must succeed when every step succeeds'
 assert_eq 'fetch teardown configure bringup wait' "$(tr '\n' ' ' < "$CALL_LOG" | sed 's/ $//')" 'converge runs the steps in order'
 [ -f "$SENTINEL" ] || fail 'teardown must run on the happy path (fetch_done was set)'
+# inc 7: converge marks the self-ifevent sentinel before bring-up.
+[ -r "$NORDVPN_EASY_RUN_DIR/self-ifevent" ] || fail 'inc7: converge must mark the self-ifevent sentinel'
+grep -q '^iface=wg0$' "$NORDVPN_EASY_RUN_DIR/self-ifevent" || fail 'inc7: the sentinel names the vpn interface'
+se_expires="$(sed -n 's/^expires=//p' "$NORDVPN_EASY_RUN_DIR/self-ifevent")"
+case "$se_expires" in ''|*[!0-9]*) fail 'inc7: the sentinel has a numeric expiry' ;; esac
+[ "$se_expires" -gt "$(date +%s)" ] || fail 'inc7: the sentinel expiry is in the future'
 
 # teardown fails -> config.* ... actually local.teardown (fail-fast), no configure
 reset_journal
