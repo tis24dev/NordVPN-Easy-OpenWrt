@@ -532,6 +532,19 @@ nordvpn_easy_fenced_journal_merge() {
 	nordvpn_easy_journal_set "$@"
 }
 
+# The owner-fenced TERMINAL finish (journal_finish): a superseded/reaped owner REFUSES
+# (return 1, swallowed by the caller's `|| true`), so a reaped-then-thawed worker cannot
+# stamp done/failed over the new owner's terminal record (the S7 inc 5c note). A legit
+# owner -- or a tokenless caller (if-claimed) -- finishes normally. Like fenced_journal_set
+# this rides journal_finish's FULL-document write, so the terminal record carries only
+# journal_finish's fields; reap_stale and open_txn both short-circuit on a terminal phase
+# before reading the schema-2 fields, so dropping them is control-flow-harmless. The legacy
+# journal_finish in journal.sh stays unfenced for the connect-apply shadow dual-write.
+nordvpn_easy_fenced_journal_finish() {
+	nordvpn_easy_owner_fence_denied && { nordvpn_easy_log_phase 'runtime' 'refusing journal finish: superseded execution-lock owner'; return 1; }
+	nordvpn_easy_journal_finish "$@"
+}
+
 nordvpn_easy_fenced_uci_commit() {
 	nordvpn_easy_owner_fence_denied && { nordvpn_easy_log_blocker 'runtime' 'refusing uci commit: superseded execution-lock owner'; return 1; }
 	uci commit "$@"

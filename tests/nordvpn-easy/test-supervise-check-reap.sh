@@ -46,6 +46,10 @@ nordvpn_easy_ping_interface() { return 0; }   # health-check "passes" -> early r
 nordvpn_easy_check_once_finish() { :; }
 nordvpn_easy_target_identity() { printf '%s' 'fp-NEW:1'; }
 nordvpn_easy_orchestrator_mode() { printf '%s' "${MODE:-legacy}"; }
+# This test isolates the 5d REAP wiring; stub the inc-8 re-drive so a same-target
+# crashed record does not actually get re-driven here (the re-drive itself is covered
+# by test-supervise-reaper.sh).
+nordvpn_easy_supervise() { :; }
 
 seed_foreign_record() {
 	rm -f "$NORDVPN_EASY_JOURNAL_FILE"
@@ -66,7 +70,8 @@ nordvpn_easy_check_once >/dev/null 2>&1 || true
 assert_eq 'failed' "$(nordvpn_easy_journal_get phase)" 'under orchestrator=supervisor check_once reaps a foreign stale record at head'
 assert_eq 'local.reaped_stale' "$(nordvpn_easy_journal_get last_error)" 'the reaped record carries the reaped_stale cause'
 
-# --- supervisor + SAME-target crashed record: left for the re-drive (not reaped) --
+# --- supervisor + SAME-target crashed record: the 5d reap LEAVES it (inc 8 re-drives
+# it instead -- stubbed here; see test-supervise-reaper.sh) --------------------------
 seed_same_target() {
 	rm -f "$NORDVPN_EASY_JOURNAL_FILE"
 	NORDVPN_EASY_OWNER_TOKEN=''

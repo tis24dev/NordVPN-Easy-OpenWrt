@@ -626,6 +626,34 @@ nordvpn_easy_check_once() {
 		nordvpn_easy_supervise_reap_stale_journal "$(nordvpn_easy_target_identity 2>/dev/null || printf '')" || true
 	fi
 
+	# S7 inc 8: journal-authoritative in-flight recovery -- re-drive a CRASHED apply. The
+	# 5d reap above only stamps FOREIGN target-mismatch records FAILED; a SAME-target
+	# crashed apply (a non-terminal record whose owner_pid is DEAD) is deliberately left to
+	# this branch. When the journal holds one, re-drive it IN THIS PROCESS, under the
+	# execution lock + owner token already held from core.sh acquire_lock (the in-lock TTL
+	# reaper reclaimed the dead owner's lock and minted our token). nordvpn_easy_supervise's
+	# open_txn ADOPTS the record (keeps txn_id, clears fetch_done so the lost PRIVATE_KEY is
+	# re-fetched) and re-runs the idempotent phases to a TERMINAL state -- so a persistently
+	# failing re-drive ends FAILED and is NOT re-driven again (no loop), and the single held
+	# lock + owner fence prevent a double-apply. Strict no-op under legacy (the gate
+	# short-circuits) and when there is no same-target crashed record.
+	if [ "$(nordvpn_easy_orchestrator_mode)" = 'supervisor' ] && command -v nordvpn_easy_supervise >/dev/null 2>&1; then
+		local redrive_phase redrive_target redrive_owner_pid redrive_target_now
+		redrive_phase="$(nordvpn_easy_journal_get phase 2>/dev/null || printf '')"
+		redrive_target="$(nordvpn_easy_journal_get target_fingerprint 2>/dev/null || printf '')"
+		redrive_owner_pid="$(nordvpn_easy_journal_get owner_pid 2>/dev/null || printf '')"
+		redrive_target_now="$(nordvpn_easy_target_identity 2>/dev/null || printf '')"
+		if ! nordvpn_easy_supervise_phase_is_terminal "$redrive_phase" &&
+			[ -n "$redrive_target" ] &&
+			[ "$redrive_target" = "$redrive_target_now" ] &&
+			! nordvpn_easy_supervise_pid_alive "$redrive_owner_pid"; then
+			log "healthcheck: re-driving crashed same-target apply (phase=${redrive_phase}, dead owner_pid=${redrive_owner_pid:-unknown})"
+			nordvpn_easy_supervise || true
+			nordvpn_easy_check_once_finish
+			return 0
+		fi
+	fi
+
 	log "healthcheck: starting VPN health-check on interface $VPN_IF (failure_retry_delay=${FAILURE_RETRY_DELAY:-unset})"
 
 	if nordvpn_easy_ping_interface "$VPN_IF"; then

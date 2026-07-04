@@ -433,7 +433,7 @@ nordvpn_easy_supervise() {
 			# VERIFYING is non-fatal.
 			nordvpn_easy_run_phase 'verifying' 60 1 _supervise_verify ||
 				nordvpn_easy_log_phase 'supervise' 'verification phase reported non-zero (non-fatal)'
-			nordvpn_easy_journal_finish 0 "${RESOLVED_COUNTRY_CODE:-${VPN_COUNTRY:-}}" >/dev/null 2>&1 || true
+			nordvpn_easy_fenced_journal_finish 0 "${RESOLVED_COUNTRY_CODE:-${VPN_COUNTRY:-}}" >/dev/null 2>&1 || true
 			return 0
 		fi
 	fi
@@ -443,7 +443,7 @@ nordvpn_easy_supervise() {
 	last_error="$(nordvpn_easy_journal_get last_error 2>/dev/null || printf '')"
 	[ -n "$last_error" ] || last_error='config.supervise'
 	nordvpn_easy_record_last_error "supervise: convergence failed ($last_error)"
-	nordvpn_easy_journal_finish 1 '' >/dev/null 2>&1 || true
+	nordvpn_easy_fenced_journal_finish 1 '' >/dev/null 2>&1 || true
 	return 1
 }
 

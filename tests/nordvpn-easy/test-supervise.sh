@@ -259,6 +259,19 @@ nordvpn_easy_supervise || fail 'a fully-successful supervised apply must return 
 assert_eq 'validate persist hooks converge verify' "$(tr '\n' ' ' < "$CALL_LOG" | sed 's/ $//')" 'supervise runs the phases in order'
 assert_eq 'done' "$(nordvpn_easy_journal_get phase)" 'a successful apply finishes the journal as done'
 
+# inc 8: the terminal finish is owner-FENCED. A superseded owner (token mismatch) must
+# NOT stamp the journal done at the finish site -- proves nordvpn_easy_supervise calls
+# the fenced_journal_finish wrapper, not the unfenced journal_finish.
+reset_journal
+MODE='supervisor' DESIRED_ENABLED='1' TARGET='fp-NEW:1'
+mkdir -p "$LOCK_DIR"
+printf '%s\n' 'someone-else' > "$LOCK_DIR/token"
+NORDVPN_EASY_OWNER_TOKEN='mine'
+nordvpn_easy_supervise >/dev/null 2>&1 || true
+[ "$(nordvpn_easy_journal_get phase)" != 'done' ] || fail 'inc8: a superseded owner must NOT stamp the terminal journal done (fenced finish site)'
+NORDVPN_EASY_OWNER_TOKEN=''
+rm -f "$LOCK_DIR/token"
+
 # hooks non-fatal: a hooks failure does NOT abort the apply
 reset_journal
 MODE='supervisor' DESIRED_ENABLED='1' P_HOOKS_RC=1
