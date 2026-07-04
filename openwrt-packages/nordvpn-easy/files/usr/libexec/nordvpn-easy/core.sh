@@ -994,7 +994,7 @@ ACTION_STARTED_AT=''
 
 if [ $# -gt 0 ]; then
   case "$1" in
-    check|stop_vpn|reconnect|reconcile|setup|rotate|refresh_countries|refresh_countries_force|server_catalog|public_ip|operation_status|vpn_status|status_json|diagnostics_log|diagnostics_summary|run|help)
+    check|stop_vpn|reconnect|reconcile|setup|rotate|refresh_countries|refresh_countries_force|server_catalog|public_ip|operation_status|vpn_status|status_json|diagnostics_log|diagnostics_summary|supervise|run|help)
       ACTION="$1"
       shift
       ;;
@@ -1138,6 +1138,19 @@ case "$ACTION" in
   run|check)
     check_once
     ACTION_RC=$?
+    ;;
+  supervise)
+    # 2nd structural flag gate (S7 inc 5c): the supervised apply state machine runs
+    # ONLY under orchestrator=supervisor and ONLY for the enable apply; disable and
+    # legacy stay on the existing path. Placed after acquire_lock so the in-lock TTL
+    # reaper has already fired at head.
+    if [ "$(nordvpn_easy_orchestrator_mode)" != 'supervisor' ] || [ "${DESIRED_ENABLED:-0}" != '1' ]; then
+      log 'supervise: orchestrator=legacy or disable requested; staying on legacy path (no-op)'
+      ACTION_RC=0
+    else
+      nordvpn_easy_supervise
+      ACTION_RC=$?
+    fi
     ;;
   reconcile)
     VALID_RC=0

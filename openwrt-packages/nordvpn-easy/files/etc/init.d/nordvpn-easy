@@ -38,7 +38,7 @@ SERVICE_BACKEND_PAYLOAD_SIGNATURE='render-contract-v3'
 NORDVPN_EASY_RC_BUSY="${NORDVPN_EASY_RC_BUSY:-75}"
 # OpenWrt rc.common consumes the command/help metadata.
 # shellcheck disable=SC2034
-EXTRA_COMMANDS='connect disconnect stop_vpn begin_connect_apply abort_connect_apply reconnect reconcile setup check rotate refresh_countries refresh_countries_force server_catalog public_ip operation_status vpn_status status_json diagnostics_log diagnostics_summary install_hooks remove_hooks disable_runtime render_runtime_config'
+EXTRA_COMMANDS='connect disconnect stop_vpn begin_connect_apply abort_connect_apply reconnect reconcile setup check rotate refresh_countries refresh_countries_force server_catalog public_ip operation_status vpn_status status_json diagnostics_log diagnostics_summary install_hooks remove_hooks disable_runtime render_runtime_config supervise'
 # shellcheck disable=SC2034
 EXTRA_HELP='  connect               Enable, run setup, then install hooks transactionally
   disconnect            Disable runtime and remove hooks
@@ -673,6 +673,24 @@ setup() {
 check() {
 	log_service_info 'manual health-check requested'
 	run_core_action check
+}
+
+# 1st structural flag gate (S7 inc 5c): the supervised apply verb. Under
+# orchestrator=legacy (default) it is a strict no-op, so the legacy connect/setup
+# path is untouched. Only reachable via an explicit `/etc/init.d/nordvpn-easy
+# supervise` invocation; nothing in the package calls it yet.
+supervise() {
+	log_service_info 'supervisor apply requested'
+	load_service_config || return 1
+	if [ "$(nordvpn_easy_orchestrator_mode)" != 'supervisor' ]; then
+		log_service_info 'orchestrator mode is legacy; supervise verb is a no-op (staying on legacy path)'
+		return 0
+	fi
+	if [ "${cfg_enabled:-0}" != '1' ]; then
+		log_service_info 'disable requested; supervisor refuses in inc 5c, staying on legacy path'
+		return 0
+	fi
+	run_core_action supervise
 }
 
 rotate() {
