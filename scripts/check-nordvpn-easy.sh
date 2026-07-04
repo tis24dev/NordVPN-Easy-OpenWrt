@@ -56,6 +56,7 @@ SH_FILES=(
 	"$ROOT_DIR/tests/nordvpn-easy/test-common-lock.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-run-phase.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-supervise.sh"
+	"$ROOT_DIR/tests/nordvpn-easy/test-supervise-check-reap.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-common-temp.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-init-cron.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-init-run-core.sh"
@@ -116,6 +117,7 @@ SHELL_TESTS=(
 	test-journal-dualwrite.sh
 	test-run-phase.sh
 	test-supervise.sh
+	test-supervise-check-reap.sh
 	test-json-escape.sh
 	test-credentials-errors.sh
 	test-catalog-fixtures.sh

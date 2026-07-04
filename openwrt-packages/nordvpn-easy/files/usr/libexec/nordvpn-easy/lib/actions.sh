@@ -614,6 +614,18 @@ nordvpn_easy_desired_state_signature() {
 nordvpn_easy_check_once() {
 	local healthcheck_pre_wait_signature=''
 
+	# S7 inc 5d: under orchestrator=supervisor, reap a FOREIGN stale supervise journal
+	# record (a crashed apply for a now-superseded config identity) at the head of the
+	# periodic health-check, mirroring the reap at the head of nordvpn_easy_supervise.
+	# A strict no-op under orchestrator=legacy (the default) -- the gate short-circuits
+	# before any journal access. The journal stays SHADOW (nothing reads it for control)
+	# until a later increment makes check_once journal-authoritative + re-drives, so in
+	# this increment the reap is cleanup/observability only. reap_stale never touches a
+	# SAME-target record, so a same-config crashed apply is left for that re-drive.
+	if [ "$(nordvpn_easy_orchestrator_mode)" = 'supervisor' ] && command -v nordvpn_easy_supervise_reap_stale_journal >/dev/null 2>&1; then
+		nordvpn_easy_supervise_reap_stale_journal "$(nordvpn_easy_target_identity 2>/dev/null || printf '')" || true
+	fi
+
 	log "healthcheck: starting VPN health-check on interface $VPN_IF (failure_retry_delay=${FAILURE_RETRY_DELAY:-unset})"
 
 	if nordvpn_easy_ping_interface "$VPN_IF"; then
