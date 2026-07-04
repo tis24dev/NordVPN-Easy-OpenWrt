@@ -173,6 +173,42 @@ assert_eq 'network.connectivity' "$(nordvpn_easy_journal_get last_error)" 'a con
 unset FETCH_RC TEARDOWN_RC CONFIGURE_RC BRINGUP_RC WAIT_RC
 
 # =============================================================================
+# GROUP 3b: _supervise_persist arms the kill-switch EARLY (inc 6) -- it stages
+# enabled=1, commits, THEN calls ensure_vpn_firewall so the teardown->configure
+# window in CONVERGE is already protected. A firewall arm failure fails the phase.
+# =============================================================================
+uci() { return 0; }
+nordvpn_easy_fenced_uci_commit() { return 0; }
+FW_ARMED="$TMP_DIR/fw-armed"
+FW_RC=0
+nordvpn_easy_ensure_vpn_firewall() { : > "$FW_ARMED"; return "${FW_RC:-0}"; }
+
+reset_journal
+rm -f "$FW_ARMED"
+_supervise_persist || fail 'persist must succeed with the stubs'
+[ -f "$FW_ARMED" ] || fail 'inc6: persist must arm the kill-switch (ensure_vpn_firewall) early'
+
+reset_journal
+rm -f "$FW_ARMED"
+FW_RC=1
+pf_rc=0
+_supervise_persist || pf_rc=$?
+[ "$pf_rc" -ne 0 ] || fail 'inc6: a kill-switch arm failure must fail persist'
+assert_eq 'local.persist' "$(nordvpn_easy_journal_get last_error)" 'inc6: a firewall arm failure is classified local.persist'
+FW_RC=0
+
+# The kill-switch is armed AFTER the enabled commit: a commit failure must fail
+# persist WITHOUT arming the firewall (pins the arm-after-commit order).
+reset_journal
+rm -f "$FW_ARMED"
+nordvpn_easy_fenced_uci_commit() { return 1; }
+cf_rc=0
+_supervise_persist || cf_rc=$?
+[ "$cf_rc" -ne 0 ] || fail 'inc6: persist must fail when the enabled commit fails'
+[ ! -f "$FW_ARMED" ] || fail 'inc6: the kill-switch must NOT be armed when the enabled commit failed (arm is AFTER commit)'
+nordvpn_easy_fenced_uci_commit() { return 0; }
+
+# =============================================================================
 # GROUP 4: nordvpn_easy_supervise orchestration -- the flag gate, disable refusal,
 # phase order. The phase BODIES are overridden with loggers so this exercises the
 # orchestration (gates, order, journal finish), not the provision internals.

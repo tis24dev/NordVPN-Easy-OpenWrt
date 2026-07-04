@@ -253,12 +253,25 @@ _supervise_persist() {
 		nordvpn_easy_supervise_record_error 'local.persist' 'failed to stage enabled=1'
 		return 1
 	fi
-	if nordvpn_easy_fenced_uci_commit nordvpn_easy; then
-		return 0
+	if ! nordvpn_easy_fenced_uci_commit nordvpn_easy; then
+		uci -q revert nordvpn_easy 2>/dev/null || true
+		nordvpn_easy_supervise_record_error 'local.persist' 'enabled-flag commit refused or failed (superseded owner?)'
+		return 1
 	fi
-	uci -q revert nordvpn_easy 2>/dev/null || true
-	nordvpn_easy_supervise_record_error 'local.persist' 'enabled-flag commit refused or failed (superseded owner?)'
-	return 1
+	# S7 inc 6: arm the kill-switch EARLY, before CONVERGE's teardown. ensure_vpn_firewall
+	# is a pure function of DESIRED (a clean-slate rebuild) whose kill-switch rules drop
+	# LAN->WAN FORWARDING (the client leak path), NOT the router's own egress -- so arming
+	# it here does not block the later CONVERGE fetch (a router-output call to the NordVPN
+	# API). This closes the window where TEARDOWN has removed the tunnel but CONFIGURE has
+	# not yet committed the firewall: a kill/reap mid-CONFIGURE finds the kill-switch already
+	# up, so LAN traffic cannot fall back to the bare WAN and leak. CONFIGURE re-runs
+	# ensure_vpn_firewall idempotently (same DESIRED -> same ruleset). Supervisor-only: the
+	# legacy path still arms the firewall only inside configure.
+	if ! nordvpn_easy_ensure_vpn_firewall; then
+		nordvpn_easy_supervise_record_error 'local.persist' 'kill-switch arm-early (firewall commit) failed'
+		return 1
+	fi
+	return 0
 }
 
 # HOOKS (non-fatal): core.sh does NOT source hooks.sh, so source it here, install
