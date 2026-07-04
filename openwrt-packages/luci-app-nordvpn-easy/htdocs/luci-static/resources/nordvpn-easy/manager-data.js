@@ -108,6 +108,12 @@ function parseLocalStatus(raw) {
 		rpc_contract_level: Number(status.rpc_contract_level || 1),
 		journal_phase: String(status.journal_phase || ''),
 		journal_txn_id: String(status.journal_txn_id || ''),
+		// S8: the desired vs applied config identity, so the supervised poll can read
+		// convergence off the backend's own signal (applied == config once mark_applied
+		// ran). Surfaced for display + future use; the authoritative success signal is
+		// journal_phase === 'done' bound to the observed txn.
+		config_fingerprint: String(status.config_fingerprint || ''),
+		applied_fingerprint: String(status.applied_fingerprint || ''),
 		current_server_hostname: String(status.current_server_hostname || ''),
 		current_server_station: String(status.current_server_station || ''),
 		current_server_city: String(status.current_server_city || ''),

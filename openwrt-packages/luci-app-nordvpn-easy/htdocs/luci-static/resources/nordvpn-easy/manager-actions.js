@@ -424,6 +424,53 @@ function applyConvergencePollIntervalMs(state) {
 		RUNTIME_ACTION_RECOVERY_POLL_MS;
 }
 
+// S8: the supervised apply reads convergence off the supervisor's OWN journal signal
+// instead of re-deriving it from the live country/station/handshake state. A journal
+// record is TERMINAL when its phase is done or failed.
+function supervisedApplyPhaseIsTerminal(phase) {
+	return phase === 'done' || phase === 'failed';
+}
+
+// Record the journal txn we watch go through a NON-terminal (in-flight) phase. Binding
+// the terminal verdict to a txn we actually saw applying is what makes the poll safe
+// against a STALE leftover done/failed from a PRIOR apply (which we never saw applying,
+// and whose record the async forked worker may briefly still show on the first poll)
+// AND against the open_txn adoption case (an adopted same-target txn is seen applying
+// here, then done, so it is attributed correctly).
+function noteSupervisedApplyProgress(state, status) {
+	if (!state)
+		return;
+	const txn = String((status && status.journal_txn_id) || '');
+	const phase = String((status && status.journal_phase) || '');
+	if (txn !== '' && !supervisedApplyPhaseIsTerminal(phase))
+		state.supervisedApplyObservedTxn = txn;
+}
+
+// SUCCESS: the txn we watched applying is now done. journal_phase === 'done' is the
+// authoritative signal the supervisor finished (mark_applied + the fenced finish ran);
+// the durable applied_fingerprint is NOT used as the success arm because it can already
+// equal config_fingerprint before this apply runs (a no-op / re-apply) and would
+// false-fire mid-flight.
+function supervisedApplyConverged(state, status) {
+	const observed = state && state.supervisedApplyObservedTxn;
+	if (!observed)
+		return false;
+	const txn = String((status && status.journal_txn_id) || '');
+	if (txn !== observed)
+		return false;
+	return String((status && status.journal_phase) || '') === 'done';
+}
+
+// FAILURE: the txn we watched applying is now failed. Fast-fails before the timeout.
+function supervisedApplyFailed(state, status) {
+	const observed = state && state.supervisedApplyObservedTxn;
+	if (!observed)
+		return false;
+	const txn = String((status && status.journal_txn_id) || '');
+	return txn === observed &&
+		String((status && status.journal_phase) || '') === 'failed';
+}
+
 function noteConnectApplyServerMarker(state, status) {
 	const runtimeStatus = status || {};
 	const startedAt = Number(runtimeStatus.connect_apply_started_at || 0);
@@ -530,6 +577,36 @@ function awaitRuntimeConvergenceAfterDispatch(state, savedConfig, applyAttemptId
 				return rejectStaleApplyAttempt();
 
 			const runtimeStatus = status || null;
+
+			// S8: the supervised apply (dispatchAction 'apply') reads convergence off the
+			// supervisor's OWN journal signal, bound to a txn we watched go in-flight, and
+			// RETURNS -- it never falls through to the legacy connect_apply_* markers or the
+			// live-state heuristic (which could mask a supervisor failure as success). The
+			// legacy connect phase passes no dispatchAction, so this branch is inert for it.
+			if (dispatchAction === 'apply') {
+				noteSupervisedApplyProgress(state, runtimeStatus);
+
+				if (supervisedApplyFailed(state, runtimeStatus)) {
+					const supervisedFailureMessage = String((runtimeStatus && runtimeStatus.last_error) || '').trim() ||
+						_('VPN connect failed.');
+
+					throw new Error(supervisedFailureMessage);
+				}
+
+				if (supervisedApplyConverged(state, runtimeStatus)) {
+					service.notifyInfo(successMessage);
+					return finishApplyCycle(state, {
+						suppressAutoReconcile: true,
+						applyAttemptId: applyAttemptId
+					});
+				}
+
+				return new Promise(function(resolve, reject) {
+					setTimeout(function() {
+						pollForConvergence().then(resolve, reject);
+					}, applyConvergencePollIntervalMs(state));
+				});
+			}
 
 			if (runtimeStatus)
 				noteConnectApplyServerMarker(state, runtimeStatus);
@@ -826,6 +903,14 @@ function runApplyCycleSupervisedApply(state, savedConfig, applyAttemptId) {
 	if (!applyAttemptIsCurrent(state, applyAttemptId))
 		return rejectStaleApplyAttempt();
 
+	// S8: start with NO observed txn, so this apply's terminal verdict is bound only to a
+	// txn we watch go through an in-flight phase from here on (never a stale leftover).
+	// supervisedApplyInFlight tells the background poller NOT to finish this apply via the
+	// live-state heuristic (which could mask a supervisor failure as success) -- the
+	// supervised poll below is the sole terminal. Cleared in finishApplyCycle and by the
+	// caller's capability-absent fallback (which reverts to the legacy live-state path).
+	state.supervisedApplyObservedTxn = '';
+	state.supervisedApplyInFlight = true;
 	return awaitRuntimeConvergenceAfterDispatch(state, savedConfig, applyAttemptId, APPLY_CYCLE_SUCCESS_CONNECTED, 'apply');
 }
 
@@ -922,6 +1007,9 @@ function runApplyCycle(viewState, state, ev, options) {
 		if (applyIsSupervisorCapable(state)) {
 			return runApplyCycleSupervisedApply(state, savedConfig, applyAttemptId).catch(function(err) {
 				if (isCapabilityAbsentError(err)) {
+					// Reverting to the legacy live-state path: let the background poller
+					// finish it again (clear the supervised guard set at dispatch).
+					state.supervisedApplyInFlight = false;
 					return runApplyCycleStopPhase(viewState, state, submitted, applyAttemptId).then(function() {
 						return runApplyCycleConnectPhase(state, savedConfig, applyAttemptId);
 					});
@@ -1797,7 +1885,12 @@ function updateLocalStatus(state, options) {
 
 			renderLocalStatusSnapshot(state, status);
 
+			// S8: do NOT let the background poller finish a SUPERVISED apply via the
+			// live-state heuristic -- a transient country/station/handshake match could
+			// mask a supervisor FAILURE as success. The supervised poll (bound to the
+			// journal terminal) is the sole terminal for it; legacy applies are unaffected.
 			if (state.saveApplyInProgress && state.currentApplyAttempt &&
+				!state.supervisedApplyInFlight &&
 				applyRuntimeConvergenceSucceeded(
 					savedConfigForApplyState(state),
 					status,
@@ -1982,6 +2075,8 @@ function finishApplyCycle(state, options) {
 	state.applyPhase = '';
 	state.saveApplyInProgress = false;
 	state.applyTargetEnabled = null;
+	// S8: this apply is over; the background poller may resume its live-state finish.
+	state.supervisedApplyInFlight = false;
 	// Re-enable the manager controls deterministically when the apply cycle
 	// settles, rather than waiting for the forced status refresh below: if that
 	// refresh fails or hangs, the controls would otherwise stay disabled.
@@ -2145,6 +2240,9 @@ function handleSaveApply(viewState, state, ev) {
 return baseclass.extend({
 	runApplyCycle: runApplyCycle,
 	applyIsSupervisorCapable: applyIsSupervisorCapable,
+	noteSupervisedApplyProgress: noteSupervisedApplyProgress,
+	supervisedApplyConverged: supervisedApplyConverged,
+	supervisedApplyFailed: supervisedApplyFailed,
 	runApplyCycleSupervisedApply: runApplyCycleSupervisedApply,
 	applyRuntimeConvergenceSucceeded: applyRuntimeConvergenceSucceeded,
 	maybeRecoverOrphanedRuntime: maybeRecoverOrphanedRuntime,

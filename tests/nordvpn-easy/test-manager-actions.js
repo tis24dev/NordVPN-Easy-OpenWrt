@@ -227,6 +227,45 @@ assert.equal(managerActions.applyIsSupervisorCapable({ currentLocalStatus: null 
 assert.equal(managerActions.applyIsSupervisorCapable({}), false, 'no currentLocalStatus -> legacy apply');
 assert.equal(managerActions.applyIsSupervisorCapable(null), false, 'no state -> legacy apply');
 
+// S8: the supervised poll reads convergence off the supervisor's journal, bound to a
+// txn we watched go IN-FLIGHT. This binding is what makes it stale-safe.
+assert.equal(typeof managerActions.supervisedApplyConverged, 'function', 'supervisedApplyConverged exported');
+assert.equal(typeof managerActions.supervisedApplyFailed, 'function', 'supervisedApplyFailed exported');
+assert.equal(typeof managerActions.noteSupervisedApplyProgress, 'function', 'noteSupervisedApplyProgress exported');
+
+// HOLE A (stale leftover): a terminal record from a PRIOR apply -- which we never saw
+// applying (the forked worker may briefly still show it on the first poll) -- must NOT
+// be accepted as this apply's result.
+(function() {
+	const s = {};
+	managerActions.noteSupervisedApplyProgress(s, { journal_txn_id: 't1', journal_phase: 'done' });
+	assert.equal(s.supervisedApplyObservedTxn, undefined, 'a terminal (done) record is not recorded as observed');
+	assert.equal(managerActions.supervisedApplyConverged(s, { journal_txn_id: 't1', journal_phase: 'done' }), false, 'a leftover done on an unobserved txn is NOT converged (stale-safe)');
+	assert.equal(managerActions.supervisedApplyFailed(s, { journal_txn_id: 't1', journal_phase: 'failed' }), false, 'a leftover failed on an unobserved txn is NOT this apply');
+})();
+
+// A fresh txn watched applying -> done IS converged (and only for that txn). This also
+// covers HOLE B: an ADOPTED same-target txn is seen applying here, then done, so it is
+// attributed correctly rather than timing out.
+(function() {
+	const s = {};
+	managerActions.noteSupervisedApplyProgress(s, { journal_txn_id: 't2', journal_phase: 'converge' });
+	assert.equal(s.supervisedApplyObservedTxn, 't2', 'a non-terminal (converge) phase is recorded as observed');
+	assert.equal(managerActions.supervisedApplyConverged(s, { journal_txn_id: 't2', journal_phase: 'converge' }), false, 'the observed txn still in-flight is not yet converged');
+	assert.equal(managerActions.supervisedApplyConverged(s, { journal_txn_id: 't2', journal_phase: 'done' }), true, 'the observed txn going done is converged');
+	assert.equal(managerActions.supervisedApplyConverged(s, { journal_txn_id: 't3', journal_phase: 'done' }), false, 'a DIFFERENT txn going done is not this apply');
+	assert.equal(managerActions.supervisedApplyFailed(s, { journal_txn_id: 't2', journal_phase: 'failed' }), true, 'the observed txn going failed is a failure');
+})();
+
+// No-op / re-apply: applied_fingerprint already equals config_fingerprint at start must
+// NOT report an instant false success -- success needs the observed txn to reach done.
+(function() {
+	const s = {};
+	assert.equal(managerActions.supervisedApplyConverged(s, { journal_txn_id: 't6', journal_phase: 'applying', config_fingerprint: 'x', applied_fingerprint: 'x' }), false, 'applied==config while applying is NOT converged (no false instant success)');
+	managerActions.noteSupervisedApplyProgress(s, { journal_txn_id: 't6', journal_phase: 'applying' });
+	assert.equal(managerActions.supervisedApplyConverged(s, { journal_txn_id: 't6', journal_phase: 'done' }), true, 'the observed txn going done converges');
+})();
+
 assert.equal(managerData.parseEnabledFlag(undefined), false, 'missing enabled option is treated as disabled');
 assert.equal(managerData.parseEnabledFlag('0'), false, 'explicit disabled value is treated as disabled');
 assert.equal(managerData.parseEnabledFlag('1'), true, 'explicit enabled value is treated as enabled');

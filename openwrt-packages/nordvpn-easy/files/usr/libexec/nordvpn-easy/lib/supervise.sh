@@ -146,6 +146,14 @@ nordvpn_easy_supervise_record_error() {
 	elif command -v nordvpn_easy_journal_set >/dev/null 2>&1; then
 		nordvpn_easy_journal_set "last_error=$class" >/dev/null 2>&1 || true
 	fi
+	# S8: also write the human message to the runtime last-error CACHE (which status_json
+	# emits as last_error and the LuCI Save&Apply surfaces), so a supervised failure shows
+	# the actual reason -- the journal only carries the classification token, and the JS
+	# reads the cache, not the journal, for last_error. The apply verb cleared this cache
+	# synchronously before the fork, so it reflects only THIS apply.
+	if command -v nordvpn_easy_record_last_error >/dev/null 2>&1; then
+		nordvpn_easy_record_last_error "supervise: ${detail:-$class}" >/dev/null 2>&1 || true
+	fi
 }
 
 # Stamp FAILED a FOREIGN (target-mismatch) non-terminal record whose owner is
@@ -437,12 +445,17 @@ nordvpn_easy_supervise() {
 			return 0
 		fi
 	fi
-	# A fatal phase (validate|persist|converge) failed. The classified cause is in
-	# the journal last_error; surface it to the last_error cache so the core.sh
-	# epilogue reports a real cause, stamp the journal FAILED, and return nonzero.
-	last_error="$(nordvpn_easy_journal_get last_error 2>/dev/null || printf '')"
-	[ -n "$last_error" ] || last_error='config.supervise'
-	nordvpn_easy_record_last_error "supervise: convergence failed ($last_error)"
+	# A fatal phase (validate|persist|converge) failed. The failing phase's record_error
+	# already wrote the HUMAN detail to the last_error CACHE FILE (S8) -- it runs in the
+	# run_phase background subshell so its RECORDED shell-flag does not reach here, but the
+	# cache file persists. Only fall back to the classified journal token if that cache is
+	# still EMPTY (nothing recorded a cause yet), so we do not clobber the specific message
+	# the LuCI Save&Apply surfaces. Then stamp the journal FAILED.
+	if [ ! -s "${NORDVPN_EASY_LAST_ERROR_CACHE:-/tmp/run/nordvpn-easy/last_error}" ]; then
+		last_error="$(nordvpn_easy_journal_get last_error 2>/dev/null || printf '')"
+		[ -n "$last_error" ] || last_error='config.supervise'
+		nordvpn_easy_record_last_error "supervise: convergence failed ($last_error)"
+	fi
 	nordvpn_easy_fenced_journal_finish 1 '' >/dev/null 2>&1 || true
 	return 1
 }

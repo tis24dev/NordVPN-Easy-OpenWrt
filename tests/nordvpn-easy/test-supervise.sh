@@ -40,6 +40,10 @@ CALL_LOG="$TMP_DIR/calls"
 SENTINEL="$TMP_DIR/teardown-ran"
 LOCK_DIR="$TMP_DIR/lock"
 mkdir -p "$LOCK_DIR"
+# The last-error cache the supervise epilogue checks (so it does not clobber a detail
+# a phase already recorded); point it at the same temp file the record_last_error stub
+# writes, so the epilogue's `-s` check and the stub agree.
+NORDVPN_EASY_LAST_ERROR_CACHE="$TMP_DIR/last_error_cache"
 
 # shellcheck disable=SC1090
 . "$LIB/journal.sh"
@@ -55,9 +59,21 @@ nordvpn_easy_log_blocker() { :; }
 nordvpn_easy_record_last_error() { printf '%s\n' "${1:-}" > "$TMP_DIR/last_error_cache"; }
 
 reset_journal() {
-	rm -f "$NORDVPN_EASY_JOURNAL_FILE" "$CALL_LOG" "$SENTINEL" "$NORDVPN_EASY_RUN_DIR/self-ifevent"
+	rm -f "$NORDVPN_EASY_JOURNAL_FILE" "$CALL_LOG" "$SENTINEL" "$NORDVPN_EASY_RUN_DIR/self-ifevent" "$NORDVPN_EASY_LAST_ERROR_CACHE"
 	NORDVPN_EASY_OWNER_TOKEN=''
 }
+
+# =============================================================================
+# S8: record_error writes BOTH the journal (classification token) AND the runtime
+# last-error CACHE (the human message the JS Save&Apply surfaces via status.last_error).
+# =============================================================================
+reset_journal
+rm -f "$TMP_DIR/last_error_cache"
+nordvpn_easy_journal_write_full 'phase=converge' 'txn_id=T-err'
+nordvpn_easy_supervise_record_error 'network.fetch' 'provision prerequisite fetch failed'
+assert_eq 'network.fetch' "$(nordvpn_easy_journal_get last_error)" 'S8: record_error writes the classification token to the journal'
+[ -r "$TMP_DIR/last_error_cache" ] || fail 'S8: record_error must write the runtime last-error cache'
+grep -q 'provision prerequisite fetch failed' "$TMP_DIR/last_error_cache" || fail 'S8: the cache carries the human failure detail (surfaced as status.last_error)'
 
 # =============================================================================
 # GROUP 1: reap_stale_journal -- FAILED only a FOREIGN, dead-owner, non-terminal
@@ -293,5 +309,20 @@ nordvpn_easy_supervise || fat_rc=$?
 [ "$fat_rc" -ne 0 ] || fail 'a converge failure must make the apply fail'
 assert_eq 'failed' "$(nordvpn_easy_journal_get phase)" 'a fatal phase failure finishes the journal as failed'
 grep -q '^verify$' "$CALL_LOG" && fail 'verify must NOT run after a converge failure' || :
+
+# S8: the fatal epilogue must NOT clobber a human detail a phase already recorded in the
+# last-error cache (the reason the LuCI Save&Apply surfaces). Pre-seed the cache, run a
+# failing apply -> the detail survives.
+reset_journal
+printf 'supervise: provision prerequisite fetch failed\n' > "$NORDVPN_EASY_LAST_ERROR_CACHE"
+MODE='supervisor' DESIRED_ENABLED='1' P_CONVERGE_RC=1
+nordvpn_easy_supervise >/dev/null 2>&1 || :
+grep -q 'provision prerequisite fetch failed' "$NORDVPN_EASY_LAST_ERROR_CACHE" || fail 'S8: the epilogue must not clobber a detail already in the last-error cache'
+# But with an EMPTY cache the epilogue DOES record a non-generic fallback cause.
+reset_journal
+MODE='supervisor' DESIRED_ENABLED='1' P_CONVERGE_RC=1
+nordvpn_easy_supervise >/dev/null 2>&1 || :
+grep -q 'convergence failed' "$NORDVPN_EASY_LAST_ERROR_CACHE" || fail 'S8: with an empty cache the epilogue records a non-generic fallback'
+P_CONVERGE_RC=0
 
 printf '%s\n' 'test-supervise.sh: ok'
