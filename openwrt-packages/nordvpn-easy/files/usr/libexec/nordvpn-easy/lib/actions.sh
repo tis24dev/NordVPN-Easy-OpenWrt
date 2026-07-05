@@ -479,6 +479,11 @@ nordvpn_easy_provision_vpn_connect_fresh() {
 		return 1
 	fi
 
+	# Tunnel is up and routing: reset the forwarded flows still pinned to the old
+	# exit so they re-establish through it instead of hanging with a stale NAT
+	# binding (the public-IP check below always does its own fresh detection).
+	nordvpn_easy_reset_forwarded_conntrack
+
 	verify_public_country_selection ||
 		log 'apply: public IP/country verification did not pass; leaving the tunnel up (status reflects the result)'
 	log 'apply: VPN provisioning completed'
@@ -540,6 +545,10 @@ nordvpn_easy_provision_vpn() {
 			log 'apply: VPN connection is not OK after provisioning'
 			return 1
 		fi
+
+		# Same tunnel-up reset as connect_fresh, for the rotate/reconcile/recovery
+		# path that reaches provisioning through this branch.
+		nordvpn_easy_reset_forwarded_conntrack
 
 		verify_public_country_selection ||
 			log 'apply: public IP/country verification did not pass; leaving the tunnel up (status reflects the result)'

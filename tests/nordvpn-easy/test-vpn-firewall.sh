@@ -186,4 +186,29 @@ nordvpn_easy_remove_app_firewall_sections
 [ "$(fwget firewall.nordvpn_ks6_1.target)" = '<none>' ] || { echo 'FAIL: IPv6 rule not removed on teardown' >&2; exit 1; }
 [ "$(fwget firewall.nordvpn_fwd_1.dest)" = '<none>' ] || { echo 'FAIL: forwarding not removed on teardown' >&2; exit 1; }
 
+# --- forwarded-conntrack reset (neptunResetConns analogue) --------------------
+VPN_IF='wg0'
+CT_ARGS="$TMP_DIR/conntrack.args"
+CT_STUB="$TMP_DIR/conntrack-stub"
+cat > "$CT_STUB" <<STUB
+#!/bin/sh
+printf '%s\n' "\$*" > "$CT_ARGS"
+# emulate two deleted flows on stdout plus a summary on stderr
+printf 'flow1\nflow2\n'
+printf 'conntrack v1: 2 flow entries have been deleted.\n' >&2
+exit 0
+STUB
+chmod +x "$CT_STUB"
+
+# tool present: deletes only the source-NATed (forwarded) flows and never fails.
+reset_rc=0
+NORDVPN_EASY_CONNTRACK="$CT_STUB" nordvpn_easy_reset_forwarded_conntrack || reset_rc=$?
+[ "$reset_rc" -eq 0 ] || { echo 'FAIL: conntrack reset must not fail the apply' >&2; exit 1; }
+[ "$(cat "$CT_ARGS" 2>/dev/null)" = '-D --src-nat' ] || { echo "FAIL: conntrack reset must scope to source-NATed flows (got: $(cat "$CT_ARGS" 2>/dev/null))" >&2; exit 1; }
+
+# tool absent (trimmed image): best-effort no-op, must still succeed.
+absent_rc=0
+NORDVPN_EASY_CONNTRACK="$TMP_DIR/no-such-conntrack" nordvpn_easy_reset_forwarded_conntrack || absent_rc=$?
+[ "$absent_rc" -eq 0 ] || { echo 'FAIL: a missing conntrack tool must degrade to a no-op' >&2; exit 1; }
+
 printf '%s\n' 'test-vpn-firewall.sh: ok'

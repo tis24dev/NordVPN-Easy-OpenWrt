@@ -635,6 +635,38 @@ nordvpn_easy_ensure_vpn_firewall() {
 	log "runtime: VPN firewall zone ${NORDVPN_EASY_FW_ZONE_NAME} ready for ${VPN_IF} (kill_switch=${kill_switch}, mtu_fix=${mtu_fix_value})"
 }
 
+# Reset the forwarded connections that were pinned to the previous exit so they
+# re-establish through the freshly-connected tunnel, mirroring the official
+# NordVPN app which resets pre-existing connections on connect (libtelio
+# FeatureFirewall neptunResetConns). A `firewall reload` deliberately keeps
+# conntrack intact (so it never drops the admin's own sessions), but that also
+# leaves a LAN->internet flow that was masqueraded out the WAN with a stale NAT
+# binding once the default route moves to ${VPN_IF}: it then hangs (packets go
+# into the tunnel with the old WAN source and are dropped by the peer) instead
+# of promptly re-routing, and with the kill switch off it can keep egressing the
+# bare WAN. Deleting only the source-NATed (forwarded, internet-bound) flows
+# fixes both: lan->router and router-local sessions are never source-NATed, so
+# the admin's SSH/LuCI session is left untouched.
+#
+# Best-effort: conntrack-tools may be trimmed from a custom image, so a missing
+# tool degrades to a no-op (the stale flows re-establish on their own timeout)
+# rather than failing the apply. NORDVPN_EASY_CONNTRACK lets the tests stub it.
+nordvpn_easy_reset_forwarded_conntrack() {
+	local conntrack_bin="${NORDVPN_EASY_CONNTRACK:-conntrack}"
+	local deleted
+
+	if ! command -v "$conntrack_bin" >/dev/null 2>&1; then
+		log "runtime: conntrack tool unavailable; skipping forwarded-flow reset on ${VPN_IF} (stale sessions will re-establish on timeout)"
+		return 0
+	fi
+
+	# `conntrack -D` prints one line per deleted flow to stdout and a summary to
+	# stderr, and exits non-zero when nothing matched; none of that is fatal here.
+	deleted="$("$conntrack_bin" -D --src-nat 2>/dev/null | grep -c . 2>/dev/null || true)"
+	log "runtime: reset ${deleted:-0} forwarded connection(s) to re-establish through ${VPN_IF}"
+	return 0
+}
+
 nordvpn_easy_set_vpn_server_in_uci() {
 	local public_key="$3"
 

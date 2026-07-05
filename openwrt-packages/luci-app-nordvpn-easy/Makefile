@@ -18,7 +18,7 @@ LUCI_DESCRIPTION:=User-facing LuCI integration for NordVPN Easy on OpenWrt, bund
 # force it to co-install and conflict on the shared backend files. Switching to
 # a feed model would mean dropping the bundling and adding the dependency.
 # tests/nordvpn-easy/test-package-lockstep.sh enforces this omission.
-LUCI_DEPENDS:=+ca-certificates +curl +jq +kmod-wireguard +wireguard-tools +firewall4 +luci-base +rpcd
+LUCI_DEPENDS:=+ca-certificates +curl +jq +kmod-wireguard +wireguard-tools +firewall4 +conntrack +luci-base +rpcd
 LUCI_PKGARCH:=all
 LUCI_URL:=$(NORDVPN_EASY_PACKAGE_URL)
 LUCI_MAINTAINER:=$(NORDVPN_EASY_PACKAGE_MAINTAINER)
