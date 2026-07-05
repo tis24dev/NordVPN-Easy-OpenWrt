@@ -132,4 +132,24 @@ assert_eq '0' "$RC" 'installing the block reports a change'
 	exit 1
 }
 
+# --- Mismatched markers (missing END) must NOT truncate the shared crontab -----
+# The removal awk clears its skip flag only at the END marker; a missing END would
+# otherwise drop every line after BEGIN, deleting unrelated root cron. The guard must
+# refuse (RC=1) and leave the original file byte-for-byte intact. (PR #81 review.)
+FOREIGN2='30 3 * * * /usr/bin/keep-me-safe'
+{
+	printf '%s\n' "$FOREIGN2"
+	printf '%s\n' "$CRON_BLOCK_BEGIN"
+	printf '%s\n' "$LINE1"
+	# NOTE: no END marker on purpose (corruption)
+	printf '%s\n' '15 4 * * * /usr/bin/also-keep-me'
+} > "$CRONTAB_PATH"
+BEFORE_HASH="$(cksum "$CRONTAB_PATH")"
+RC=0
+apply_crontab_block "$LINE2" || RC=$?
+assert_eq '1' "$RC" 'mismatched markers make apply_crontab_block refuse (RC=1)'
+assert_eq "$BEFORE_HASH" "$(cksum "$CRONTAB_PATH")" 'the crontab is left byte-for-byte unchanged on mismatched markers'
+assert_file_has_line "$FOREIGN2" "$CRONTAB_PATH" 'the foreign cron before BEGIN is preserved'
+assert_file_has_line '15 4 * * * /usr/bin/also-keep-me' "$CRONTAB_PATH" 'the line after the missing END is NOT dropped'
+
 printf '%s\n' 'test-init-crontab-block.sh: ok'

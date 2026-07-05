@@ -81,6 +81,16 @@ nordvpn_easy_mark_applied() {
 			nordvpn_easy_fenced_uci_commit nordvpn_easy 2>/dev/null; then
 			command -v nordvpn_easy_harden_secret_config_perms >/dev/null 2>&1 &&
 				nordvpn_easy_harden_secret_config_perms nordvpn_easy >/dev/null 2>&1 || true
+		else
+			# The fenced commit was refused (superseded/reaped owner) or failed: the
+			# `uci set` above already staged applied_fingerprint into the SHARED uci
+			# delta. Left there, a later same-package `uci commit nordvpn_easy` by the
+			# NEW owner (e.g. _supervise_persist's enabled=1 commit) would flush a
+			# fingerprint this execution was never allowed to persist -> applied_current
+			# reads true before the new apply converged. Revert only THIS option (not the
+			# whole package -- other pending nordvpn_easy deltas from the apply flow must
+			# survive), keeping flash consistent with the fence decision.
+			uci -q revert nordvpn_easy.main.applied_fingerprint 2>/dev/null || true
 		fi
 	fi
 

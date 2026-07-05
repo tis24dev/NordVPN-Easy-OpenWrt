@@ -49,12 +49,16 @@ nordvpn_easy_cleanup_files() {
 	rm -f /etc/config/nordvpn_easy /etc/config/nordvpn_easy-opkg
 	rm -f /etc/cron.d/nordvpn-easy /etc/hotplug.d/iface/95-nordvpn-easy
 	if [ -f /etc/crontabs/root ]; then
-		crontab_tmp="$$(mktemp 2>/dev/null)" && \
+		crontab_begins="$$(grep -Fxc '# BEGIN nordvpn-easy' /etc/crontabs/root 2>/dev/null)"; \
+		crontab_ends="$$(grep -Fxc '# END nordvpn-easy' /etc/crontabs/root 2>/dev/null)"; \
+		if [ "$${crontab_begins:-0}" = "$${crontab_ends:-0}" ] && \
+			crontab_tmp="$$(mktemp /etc/crontabs/.root.XXXXXX 2>/dev/null)"; then \
 			awk '
 				$$0 == "# BEGIN nordvpn-easy" { skip = 1; next }
 				$$0 == "# END nordvpn-easy" { skip = 0; next }
 				!skip { print }
-			' /etc/crontabs/root > "$$crontab_tmp" && mv "$$crontab_tmp" /etc/crontabs/root
+			' /etc/crontabs/root > "$$crontab_tmp" && mv "$$crontab_tmp" /etc/crontabs/root || rm -f "$$crontab_tmp"; \
+		fi
 		/etc/init.d/cron restart >/dev/null 2>&1 || /etc/init.d/cron reload >/dev/null 2>&1 || true
 	fi
 	rm -f /var/etc/nordvpn-easy.conf

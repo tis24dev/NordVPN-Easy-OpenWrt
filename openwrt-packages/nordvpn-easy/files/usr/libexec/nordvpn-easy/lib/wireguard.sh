@@ -178,6 +178,17 @@ nordvpn_easy_bring_up_vpn_interface() {
 
 	[ -n "$vpn_if" ] || return 1
 
+	# A superseded/reaped owner (its token no longer matches the on-disk lock) must
+	# NOT touch the new owner's runtime: bail before the unfenced network reload so a
+	# revoked worker cannot reload/restart the network stack out from under the owner
+	# that replaced it. The legitimate owner (token matches) and tokenless boot/CLI
+	# callers (no token held) are unaffected -- owner_fence_denied is true only when a
+	# token is held AND differs from disk.
+	if command -v nordvpn_easy_owner_fence_denied >/dev/null 2>&1 && nordvpn_easy_owner_fence_denied; then
+		nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "apply: bring-up of $vpn_if refused (superseded/reaped owner); skipping network reload/restart"
+		return 1
+	fi
+
 	log "apply: reloading network and bringing up $vpn_if"
 	"$network_init" reload || {
 		log 'ERROR: NETWORK RELOAD FAILED'
@@ -186,6 +197,16 @@ nordvpn_easy_bring_up_vpn_interface() {
 
 	if nordvpn_easy_fenced_ifupdown up "$vpn_if" >/dev/null 2>&1; then
 		return 0
+	fi
+
+	# fenced_ifupdown returns nonzero for BOTH a genuine ifup failure AND a fence
+	# DENIAL (superseded owner). Only a genuine failure should escalate to the
+	# aggressive unfenced `network restart`; a denial means we lost the lock mid-flight
+	# (e.g. the TTL reaper revoked us), so bail instead of restarting the new owner's
+	# network stack (which would drop conntrack + every forwarded session).
+	if command -v nordvpn_easy_owner_fence_denied >/dev/null 2>&1 && nordvpn_easy_owner_fence_denied; then
+		nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "apply: ifup $vpn_if refused (superseded/reaped owner); skipping network restart"
+		return 1
 	fi
 
 	log "apply: ifup $vpn_if failed; falling back to full network restart"

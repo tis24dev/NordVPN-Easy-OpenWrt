@@ -49,4 +49,14 @@ assert_json_roundtrips "$MULTILINE" 'multi-line value with quotes and backslash'
 assert_eq 'a\\b' "$(nordvpn_easy_json_escape 'a\b')" 'a single backslash is doubled'
 assert_eq 'say \"hi\"' "$(nordvpn_easy_json_escape 'say "hi"')" 'double quotes are backslash-escaped'
 
+# Control characters (PR #81 review): JSON forbids raw 0x00-0x1F in strings. A TAB (e.g.
+# in a curl/API-derived last_error) must be escaped to \t and other C0 bytes stripped, so
+# one bad byte can never break JSON.parse of the whole status document.
+assert_eq 'a\tb' "$(nordvpn_easy_json_escape "$(printf 'a\tb')")" 'a TAB is escaped to backslash-t'
+assert_eq 'ab' "$(nordvpn_easy_json_escape "$(printf 'a\001b')")" 'a raw 0x01 control byte is stripped'
+assert_eq 'mix\tend' "$(nordvpn_easy_json_escape "$(printf 'mix\t\001\002end')")" 'TAB escaped and other C0 bytes stripped in one value'
+assert_json_roundtrips "$(printf 'tab\there')" 'a value with a TAB stays valid JSON and round-trips'
+# The clean fast path must still pass a plain value through unchanged (zero-fork).
+assert_eq 'simple-abc-123' "$(nordvpn_easy_json_escape 'simple-abc-123')" 'clean value passes the fast path unchanged'
+
 printf '%s\n' 'test-json-escape.sh: ok'

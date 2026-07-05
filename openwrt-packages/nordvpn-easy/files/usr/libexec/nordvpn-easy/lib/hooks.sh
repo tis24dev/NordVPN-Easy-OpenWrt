@@ -22,15 +22,31 @@ enable_and_restart_cron() {
 apply_crontab_block() {
 	local desired_line="$1"
 	local tmp_crontab=''
+	local begins='' ends=''
 
 	mkdir -p "$(dirname "$CRONTAB_PATH")" 2>/dev/null || true
-	tmp_crontab="$(mktemp /tmp/nordvpn-easy.crontab.XXXXXX 2>/dev/null)" || {
+	# Create the temp file NEXT TO the target (not in /tmp): the final mv is then a
+	# same-filesystem rename (atomic). A /tmp temp crosses tmpfs->overlay on OpenWrt so
+	# mv degrades to copy+unlink, and a crash mid-copy would leave the SHARED
+	# /etc/crontabs/root (which can hold unrelated root cron lines) truncated.
+	tmp_crontab="$(mktemp "$(dirname "$CRONTAB_PATH")/.nordvpn-easy.crontab.XXXXXX" 2>/dev/null)" || {
 		log_service_error 'failed to create temporary crontab'
 		return 1
 	}
 
 	# Copy the existing crontab minus any previous nordvpn-easy block.
 	if [ -f "$CRONTAB_PATH" ]; then
+		# The removal awk clears its skip flag only at the END marker; a MISSING end
+		# marker (corruption) would drop every line after BEGIN, silently deleting
+		# unrelated root cron entries. Refuse to rewrite on mismatched markers and leave
+		# the original file untouched.
+		begins="$(grep -Fxc "$CRON_BLOCK_BEGIN" "$CRONTAB_PATH" 2>/dev/null)"
+		ends="$(grep -Fxc "$CRON_BLOCK_END" "$CRONTAB_PATH" 2>/dev/null)"
+		if [ "${begins:-0}" != "${ends:-0}" ]; then
+			log_service_error 'crontab has mismatched nordvpn-easy markers; refusing to rewrite'
+			rm -f -- "$tmp_crontab"
+			return 1
+		fi
 		awk -v b="$CRON_BLOCK_BEGIN" -v e="$CRON_BLOCK_END" '
 			$0 == b { skip = 1; next }
 			$0 == e { skip = 0; next }
@@ -311,7 +327,9 @@ install_hotplug_hook() {
 		return 0
 	fi
 
-	tmp_hotplug="$(mktemp /tmp/nordvpn-easy.hotplug.XXXXXX 2>/dev/null)" || {
+	# Same-filesystem temp so the final mv is an atomic rename (see apply_crontab_block);
+	# the target dir was ensured above.
+	tmp_hotplug="$(mktemp "$(dirname "$HOTPLUG_PATH")/.nordvpn-easy.hotplug.XXXXXX" 2>/dev/null)" || {
 		log_service_error 'failed to create temporary hotplug hook file'
 		return 1
 	}

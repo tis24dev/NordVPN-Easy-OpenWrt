@@ -254,15 +254,17 @@ nordvpn_easy_json_escape() {
 	# escaping and no subprocess. This is the common case on the status hot path
 	# (json_escape is called ~30x per status emit), so it must not fork.
 	case "$1" in
-		*\\*|*\"*|*"$NORDVPN_EASY_JSON_NL"*|*"$NORDVPN_EASY_JSON_CR"*) ;;
+		*\\*|*\"*|*"$NORDVPN_EASY_JSON_NL"*|*"$NORDVPN_EASY_JSON_CR"*|*[[:cntrl:]]*) ;;
 		*) printf '%s' "$1"; return 0 ;;
 	esac
-	# Slow path: escape backslash/quote/CR PER LINE first, then join lines with
-	# \n. A single slurp-then-substitute sed leaves a single-line value UNescaped
-	# (at EOF `N` auto-prints the pattern space before the s/// commands run), so
-	# a lone line with a " or \ (e.g. last_error from an API error) would break
-	# JSON.parse of the whole status document.
-	printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\r/\\r/g' | sed ':a;N;$!ba;s/\n/\\n/g'
+	# Slow path: escape backslash/quote/CR/TAB PER LINE first, then strip any other C0
+	# control byte (0x00-0x1F except NL/CR/TAB which are handled), then join lines with
+	# \n. JSON forbids raw control chars in strings, so an unescaped TAB or a stray byte
+	# from an API/curl-derived last_error would break JSON.parse of the whole status
+	# document. A single slurp-then-substitute sed leaves a single-line value UNescaped
+	# (at EOF `N` auto-prints the pattern space before the s/// commands run), so the
+	# per-line pass runs first, then the join.
+	printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\r/\\r/g' -e 's/\t/\\t/g' | tr -d '\000-\010\013\014\016-\037' | sed ':a;N;$!ba;s/\n/\\n/g'
 }
 
 nordvpn_easy_lock_contention_is_nonfatal() {

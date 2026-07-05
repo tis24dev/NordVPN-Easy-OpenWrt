@@ -395,6 +395,26 @@ nordvpn_easy_diagnostics_runtime_transition_active || {
 	printf '%s\n' 'FAIL: stale-recovered reconcile should suppress transient diagnostics' >&2
 	exit 1
 }
+# PR #81 review: a supervised Save & Apply holds the lock as 'supervise', and the
+# provision verb as 'connect'; both are in-flight runtime transitions and must suppress
+# transient diagnostics like the legacy actions.
+DIAG_OPERATION_LOCK_STATE='held'
+DIAG_OPERATION_LOCK_ACTION='supervise'
+nordvpn_easy_diagnostics_runtime_transition_active || {
+	printf '%s\n' 'FAIL: held supervise (supervised apply) should suppress transient diagnostics' >&2
+	exit 1
+}
+DIAG_OPERATION_LOCK_ACTION='connect'
+nordvpn_easy_diagnostics_runtime_transition_active || {
+	printf '%s\n' 'FAIL: held connect should suppress transient diagnostics' >&2
+	exit 1
+}
+DIAG_OPERATION_LOCK_STATE='stale_recovered'
+DIAG_OPERATION_LOCK_ACTION='supervise'
+nordvpn_easy_diagnostics_runtime_transition_active || {
+	printf '%s\n' 'FAIL: stale-recovered supervise should suppress transient diagnostics' >&2
+	exit 1
+}
 
 uci_wg0_no_peer() {
 	case "$*" in

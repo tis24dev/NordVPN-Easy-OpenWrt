@@ -410,6 +410,33 @@ ifup() { IFUP_COUNT=$((IFUP_COUNT + 1)); return 1; }
 nordvpn_easy_bring_up_vpn_interface wg0 || true
 assert_eq '1' "$(cat "$TMP_DIR/network-restart-count")" 'bring-up falls back to network restart when ifup fails'
 
+# PR #81 review: a fence-DENIED bring-up (superseded/reaped owner) must NOT escalate to an
+# unfenced network restart -- it must bail (return 1) so a revoked worker cannot reload or
+# restart the new owner's network stack. Distinct from the genuine ifup failure above.
+printf '%s\n' '0' > "$TMP_DIR/network-restart-count"
+printf '%s\n' '0' > "$NETWORK_RELOAD_COUNT_FILE"
+nordvpn_easy_owner_fence_denied() { return 0; }
+denied_brc=0
+nordvpn_easy_bring_up_vpn_interface wg0 || denied_brc=$?
+assert_eq '1' "$denied_brc" 'a fence-denied bring-up bails (return 1)'
+assert_eq '0' "$(cat "$TMP_DIR/network-restart-count")" 'a fence-denied bring-up does NOT restart the network'
+assert_eq '0' "$(cat "$NETWORK_RELOAD_COUNT_FILE")" 'a fence-denied bring-up bails before the unfenced network reload too'
+nordvpn_easy_owner_fence_denied() { return 1; }
+
+# Second guard (mid-flight revocation): NOT denied at the top, but denied AFTER the reload
+# (e.g. the TTL reaper revoked us during bring-up so the fenced ifup is refused). The
+# post-ifup guard must then bail instead of restarting. Stateful stub: denied only once
+# the reload has run.
+printf '%s\n' '0' > "$TMP_DIR/network-restart-count"
+printf '%s\n' '0' > "$NETWORK_RELOAD_COUNT_FILE"
+nordvpn_easy_owner_fence_denied() { [ "$(cat "$NETWORK_RELOAD_COUNT_FILE" 2>/dev/null)" != '0' ]; }
+midflight_brc=0
+nordvpn_easy_bring_up_vpn_interface wg0 || midflight_brc=$?
+assert_eq '1' "$midflight_brc" 'a mid-flight fence revocation makes bring-up bail (return 1)'
+assert_eq '1' "$(cat "$NETWORK_RELOAD_COUNT_FILE")" 'the reload ran (top guard passed) before the mid-flight revocation'
+assert_eq '0' "$(cat "$TMP_DIR/network-restart-count")" 'a mid-flight-revoked bring-up does NOT restart the network'
+nordvpn_easy_owner_fence_denied() { return 1; }
+
 printf '%s\n' '300' > "$FAKE_NOW_FILE"
 HANDSHAKE_EPOCH='295'
 wg() {

@@ -300,25 +300,25 @@ longer window.
 | uhttpd `script_timeout` / `network_timeout` | **180 s** |
 | LuCI Save & Apply watchdog | **240 s** |
 
-### 5.1 Save & Apply uses `start_connect` + status convergence
+### 5.1 Save & Apply uses the async `apply` verb + journal convergence
 
 Long sync `connect` RPCs could finish on the router (~60–70 s) while the LuCI XHR still timed out at 180 s (`code: -1`) with VPN already connected. Root cause: relying on a long-lived ubus response as the completion barrier.
 
-**Fix (production):**
+**Fix (production, current):**
 
-1. **`ubus call nordvpn.easy start_connect`** — returns in under a second with `"async": true`; runs `/etc/init.d/nordvpn-easy connect` in the background. Log: `/tmp/run/nordvpn-easy/start-connect.log`.
-2. **LuCI Save & Apply** polls `status_json` every 3 s until `runtimeActionRecoverySucceeded()` (connected, idle lock, matching country/server).
+1. **`ubus call nordvpn.easy apply`** — returns in under a second; `setsid`-forks the supervised apply worker (`/etc/init.d/nordvpn-easy supervise`), which runs the apply state machine (validate → persist → hooks → converge → verifying) and records progress in the apply-transaction journal.
+2. **LuCI Save & Apply** polls `status_json` every ~1 s and reads convergence off the supervisor's own **journal** (`journal_phase`/`journal_txn_id`, bound to the txn it watched go in-flight), not a re-derived live-state heuristic: success = the observed txn reaches `journal_phase=done`, failure = `journal_phase=failed` with `last_error`. See §5.5.
 3. **Sync `connect`** remains for Advanced actions and scripts that need an immediate exit code.
 
 Verify dispatch from the router:
 
 ```sh
-ubus call nordvpn.easy start_connect
-# expect: "success": true, "async": true, "code": 0
-tail -f /tmp/run/nordvpn-easy/start-connect.log
+ubus call nordvpn.easy apply
+# expect: returns immediately (async fork); the worker runs in the background
+grep -E '^(phase|sub_phase|txn_id)=' /tmp/run/nordvpn-easy/journal   # watch convergence
 ```
 
-If Save & Apply hits **Configuration apply timed out**, check syslog and `start-connect.log` for a stuck lock or hung `network restart`.
+If Save & Apply hits **Configuration apply timed out**, check syslog and the journal (`/tmp/run/nordvpn-easy/journal`) for a stuck phase, a stale lock, or a hung `network restart`.
 
 ### 5.2 Sync `connect` transport note (Advanced / CLI)
 

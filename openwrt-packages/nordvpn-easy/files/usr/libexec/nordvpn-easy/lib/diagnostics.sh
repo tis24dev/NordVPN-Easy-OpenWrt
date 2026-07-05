@@ -791,8 +791,13 @@ nordvpn_easy_diagnostics_collect_caches() {
 }
 
 nordvpn_easy_diagnostics_runtime_transition_active() {
+	# The lock action for a supervised Save & Apply is 'supervise', and the underlying
+	# provision verb takes the lock as 'connect'; both are in-flight runtime transitions
+	# and must be suppressed like the others, otherwise a supervised apply reads as a
+	# non-transition. 'start_connect' is only an rpc method name (never a lock action);
+	# left as a harmless legacy entry.
 	case "${DIAG_OPERATION_LOCK_STATE:-none}:${DIAG_OPERATION_LOCK_ACTION:-}" in
-		held:setup|held:stop_vpn|held:start_connect|held:reconnect|held:reconcile|stale_recovered:setup|stale_recovered:stop_vpn|stale_recovered:start_connect|stale_recovered:reconnect|stale_recovered:reconcile)
+		held:setup|held:stop_vpn|held:connect|held:supervise|held:start_connect|held:reconnect|held:reconcile|stale_recovered:setup|stale_recovered:stop_vpn|stale_recovered:connect|stale_recovered:supervise|stale_recovered:start_connect|stale_recovered:reconnect|stale_recovered:reconcile)
 			return 0
 			;;
 	esac
