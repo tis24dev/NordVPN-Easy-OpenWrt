@@ -168,11 +168,23 @@ nordvpn_easy_default() {
 			server_cache_ttl) printf '%s\n' '86400' ;;
 			vpn_port) printf '%s\n' '51820' ;;
 			wireguard_persistent_keepalive) printf '%s\n' '15' ;;
+			# Kept empty (= automatic) on purpose. The official NordVPN app pins the
+			# NordLynx MTU to 1280, but making that the schema default would let
+			# nordvpn_easy_apply_env_defaults cap EVERY existing empty-MTU install to
+			# 1280 at the next apply and make 'automatic' unreachable. 1280 is instead
+			# seeded for fresh installs only by migrate-config.sh, so an existing
+			# install keeps automatic and the user can always clear the field to return
+			# to it.
 			wireguard_mtu) printf '%s\n' '' ;;
 			firewall_mtu_fix) printf '%s\n' '1' ;;
 			vpn_addr) printf '%s\n' '10.5.0.2/32' ;;
-			vpn_dns1) printf '%s\n' '103.86.99.99' ;;
-			vpn_dns2) printf '%s\n' '103.86.96.96' ;;
+			# The NordVPN standard resolver pair (verified in the decompiled app,
+			# gr.C6330b). It matches the 'standard' branch of
+			# nordvpn_easy_resolve_dns_pair; the legacy 103.86.99.99/103.86.96.96 pair
+			# is not present in the binary. An explicit user DNS is always preserved on
+			# upgrade (the migrator keeps any value that differs from this default).
+			vpn_dns1) printf '%s\n' '103.86.96.100' ;;
+			vpn_dns2) printf '%s\n' '103.86.99.100' ;;
 		# dns_mode selects a NordVPN resolver pair (see nordvpn_easy_resolve_dns_pair).
 		# 'custom' keeps the saved vpn_dns1/vpn_dns2, which makes it the safe default
 		# for any config that predates the option: an upgrade never overrides a user's
