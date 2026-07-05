@@ -358,20 +358,19 @@ rm -f "$CORE_CAPTURE"
 run_core_action status_json
 
 CORE_ARGS="$(cat "$CORE_CAPTURE")"
+# status_json is a read-only poll: it loads the UCI runtime context DIRECTLY and must NOT
+# render a temporary config. Rendering resolves the VPN server (and can fetch the
+# recommendations catalog over the WAN, seconds to a minute) -- pure overhead for a poll
+# that only reports the live wg + UCI state, and it made the LuCI status poll pile up. So
+# core.sh is invoked with NO --config, exactly like stop_vpn.
 case "$CORE_ARGS" in
-	"status_json --config $TMP_DIR"/action.*"/nordvpn-easy.status_json.conf")
+	status_json)
 		;;
 	*)
-		printf '%s\n' "FAIL: core action did not receive expected --config argument: $CORE_ARGS" >&2
+		printf '%s\n' "FAIL: read-only status_json must load UCI directly with NO --config (got: $CORE_ARGS)" >&2
 		exit 1
 		;;
 esac
-
-CONFIG_PATH_FROM_ARGS="${CORE_ARGS#status_json --config }"
-[ ! -f "$CONFIG_PATH_FROM_ARGS" ] || {
-	printf '%s\n' 'FAIL: temporary action config should be cleaned up after core execution' >&2
-	exit 1
-}
 [ ! -s "$INFO_CAPTURE" ] || {
 	printf '%s\n' 'FAIL: quiet status_json core action should not emit info logs on success' >&2
 	exit 1
@@ -445,7 +444,9 @@ CORE_EXIT_RC='0'
 rm -f "$CORE_CAPTURE"
 VALIDATION_MODE='fail'
 RC=0
-run_core_action status_json || RC=$?
+# Use a RENDERING action here (reconcile): status_json is now a direct-UCI read-only poll
+# that renders no config, so it can no longer exercise the render/validation failure path.
+run_core_action reconcile || RC=$?
 assert_eq '1' "$RC" 'run_core_action fails when rendered config validation fails'
 [ ! -f "$CORE_CAPTURE" ] || {
 	printf '%s\n' 'FAIL: core action should not run when validation fails' >&2

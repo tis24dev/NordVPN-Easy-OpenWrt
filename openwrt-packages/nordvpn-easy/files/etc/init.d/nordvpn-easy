@@ -130,7 +130,13 @@ run_core_action() {
 	}
 
 	case "$action" in
-		stop_vpn)
+		stop_vpn|status_json|operation_status|vpn_status|diagnostics_log|diagnostics_summary)
+			# Read-only status/diagnostics polls load the UCI runtime context DIRECTLY and
+			# must NOT render a temporary config: rendering resolves the VPN server and can
+			# fetch the recommendations catalog over the WAN (seconds to a minute), which is
+			# pure overhead for a poll that only reports the live wg + UCI state. Rendering
+			# on every LuCI status poll made polls take 10-60s and pile up (the UI showed
+			# "unknown"). These actions need no fresh server resolution.
 			direct_uci_config=1
 			;;
 	esac
