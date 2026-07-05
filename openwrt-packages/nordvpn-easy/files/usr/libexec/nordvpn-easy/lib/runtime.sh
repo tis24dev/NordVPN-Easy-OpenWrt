@@ -585,6 +585,7 @@ nordvpn_easy_emit_status_json() {
 	local journal_phase=''
 	local journal_sub_phase=''
 	local journal_txn_id=''
+	local journal_started_at='0'
 	local rpc_contract_level='1'
 
 	nordvpn_easy_load_lock_metadata "${LOCK_DIR:-/tmp/nordvpn-easy.lock}"
@@ -713,9 +714,18 @@ nordvpn_easy_emit_status_json() {
 		boot_id="$(nordvpn_easy_journal_boot_id 2>/dev/null || printf '')"
 		journal_phase="$(nordvpn_easy_journal_get phase 2>/dev/null || printf '')"
 		journal_txn_id="$(nordvpn_easy_journal_get txn_id 2>/dev/null || printf '')"
+		# When the transaction opened (router epoch). The JS supervised poll uses it as a
+		# freshness gate: a 'done' whose txn STARTED AFTER the apply's first poll is this
+		# apply's result even if the poll never caught a non-terminal phase (an instant/
+		# mocked converge); a stale leftover 'done' keeps its older started_at and is not
+		# accepted.
+		journal_started_at="$(nordvpn_easy_journal_get started_at 2>/dev/null || printf '0')"
 	fi
 	case "$status_seq" in
 		''|*[!0-9]*) status_seq='0' ;;
+	esac
+	case "$journal_started_at" in
+		''|*[!0-9]*) journal_started_at='0' ;;
 	esac
 
 	# The RPC contract level the emitted status advertises (constant 2). Defaults to 1
@@ -748,6 +758,7 @@ nordvpn_easy_emit_status_json() {
   "journal_phase": "$(nordvpn_easy_json_escape "$journal_phase")",
   "journal_sub_phase": "$(nordvpn_easy_json_escape "$journal_sub_phase")",
   "journal_txn_id": "$(nordvpn_easy_json_escape "$journal_txn_id")",
+  "journal_started_at": $journal_started_at,
   "rpc_contract_level": $rpc_contract_level,
   "selected_country": "$(nordvpn_easy_json_escape "${VPN_COUNTRY:-}")",
   "interface": "$(nordvpn_easy_json_escape "${VPN_IF:-}")",

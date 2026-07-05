@@ -379,4 +379,28 @@ nordvpn_easy_supervise >/dev/null 2>&1 || :
 grep -q 'convergence failed' "$NORDVPN_EASY_LAST_ERROR_CACHE" || fail 'S8: with an empty cache the epilogue records a non-generic fallback'
 P_CONVERGE_RC=0
 
+# PR #81 review: verify_public_country_selection runs inside the verifying run_phase
+# subshell, so its RESOLVED_COUNTRY_CODE assignment does NOT reach the parent's
+# journal_finish. The REAL _supervise_verify must instead STAMP the resolved country into
+# the journal so the parent reads it back, not fall back to VPN_COUNTRY. Restore the real
+# _supervise_verify (GROUP 4 above stubbed it) and drive it through run_phase.
+# shellcheck disable=SC1090
+. "$LIB/supervise.sh"
+verify_public_country_selection() { RESOLVED_COUNTRY_CODE='MT'; return 0; }
+nordvpn_easy_commit_pending_server_preference() { :; }
+nordvpn_easy_mark_applied() { :; }
+nordvpn_easy_config_fingerprint() { printf 'fp'; }
+reset_journal
+nordvpn_easy_journal_write_full 'phase=verifying' 'txn_id=T-cc'
+RESOLVED_COUNTRY_CODE=''
+VPN_COUNTRY='IT'
+nordvpn_easy_run_phase 'verifying' 60 1 _supervise_verify >/dev/null 2>&1 || true
+assert_eq '' "$RESOLVED_COUNTRY_CODE" 'the verifying subshell assignment of RESOLVED_COUNTRY_CODE does NOT leak to the parent'
+assert_eq 'MT' "$(nordvpn_easy_journal_get country)" 'the real _supervise_verify stamps the resolved country into the journal (survives the run_phase subshell)'
+# The parent finish reads the journal-stamped country, not the stale VPN_COUNTRY fallback
+# (mirrors nordvpn_easy_supervise's read-back before fenced_journal_finish).
+finish_country="$(nordvpn_easy_journal_get country 2>/dev/null || printf '')"
+[ -n "$finish_country" ] || finish_country="${RESOLVED_COUNTRY_CODE:-${VPN_COUNTRY:-}}"
+assert_eq 'MT' "$finish_country" 'the parent uses the journal-stamped resolved country (MT), not the VPN_COUNTRY fallback (IT)'
+
 printf '%s\n' 'test-supervise.sh: ok'

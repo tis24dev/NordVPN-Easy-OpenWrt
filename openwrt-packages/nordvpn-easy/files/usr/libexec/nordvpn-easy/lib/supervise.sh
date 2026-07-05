@@ -417,6 +417,11 @@ _supervise_verify() {
 	# row reads 'Applying (verifying)...' and vpn_status keeps live detection.
 	nordvpn_easy_fenced_journal_merge 'sub_phase=verifying' >/dev/null 2>&1 || true
 	verify_public_country_selection >/dev/null 2>&1 || true
+	# verify_public_country_selection sets RESOLVED_COUNTRY_CODE, but this phase body runs
+	# in a run_phase background subshell so that assignment never reaches the parent's
+	# journal_finish. Stamp the resolved code durably in the journal here; the parent reads
+	# it back (below) instead of falling back to the raw VPN_COUNTRY for the record's country.
+	nordvpn_easy_fenced_journal_merge "country=${RESOLVED_COUNTRY_CODE:-${VPN_COUNTRY:-}}" >/dev/null 2>&1 || true
 	nordvpn_easy_commit_pending_server_preference >/dev/null 2>&1 || true
 	if command -v nordvpn_easy_mark_applied >/dev/null 2>&1; then
 		nordvpn_easy_mark_applied "$(nordvpn_easy_config_fingerprint 2>/dev/null || printf '')" >/dev/null 2>&1 || true
@@ -433,7 +438,7 @@ nordvpn_easy_supervise() {
 		return 0
 	fi
 	LOG_PHASE='supervise'
-	local target last_error
+	local target last_error resolved_country
 	target="$(nordvpn_easy_target_identity 2>/dev/null || printf '')"
 	# Reap a foreign dead record FIRST (so it is stamped failed before open_txn's
 	# fresh write would replace it), THEN open/adopt this transaction.
@@ -448,7 +453,12 @@ nordvpn_easy_supervise() {
 			# VERIFYING is non-fatal.
 			nordvpn_easy_run_phase 'verifying' 60 1 _supervise_verify ||
 				nordvpn_easy_log_phase 'supervise' 'verification phase reported non-zero (non-fatal)'
-			nordvpn_easy_fenced_journal_finish 0 "${RESOLVED_COUNTRY_CODE:-${VPN_COUNTRY:-}}" >/dev/null 2>&1 || true
+			# Read the resolved country the verifying subshell stamped into the journal
+			# (its RESOLVED_COUNTRY_CODE assignment did not reach this parent shell); fall
+			# back to the parent's own value only if the journal has none.
+			resolved_country="$(nordvpn_easy_journal_get country 2>/dev/null || printf '')"
+			[ -n "$resolved_country" ] || resolved_country="${RESOLVED_COUNTRY_CODE:-${VPN_COUNTRY:-}}"
+			nordvpn_easy_fenced_journal_finish 0 "$resolved_country" >/dev/null 2>&1 || true
 			return 0
 		fi
 	fi

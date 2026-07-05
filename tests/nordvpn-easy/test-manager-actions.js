@@ -257,6 +257,37 @@ assert.equal(typeof managerActions.noteSupervisedApplyProgress, 'function', 'not
 	assert.equal(managerActions.supervisedApplyConverged(s, { journal_txn_id: 't6', journal_phase: 'done' }), true, 'the observed txn going done converges');
 })();
 
+// PR #81 (Greptile): txn-start freshness gate closes the cold-start window -- an instant
+// converge reaches 'done' before any poll caught a non-terminal phase (observedTxn never
+// set). A 'done' whose started_at exceeds the first poll's baseline is THIS apply's txn.
+(function() {
+	// First poll baselines started_at=100 off a leftover 'done' (never observed applying).
+	const s = {};
+	managerActions.noteSupervisedApplyProgress(s, { journal_txn_id: 'old', journal_phase: 'done', journal_started_at: 100 });
+	assert.equal(s.supervisedApplyBaselineStartedAt, 100, 'the first poll baselines journal_started_at');
+	// The SAME stale leftover (started_at == baseline) is NOT accepted.
+	assert.equal(managerActions.supervisedApplyConverged(s, { journal_txn_id: 'old', journal_phase: 'done', journal_started_at: 100 }), false, 'a leftover done at the baseline start time is NOT converged (stale-safe)');
+	// An older leftover (started_at < baseline) is NOT accepted.
+	assert.equal(managerActions.supervisedApplyConverged(s, { journal_txn_id: 'older', journal_phase: 'done', journal_started_at: 50 }), false, 'an older done is NOT converged');
+	// OUR apply's done: a NEWER started_at -- accepted even though we never observed a
+	// non-terminal phase for it (the cold-start window).
+	assert.equal(managerActions.supervisedApplyConverged(s, { journal_txn_id: 'new', journal_phase: 'done', journal_started_at: 200 }), true, 'a done whose txn started after the baseline converges (cold-start closed)');
+	// A newer txn still in-flight is not yet done.
+	assert.equal(managerActions.supervisedApplyConverged(s, { journal_txn_id: 'new', journal_phase: 'converge', journal_started_at: 200 }), false, 'a fresh txn still in-flight is not converged');
+})();
+(function() {
+	// Empty journal at the first poll (baseline 0): any subsequent done (>0) is ours, and
+	// no prior record can appear after an empty first read.
+	const s = {};
+	managerActions.noteSupervisedApplyProgress(s, { journal_txn_id: '', journal_phase: '', journal_started_at: 0 });
+	assert.equal(s.supervisedApplyBaselineStartedAt, 0, 'an empty first poll baselines started_at to 0');
+	assert.equal(managerActions.supervisedApplyConverged(s, { journal_txn_id: 'n', journal_phase: 'done', journal_started_at: 500 }), true, 'from an empty baseline any done>0 converges');
+	// A done with started_at 0 (missing) never satisfies the freshness gate.
+	const s2 = {};
+	managerActions.noteSupervisedApplyProgress(s2, { journal_txn_id: '', journal_phase: '', journal_started_at: 0 });
+	assert.equal(managerActions.supervisedApplyConverged(s2, { journal_txn_id: 'n', journal_phase: 'done', journal_started_at: 0 }), false, 'a done with no started_at (0) does not satisfy the freshness gate');
+})();
+
 assert.equal(managerData.parseEnabledFlag(undefined), false, 'missing enabled option is treated as disabled');
 assert.equal(managerData.parseEnabledFlag('0'), false, 'explicit disabled value is treated as disabled');
 assert.equal(managerData.parseEnabledFlag('1'), true, 'explicit enabled value is treated as enabled');

@@ -439,25 +439,40 @@ function supervisedApplyPhaseIsTerminal(phase) {
 function noteSupervisedApplyProgress(state, status) {
 	if (!state)
 		return;
+	// Baseline the journal txn's start time from the FIRST poll (a fresh live read): a
+	// later 'done' whose started_at exceeds this baseline can only be THIS apply's txn.
+	// This closes the cold-start window where an instant/mocked converge reaches 'done'
+	// before any poll catches a non-terminal phase (so supervisedApplyObservedTxn never
+	// gets set). On real hardware the ~2-5s converge fetch makes the observed arm fire
+	// first; the baseline is the defense-in-depth path only.
+	if (state.supervisedApplyBaselineStartedAt == null)
+		state.supervisedApplyBaselineStartedAt = Number((status && status.journal_started_at) || 0);
 	const txn = String((status && status.journal_txn_id) || '');
 	const phase = String((status && status.journal_phase) || '');
 	if (txn !== '' && !supervisedApplyPhaseIsTerminal(phase))
 		state.supervisedApplyObservedTxn = txn;
 }
 
-// SUCCESS: the txn we watched applying is now done. journal_phase === 'done' is the
-// authoritative signal the supervisor finished (mark_applied + the fenced finish ran);
-// the durable applied_fingerprint is NOT used as the success arm because it can already
-// equal config_fingerprint before this apply runs (a no-op / re-apply) and would
-// false-fire mid-flight.
+// SUCCESS: journal_phase === 'done' is the authoritative signal the supervisor finished
+// (mark_applied + the fenced finish ran), attributed to THIS apply either because we
+// watched its txn go non-terminal (primary, real hardware) OR because its txn started
+// after the first poll's baseline (freshness gate, for an instant converge). The durable
+// applied_fingerprint is NOT a success arm because it can already equal config_fingerprint
+// before this apply runs (a no-op / re-apply) and would false-fire mid-flight.
 function supervisedApplyConverged(state, status) {
+	if (String((status && status.journal_phase) || '') !== 'done')
+		return false;
+	// Primary: we watched THIS txn go through a non-terminal phase and it is now done.
 	const observed = state && state.supervisedApplyObservedTxn;
-	if (!observed)
-		return false;
-	const txn = String((status && status.journal_txn_id) || '');
-	if (txn !== observed)
-		return false;
-	return String((status && status.journal_phase) || '') === 'done';
+	if (observed && String((status && status.journal_txn_id) || '') === observed)
+		return true;
+	// Freshness gate: accept a 'done' whose txn STARTED AFTER the first poll's baseline --
+	// that can only be this apply's txn. A stale leftover 'done' keeps its older started_at
+	// (== baseline, or baseline is 0 when the journal was empty at the first poll and no
+	// prior record can then appear), so it is never accepted.
+	const startedAt = Number((status && status.journal_started_at) || 0);
+	const baseline = state && state.supervisedApplyBaselineStartedAt;
+	return startedAt > 0 && baseline != null && startedAt > baseline;
 }
 
 // FAILURE: the txn we watched applying is now failed. Fast-fails before the timeout.
@@ -777,6 +792,8 @@ function runApplyCycleSupervisedApply(state, savedConfig, applyAttemptId) {
 	// live-state heuristic (which could mask a supervisor failure as success) -- the
 	// supervised poll below is the sole terminal. Cleared in finishApplyCycle.
 	state.supervisedApplyObservedTxn = '';
+	// Re-baseline the txn-start freshness gate: captured on this apply's first poll.
+	state.supervisedApplyBaselineStartedAt = null;
 	state.supervisedApplyInFlight = true;
 	return awaitRuntimeConvergenceAfterDispatch(state, savedConfig, applyAttemptId, APPLY_CYCLE_SUCCESS_CONNECTED);
 }

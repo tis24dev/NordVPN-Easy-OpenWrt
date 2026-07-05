@@ -111,6 +111,10 @@ function parseLocalStatus(raw) {
 		// the field (old backend) -- degrades cleanly either way.
 		journal_sub_phase: String(status.journal_sub_phase || ''),
 		journal_txn_id: String(status.journal_txn_id || ''),
+		// When the current apply transaction opened (router epoch). The supervised poll
+		// uses it as a freshness gate to accept an instant/mocked converge whose done
+		// landed before the first poll saw a non-terminal phase. 0 when absent.
+		journal_started_at: Number(status.journal_started_at || 0),
 		// S8: the desired vs applied config identity, so the supervised poll can read
 		// convergence off the backend's own signal (applied == config once mark_applied
 		// ran). Surfaced for display + future use; the authoritative success signal is
