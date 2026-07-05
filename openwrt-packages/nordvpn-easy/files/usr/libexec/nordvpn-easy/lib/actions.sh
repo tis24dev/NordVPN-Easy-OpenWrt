@@ -117,7 +117,14 @@ nordvpn_easy_build_server_recommendations_url() {
 			SERVER_RECOMMENDATIONS_URL="${SERVER_RECOMMENDATIONS_URL}&filters[country_id]=$RESOLVED_COUNTRY_ID"
 			log "Building recommendations URL for country filter $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
 		else
-			log "Building recommendations URL without country_id filter; will select servers matching $RESOLVED_COUNTRY_CODE from the response"
+			# The country is not in the NordVPN id cache, so there is no numeric
+			# country_id to filter by. The recommendations endpoint also accepts a
+			# country_code query param (verified in the decompiled app), so filter
+			# server-side by code instead of downloading the geo-default list and
+			# relying only on the client-side jq filter. The jq filter in
+			# nordvpn_easy_set_first_server_from_list is kept as a safety net.
+			SERVER_RECOMMENDATIONS_URL="${SERVER_RECOMMENDATIONS_URL}&country_code=$RESOLVED_COUNTRY_CODE"
+			log "Building recommendations URL filtered server-side by country_code $RESOLVED_COUNTRY_CODE (country not in the NordVPN id cache); the response is also narrowed client-side"
 		fi
 	else
 		log 'Building recommendations URL with automatic country selection'

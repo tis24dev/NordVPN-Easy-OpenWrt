@@ -327,6 +327,56 @@ nordvpn_easy_set_first_server_from_list || {
 	exit 1
 }
 
+# --- Recommendations URL: server-side country filter -------------------------
+# Reuse the REAL resolve_country_filter extracted above (BZ id 22 is the only
+# entry in the restored cache) to exercise the URL builder end to end. A cached
+# country filters by API country id; a valid country absent from the cache now
+# filters server-side by country_code instead of downloading the geo-default
+# list and relying only on the client-side jq filter.
+url_contains() {
+	case "$2" in
+		*"$1"*) return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
+VPN_COUNTRY=''
+RESOLVED_COUNTRY_ID=''
+RESOLVED_COUNTRY_QUERY=''
+REC_URL="$(nordvpn_easy_build_server_recommendations_url)"
+assert_eq "$SERVER_RECOMMENDATIONS_URL_BASE" "$REC_URL" 'automatic selection sends no country filter in the recommendations URL'
+
+VPN_COUNTRY='BZ'
+RESOLVED_COUNTRY_ID=''
+RESOLVED_COUNTRY_QUERY=''
+REC_URL="$(nordvpn_easy_build_server_recommendations_url)"
+url_contains '&filters[country_id]=22' "$REC_URL" || {
+	printf '%s\n' "FAIL: a cached country must filter by API country id (got $REC_URL)" >&2
+	exit 1
+}
+if url_contains 'country_code=' "$REC_URL"; then
+	printf '%s\n' "FAIL: a cached country must not also use the country_code filter (got $REC_URL)" >&2
+	exit 1
+fi
+
+VPN_COUNTRY='EC'
+RESOLVED_COUNTRY_ID=''
+RESOLVED_COUNTRY_QUERY=''
+REC_URL="$(nordvpn_easy_build_server_recommendations_url)"
+url_contains '&country_code=EC' "$REC_URL" || {
+	printf '%s\n' "FAIL: an uncached country must filter server-side by country_code (got $REC_URL)" >&2
+	exit 1
+}
+if url_contains 'filters[country_id]=' "$REC_URL"; then
+	printf '%s\n' "FAIL: an uncached country must not use the country_id filter (got $REC_URL)" >&2
+	exit 1
+fi
+
+VPN_COUNTRY='IT'
+RESOLVED_COUNTRY_ID=''
+RESOLVED_COUNTRY_QUERY=''
+RESOLVED_COUNTRY_CODE=''
+
 PROVISION_COUNT=0
 CHECK_COUNT=0
 refresh_countries_cache() { return 0; }
