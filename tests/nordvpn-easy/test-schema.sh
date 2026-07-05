@@ -37,6 +37,12 @@ assert_eq '1' "$(nordvpn_easy_normalize_value kill_switch_enabled true)" 'kill s
 assert_eq '1' "$(nordvpn_easy_normalize_value firewall_mtu_fix true)" 'firewall MTU fix boolean normalization'
 assert_eq 'manual' "$(nordvpn_easy_normalize_value server_selection_mode manual)" 'manual mode normalization'
 assert_eq 'auto' "$(nordvpn_easy_normalize_value server_selection_mode broken)" 'invalid mode normalization'
+# dns_mode defaults to custom (backward compatible: keep saved vpn_dns on upgrade)
+assert_eq 'custom' "$(nordvpn_easy_default dns_mode)" 'default dns_mode keeps custom for existing configs'
+assert_eq 'standard' "$(nordvpn_easy_normalize_value dns_mode standard)" 'standard dns_mode preserved'
+assert_eq 'threat_protection' "$(nordvpn_easy_normalize_value dns_mode threat_protection)" 'threat_protection dns_mode preserved'
+assert_eq 'threat_protection_family' "$(nordvpn_easy_normalize_value dns_mode threat_protection_family)" 'threat_protection_family dns_mode preserved'
+assert_eq 'custom' "$(nordvpn_easy_normalize_value dns_mode nonsense)" 'invalid dns_mode falls back to custom'
 assert_eq '86400' "$(nordvpn_easy_normalize_value server_cache_ttl not-a-number)" 'invalid ttl normalization'
 assert_eq '15' "$(nordvpn_easy_normalize_value wireguard_persistent_keepalive not-a-number)" 'invalid keepalive normalization'
 assert_eq '0' "$(nordvpn_easy_normalize_value wireguard_persistent_keepalive 0)" 'zero keepalive disables keepalive'

@@ -370,6 +370,25 @@ nordvpn_easy_fetch_provision_prerequisites() {
 # Everything up to (but NOT including) the interface bring-up: fetch-if-needed,
 # firewall, the network UCI + peer sections, the fenced network commit and the perm
 # hardening. Split out (S7 increment 5a) so the supervisor state machine can run the
+# Resolve the DNS pair pushed into the tunnel from DNS_MODE. NordVPN's Threat
+# Protection is not an API toggle: it is purely a choice of resolver IPs (verified
+# against the decompiled app, DNSConfigurationStore / gr.C6330b). The standard and
+# threat-protection pairs are those literal resolvers; 'custom' keeps the user's
+# vpn_dns1/vpn_dns2. Sets NORDVPN_EASY_DNS1/NORDVPN_EASY_DNS2 (busybox sh has no
+# multi-value return).
+nordvpn_easy_resolve_dns_pair() {
+	case "${DNS_MODE:-custom}" in
+		standard)
+			NORDVPN_EASY_DNS1='103.86.96.100'; NORDVPN_EASY_DNS2='103.86.99.100' ;;
+		threat_protection)
+			NORDVPN_EASY_DNS1='103.86.99.108'; NORDVPN_EASY_DNS2='103.86.96.108' ;;
+		threat_protection_family)
+			NORDVPN_EASY_DNS1='103.86.96.111'; NORDVPN_EASY_DNS2='103.86.99.111' ;;
+		*)
+			NORDVPN_EASY_DNS1="${VPN_DNS1:-}"; NORDVPN_EASY_DNS2="${VPN_DNS2:-}" ;;
+	esac
+}
+
 # CONFIGURE phase separately from BRINGUP while the legacy connect() path stays
 # byte-identical -- the wrapper below re-composes the exact legacy sequence
 # (configure -> bring up -> success log -> post-bring-up state snapshot), including
@@ -397,10 +416,11 @@ nordvpn_easy_configure_vpn_interface_no_bringup() {
 	uci set "network.${VPN_IF}.private_key"="$PRIVATE_KEY"
 
 	uci -q delete "network.${VPN_IF}.dns" >/dev/null 2>&1 || true
-	if [ -n "$VPN_DNS1" ] || [ -n "$VPN_DNS2" ]; then
+	nordvpn_easy_resolve_dns_pair
+	if [ -n "$NORDVPN_EASY_DNS1" ] || [ -n "$NORDVPN_EASY_DNS2" ]; then
 		uci set "network.${VPN_IF}.peerdns"='0'
-		[ -n "$VPN_DNS1" ] && uci add_list "network.${VPN_IF}.dns"="$VPN_DNS1"
-		[ -n "$VPN_DNS2" ] && uci add_list "network.${VPN_IF}.dns"="$VPN_DNS2"
+		[ -n "$NORDVPN_EASY_DNS1" ] && uci add_list "network.${VPN_IF}.dns"="$NORDVPN_EASY_DNS1"
+		[ -n "$NORDVPN_EASY_DNS2" ] && uci add_list "network.${VPN_IF}.dns"="$NORDVPN_EASY_DNS2"
 	else
 		uci set "network.${VPN_IF}.peerdns"='1'
 	fi

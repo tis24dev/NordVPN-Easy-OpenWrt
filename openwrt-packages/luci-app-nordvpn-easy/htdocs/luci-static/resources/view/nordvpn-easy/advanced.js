@@ -173,15 +173,26 @@ return view.extend({
 		o.rmempty = false;
 		o.description = _('Enable TCP MSS clamping on the firewall zone that carries the WireGuard tunnel. This reduces MTU blackhole problems on long-lived streams.');
 
+		o = s.option(form.ListValue, 'dns_mode', _('DNS / Threat Protection'));
+		o.value('standard', _('Standard (NordVPN DNS)'));
+		o.value('threat_protection', _('Threat Protection (block malware, ads and trackers)'));
+		o.value('threat_protection_family', _('Threat Protection + block adult content'));
+		o.value('custom', _('Custom DNS servers'));
+		o.default = 'custom';
+		o.rmempty = false;
+		o.description = _('Threat Protection points the tunnel at NordVPN resolvers that filter malware, ads and trackers for the whole LAN. Choose Custom to set your own DNS below.');
+
 		o = s.option(form.Value, 'vpn_dns1', _('DNS 1'));
 		o.placeholder = '103.86.99.99';
 		o.rmempty = true;
 		o.datatype = 'ipaddr';
+		o.depends('dns_mode', 'custom');
 
 		o = s.option(form.Value, 'vpn_dns2', _('DNS 2'));
 		o.placeholder = '103.86.96.96';
 		o.rmempty = true;
 		o.datatype = 'ipaddr';
+		o.depends('dns_mode', 'custom');
 
 		s = m.section(form.NamedSection, 'main', 'nordvpn_easy', _('Fallback Recovery'));
 		s.anonymous = true;

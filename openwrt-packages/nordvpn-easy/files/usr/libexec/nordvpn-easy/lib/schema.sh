@@ -43,6 +43,7 @@ nordvpn_easy_uci_options() {
 		'vpn_addr' \
 		'vpn_dns1' \
 		'vpn_dns2' \
+		'dns_mode' \
 		'check_cron_schedule' \
 		'enable_hotplug' \
 		'hotplug_debounce_seconds' \
@@ -76,6 +77,7 @@ nordvpn_easy_runtime_bindings() {
 		'vpn_addr VPN_ADDR' \
 		'vpn_dns1 VPN_DNS1' \
 		'vpn_dns2 VPN_DNS2' \
+		'dns_mode DNS_MODE' \
 		'check_cron_schedule CHECK_CRON_SCHEDULE' \
 		'enable_hotplug ENABLE_HOTPLUG' \
 		'hotplug_debounce_seconds HOTPLUG_DEBOUNCE_SECONDS' \
@@ -104,6 +106,7 @@ nordvpn_easy_runtime_options() {
 		'vpn_addr' \
 		'vpn_dns1' \
 		'vpn_dns2' \
+		'dns_mode' \
 		'check_cron_schedule' \
 		'enable_hotplug' \
 		'hotplug_debounce_seconds' \
@@ -132,6 +135,7 @@ nordvpn_easy_runtime_env_keys() {
 		'VPN_ADDR' \
 		'VPN_DNS1' \
 		'VPN_DNS2' \
+		'DNS_MODE' \
 		'CHECK_CRON_SCHEDULE' \
 		'ENABLE_HOTPLUG' \
 		'HOTPLUG_DEBOUNCE_SECONDS' \
@@ -169,6 +173,12 @@ nordvpn_easy_default() {
 			vpn_addr) printf '%s\n' '10.5.0.2/32' ;;
 			vpn_dns1) printf '%s\n' '103.86.99.99' ;;
 			vpn_dns2) printf '%s\n' '103.86.96.96' ;;
+		# dns_mode selects a NordVPN resolver pair (see nordvpn_easy_resolve_dns_pair).
+		# 'custom' keeps the saved vpn_dns1/vpn_dns2, which makes it the safe default
+		# for any config that predates the option: an upgrade never overrides a user's
+		# DNS, and a fresh install keeps today's behaviour. Threat Protection is opt-in
+		# from the Advanced page.
+		dns_mode) printf '%s\n' 'custom' ;;
 		check_cron_schedule) printf '%s\n' '' ;;
 		enable_hotplug) printf '%s\n' '1' ;;
 		hotplug_debounce_seconds) printf '%s\n' '30' ;;
@@ -224,6 +234,7 @@ nordvpn_easy_env_name() {
 		vpn_addr) printf '%s\n' 'VPN_ADDR' ;;
 		vpn_dns1) printf '%s\n' 'VPN_DNS1' ;;
 		vpn_dns2) printf '%s\n' 'VPN_DNS2' ;;
+		dns_mode) printf '%s\n' 'DNS_MODE' ;;
 		check_cron_schedule) printf '%s\n' 'CHECK_CRON_SCHEDULE' ;;
 		enable_hotplug) printf '%s\n' 'ENABLE_HOTPLUG' ;;
 		hotplug_debounce_seconds) printf '%s\n' 'HOTPLUG_DEBOUNCE_SECONDS' ;;
@@ -444,6 +455,19 @@ nordvpn_easy_normalize_value() {
 					;;
 				*)
 					printf '%s\n' 'auto'
+					;;
+			esac
+			;;
+		dns_mode)
+			# standard/threat_protection/threat_protection_family map to fixed
+			# NordVPN resolver pairs (see nordvpn_easy_resolve_dns_pair); custom keeps
+			# vpn_dns1/vpn_dns2. Anything else falls back to the safe default.
+			case "$value" in
+				standard|threat_protection|threat_protection_family|custom)
+					printf '%s\n' "$value"
+					;;
+				*)
+					printf '%s\n' "$default_value"
 					;;
 			esac
 			;;

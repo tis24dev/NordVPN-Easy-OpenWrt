@@ -348,4 +348,18 @@ nordvpn_easy_check_once
 
 assert_eq '1' "$PROVISION_COUNT" 'health check reprovisions when the runtime is degraded'
 
+# --- DNS mode -> resolver pair (Threat Protection) ---------------------------
+VPN_DNS1='1.1.1.1'; VPN_DNS2='9.9.9.9'
+DNS_MODE='standard' nordvpn_easy_resolve_dns_pair
+assert_eq '103.86.96.100|103.86.99.100' "$NORDVPN_EASY_DNS1|$NORDVPN_EASY_DNS2" 'standard mode uses the NordVPN standard resolvers'
+DNS_MODE='threat_protection' nordvpn_easy_resolve_dns_pair
+assert_eq '103.86.99.108|103.86.96.108' "$NORDVPN_EASY_DNS1|$NORDVPN_EASY_DNS2" 'threat_protection mode uses the anti-malware resolvers'
+DNS_MODE='threat_protection_family' nordvpn_easy_resolve_dns_pair
+assert_eq '103.86.96.111|103.86.99.111' "$NORDVPN_EASY_DNS1|$NORDVPN_EASY_DNS2" 'threat_protection_family mode uses the adult-content-blocking resolvers'
+DNS_MODE='custom' nordvpn_easy_resolve_dns_pair
+assert_eq '1.1.1.1|9.9.9.9' "$NORDVPN_EASY_DNS1|$NORDVPN_EASY_DNS2" 'custom mode keeps the user vpn_dns1/vpn_dns2'
+unset DNS_MODE
+nordvpn_easy_resolve_dns_pair
+assert_eq '1.1.1.1|9.9.9.9' "$NORDVPN_EASY_DNS1|$NORDVPN_EASY_DNS2" 'an absent dns_mode is treated as custom (keeps saved DNS)'
+
 printf '%s\n' 'test-actions.sh: ok'
