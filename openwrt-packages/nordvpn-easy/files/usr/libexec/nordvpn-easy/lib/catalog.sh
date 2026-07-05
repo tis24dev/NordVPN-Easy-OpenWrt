@@ -21,7 +21,7 @@ nordvpn_easy_build_server_catalog_json() {
 						city: (.locations[0].country.city.name // ""),
 						country_code: (.locations[0].country.code // $country_code),
 						country_name: (.locations[0].country.name // $country_name),
-						public_key: ([.technologies[]? | select(.identifier == "wireguard_udp") | .metadata[]? | select(.name == "public_key") | .value][0] // ""),
+						public_key: ([.technologies[]? | select((.identifier == "wireguard_udp") or ((.name | strings | ascii_downcase) == "wireguard")) | select((.pivot.status? // "online") == "online") | .metadata[]? | select(.name == "public_key") | .value][0] // ""),
 						status: (.status // "")
 					} | select(
 						(.hostname != "") and
@@ -50,11 +50,14 @@ nordvpn_easy_server_catalog_candidates_tsv() {
 }
 
 nordvpn_easy_recommendation_candidates_tsv() {
-	jq -r '.[] | [
+	jq -r '.[]
+		| select((.status // "") != "offline")
+		| [
 		.hostname,
 		.station,
 		([.technologies[]?
-			| select(.identifier == "wireguard_udp")
+			| select((.identifier == "wireguard_udp") or ((.name | strings | ascii_downcase) == "wireguard"))
+			| select((.pivot.status? // "online") == "online")
 			| .metadata[]?
 			| select(.name == "public_key")
 			| (.value // "")

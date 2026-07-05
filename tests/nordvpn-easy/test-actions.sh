@@ -206,6 +206,30 @@ nordvpn_easy_set_first_server_from_list
 assert_eq 'it02.nordvpn.com|it002' "$LAST_SET_SERVER" 'auto-selection skips a first server without a WireGuard key'
 assert_eq 'VALID-WG-KEY' "$LAST_SET_PUBLIC_KEY" 'auto-selection uses the first server that has a WireGuard key'
 
+# A first recommendation the API marks offline (whole server, or just its
+# WireGuard technology via pivot.status) must be skipped even though it carries a
+# valid key, so a stale cache never provisions onto a down server.
+jq -n '[
+	{ "hostname": "it03.nordvpn.com", "station": "it003", "load": 5, "status": "offline",
+	  "locations": [{ "country": { "code": "IT", "city": { "name": "Rome" } } }],
+	  "technologies": [{ "identifier": "wireguard_udp", "metadata": [{ "name": "public_key", "value": "OFFLINE-SERVER-KEY" }] }] },
+	{ "hostname": "it04.nordvpn.com", "station": "it004", "load": 10, "status": "online",
+	  "locations": [{ "country": { "code": "IT", "city": { "name": "Milan" } } }],
+	  "technologies": [{ "identifier": "wireguard_udp", "pivot": { "status": "offline" }, "metadata": [{ "name": "public_key", "value": "OFFLINE-TECH-KEY" }] }] },
+	{ "hostname": "it05.nordvpn.com", "station": "it005", "load": 20, "status": "online",
+	  "locations": [{ "country": { "code": "IT", "city": { "name": "Turin" } } }],
+	  "technologies": [{ "identifier": "wireguard_udp", "pivot": { "status": "online" }, "metadata": [{ "name": "public_key", "value": "ONLINE-WG-KEY" }] }] }
+]' > "$TMP_DIR/skip-offline.json"
+SERVER_LIST_FILE="$TMP_DIR/skip-offline.json"
+RESOLVED_COUNTRY_CODE=''
+NORDVPN_EASY_ROTATE_EXCLUDE_STATION=''
+NORDVPN_EASY_PROVISION_MODE=''
+LAST_SET_SERVER=''
+LAST_SET_PUBLIC_KEY=''
+nordvpn_easy_set_first_server_from_list
+assert_eq 'it05.nordvpn.com|it005' "$LAST_SET_SERVER" 'auto-selection skips servers flagged offline (server status and technology pivot status)'
+assert_eq 'ONLINE-WG-KEY' "$LAST_SET_PUBLIC_KEY" 'auto-selection uses the first server whose WireGuard technology is online'
+
 SERVER_LIST_FILE="$TMP_DIR/recommendations.json"
 
 NORDVPN_EASY_ROTATE_EXCLUDE_STATION='it123'

@@ -237,9 +237,14 @@ nordvpn_easy_set_first_server_from_list() {
 		[.[] |
 			select(($exclude == "") or ((.station // "") != $exclude)) |
 			select(($want == "") or ((.locations[0].country.code // "") == $want)) |
+			# Skip a server the API marks offline. The recommendations endpoint now
+			# carries the pivot-status=online filter, but a stale on-disk cache reused
+			# after a failed fetch can still hold a since-downed server.
+			select((.status // "") != "offline") |
 			. as $srv |
 			([$srv.technologies[]?
-				| select(.identifier == "wireguard_udp")
+				| select((.identifier == "wireguard_udp") or ((.name | strings | ascii_downcase) == "wireguard"))
+				| select((.pivot.status? // "online") == "online")
 				| .metadata[]?
 				| select(.name == "public_key")
 				| (.value // "")

@@ -30,8 +30,11 @@ COUNTRIES_URL="${NORDVPN_API}/servers/countries"
 # shellcheck disable=SC2034
 PUBLIC_COUNTRY_API='https://api.country.is'   # Third-party API, no auth required; returns JSON like {"country":"XX"} with an ISO country code.
 # shellcheck disable=SC2034
-SERVER_RECOMMENDATIONS_URL_BASE="${NORDVPN_API}/servers/recommendations?filters[servers_technologies][identifier]=wireguard_udp&limit=10"
-SERVER_CATALOG_URL_BASE="${NORDVPN_API}/servers?filters[servers_technologies][identifier]=wireguard_udp&limit=5000"
+# filters[servers_technologies][pivot][status]=online mirrors the official app
+# (v1/servers/recommendations, decompiled InterfaceC16507q): it drops servers
+# whose WireGuard technology is in maintenance so we never provision onto one.
+SERVER_RECOMMENDATIONS_URL_BASE="${NORDVPN_API}/servers/recommendations?filters[servers_technologies][identifier]=wireguard_udp&filters[servers_technologies][pivot][status]=online&limit=10"
+SERVER_CATALOG_URL_BASE="${NORDVPN_API}/servers?filters[servers_technologies][identifier]=wireguard_udp&filters[servers_technologies][pivot][status]=online&limit=5000"
 CREDENTIALS_URL="${NORDVPN_API}/users/services/credentials"
 LOCK_DIR='/tmp/nordvpn-easy.lock'
 NORDVPN_EASY_RC_BUSY="${NORDVPN_EASY_RC_BUSY:-75}"
