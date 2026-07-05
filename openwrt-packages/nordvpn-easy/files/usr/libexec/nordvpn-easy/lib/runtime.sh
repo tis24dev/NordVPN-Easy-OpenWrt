@@ -519,13 +519,6 @@ nordvpn_easy_emit_status_json() {
 	local public_verification_status='unknown'
 	local public_verification_checked_at='0'
 	local last_error=''
-	local connect_apply_pending='false'
-	local connect_apply_finished='false'
-	local connect_apply_success='false'
-	local connect_apply_rc='0'
-	local connect_apply_country=''
-	local connect_apply_started_at='0'
-	local connect_apply_finished_at='0'
 	local recovery_cron_installed='false'
 	local config_fingerprint=''
 	local applied_fingerprint=''
@@ -627,54 +620,6 @@ nordvpn_easy_emit_status_json() {
 			;;
 	esac
 
-	if nordvpn_easy_connect_apply_result_read "${NORDVPN_EASY_CONNECT_APPLY_RESULT:-/tmp/run/nordvpn-easy/connect-apply-result}"; then
-		connect_apply_country="$(printf '%s' "${CONNECT_APPLY_COUNTRY:-}" | tr 'a-z' 'A-Z')"
-		case "${CONNECT_APPLY_STARTED_AT:-}" in
-			''|*[!0-9]*)
-				connect_apply_started_at='0'
-				;;
-			*)
-				connect_apply_started_at="$CONNECT_APPLY_STARTED_AT"
-				;;
-		esac
-		case "${CONNECT_APPLY_FINISHED_AT:-}" in
-			''|*[!0-9]*)
-				connect_apply_finished_at='0'
-				;;
-			*)
-				connect_apply_finished_at="$CONNECT_APPLY_FINISHED_AT"
-				;;
-		esac
-		case "${CONNECT_APPLY_STATE:-}" in
-			pending)
-				connect_apply_pending='true'
-				;;
-			success)
-				connect_apply_pending='false'
-				connect_apply_finished='true'
-				connect_apply_success='true'
-				connect_apply_rc='0'
-				;;
-			failed)
-				connect_apply_pending='false'
-				connect_apply_finished='true'
-				connect_apply_success='false'
-				case "${CONNECT_APPLY_RC:-}" in
-					''|*[!0-9]*)
-						connect_apply_rc='1'
-						;;
-					*)
-						connect_apply_rc="$CONNECT_APPLY_RC"
-						;;
-				esac
-				;;
-		esac
-	fi
-
-	if [ -f "${NORDVPN_EASY_CONNECT_APPLY_GUARD:-/tmp/run/nordvpn-easy/connect-apply-guard}" ]; then
-		connect_apply_pending='true'
-	fi
-
 	# Reflect whether our managed recovery cron block is present in the shared root
 	# crontab (BusyBox crond reads /etc/crontabs/root, never /etc/cron.d). The
 	# marker must match the CRON_BLOCK_BEGIN written by the init service.
@@ -708,24 +653,14 @@ nordvpn_easy_emit_status_json() {
 		''|*[!0-9]*) status_seq='0' ;;
 	esac
 
-	# Capability probe (additive): the RPC contract level the LuCI client gates the
-	# supervised apply path on (>= 2). Defaults to 1 (legacy-only) if the getter is
-	# somehow unsourced, so a client never sees a spurious high level.
+	# The RPC contract level the emitted status advertises (constant 2). Defaults to 1
+	# if the getter is somehow unsourced, so a client never sees a spurious high level.
 	if command -v nordvpn_easy_rpc_contract_level >/dev/null 2>&1; then
 		rpc_contract_level="$(nordvpn_easy_rpc_contract_level 2>/dev/null || printf '1')"
 	fi
 	case "$rpc_contract_level" in
 		''|*[!0-9]*) rpc_contract_level='1' ;;
 	esac
-	# S7 tag 11: CLAMP the advertised level to 1 unless the supervisor is engaged, so a
-	# legacy device advertises the legacy 3-RPC contract and the JS never routes the
-	# async apply path there. This folds the orchestrator-capable gate into the single
-	# contract signal the JS reads (no separate status field).
-	if command -v nordvpn_easy_orchestrator_mode >/dev/null 2>&1; then
-		[ "$(nordvpn_easy_orchestrator_mode)" = 'supervisor' ] || rpc_contract_level='1'
-	else
-		rpc_contract_level='1'
-	fi
 
 	cat <<EOF
 {
@@ -783,14 +718,7 @@ nordvpn_easy_emit_status_json() {
   "current_server_country": "$(nordvpn_easy_json_escape "$current_country")",
   "current_server_load": "$(nordvpn_easy_json_escape "$current_load")",
   "preferred_server_hostname": "$(nordvpn_easy_json_escape "$preferred_hostname")",
-  "preferred_server_station": "$(nordvpn_easy_json_escape "$preferred_station")",
-  "connect_apply_pending": $connect_apply_pending,
-  "connect_apply_finished": $connect_apply_finished,
-  "connect_apply_success": $connect_apply_success,
-  "connect_apply_rc": $connect_apply_rc,
-  "connect_apply_country": "$(nordvpn_easy_json_escape "$connect_apply_country")",
-  "connect_apply_started_at": $connect_apply_started_at,
-  "connect_apply_finished_at": $connect_apply_finished_at
+  "preferred_server_station": "$(nordvpn_easy_json_escape "$preferred_station")"
 }
 EOF
 }

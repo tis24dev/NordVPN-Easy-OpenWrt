@@ -1,8 +1,7 @@
 #!/bin/sh
 
-# Supervisor phase runner (S7). nordvpn_easy_run_phase is DEFINED here but has NO
-# callers yet: the supervised state machine that drives it lands in a later
-# increment (it stays dead code, gated behind orchestrator=supervisor, until then).
+# Supervisor phase runner (S7). nordvpn_easy_run_phase drives every phase body of
+# the supervised apply state machine (nordvpn_easy_supervise, below).
 #
 # run_phase records a journal phase boundary (preserving the transaction identity),
 # runs the phase body under a best-effort watchdog, and retries only
@@ -108,10 +107,8 @@ nordvpn_easy_run_phase() {
 	done
 }
 # ============================================================================
-# S7 supervised apply state machine (increment 5c). ONE process, flag-gated
-# behind orchestrator=supervisor. INERT: only reachable when a caller invokes
-# nordvpn_easy_supervise, whose first statement re-gates on the flag. Nothing
-# in inc 5c routes here except an explicit `core.sh supervise` under the flag.
+# Supervised apply state machine. ONE process: reached via the `apply` verb's
+# setsid fork (core.sh supervise -> nordvpn_easy_supervise) for an enable apply.
 # All phase bodies run under nordvpn_easy_run_phase (supervise.sh above).
 # ============================================================================
 
@@ -308,7 +305,6 @@ _supervise_hooks() {
 	CRON_BLOCK_BEGIN="${CRON_BLOCK_BEGIN:-# BEGIN nordvpn-easy}"
 	CRON_BLOCK_END="${CRON_BLOCK_END:-# END nordvpn-easy}"
 	HOTPLUG_PATH="${HOTPLUG_PATH:-/etc/hotplug.d/iface/95-nordvpn-easy}"
-	CONNECT_APPLY_GUARD="${NORDVPN_EASY_CONNECT_APPLY_GUARD:-/tmp/run/nordvpn-easy/connect-apply-guard}"
 	log_service_info() { nordvpn_easy_log "service: $*"; }
 	log_service_error() { nordvpn_easy_log "service: $*"; }
 	restart_cron_service() {
@@ -410,19 +406,12 @@ _supervise_verify() {
 	return 0
 }
 
-# The supervised apply machine. 3rd structural flag gate = first statement.
+# The supervised apply machine: the sole apply path for an enable.
 nordvpn_easy_supervise() {
-	# GATE 1/2 (of this function): orchestrator mode. Absent/garbage => 'legacy'
-	# per nordvpn_easy_orchestrator_mode => refuse as a benign no-op (return 0);
-	# the legacy path is unaffected because nothing routes here in inc 5c.
-	if [ "$(nordvpn_easy_orchestrator_mode)" != 'supervisor' ]; then
-		nordvpn_easy_log_phase 'supervise' 'orchestrator mode is legacy; supervisor state machine is inert (no-op)'
-		return 0
-	fi
-	# GATE 2/2: disable (DESIRED_ENABLED=0) is REFUSED in inc 5c -- it stays on the
-	# legacy disconnect/disable_runtime path. Return 0 so it is not a failure.
+	# A disable request (DESIRED_ENABLED=0) is handled by the stop/disable path, not
+	# the supervisor. Return 0 so it is not a failure.
 	if [ "${DESIRED_ENABLED:-0}" != '1' ]; then
-		nordvpn_easy_log_phase 'supervise' 'disable request (DESIRED_ENABLED=0) is not handled by the supervisor in this increment; staying on the legacy path'
+		nordvpn_easy_log_phase 'supervise' 'disable request (DESIRED_ENABLED=0) is handled by the stop path, not the supervisor; no-op'
 		return 0
 	fi
 	LOG_PHASE='supervise'

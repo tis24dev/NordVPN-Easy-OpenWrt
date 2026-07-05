@@ -116,7 +116,6 @@ SHELL_TESTS=(
 	test-schema.sh
 	test-generation.sh
 	test-journal.sh
-	test-journal-dualwrite.sh
 	test-run-phase.sh
 	test-supervise.sh
 	test-supervise-check-reap.sh

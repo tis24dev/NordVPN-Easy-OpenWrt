@@ -1065,12 +1065,9 @@ fi
 
 if [ "$ACTION" = 'status_json' ]; then
   LOG_PHASE='runtime'
-  # Single live emit. nordvpn_easy_emit_status_json reads the connect-apply guard
-  # (-> connect_apply_pending) and the connect-apply-result file fresh, so this is a
-  # full emit that honors the "full emit while the guard exists" contract with no
-  # special branch. The status cache is a post-action forensic snapshot (written by
-  # the action epilogue and connect-apply finish), never read on the poll path, so
-  # it is not written here.
+  # Single live emit. nordvpn_easy_emit_status_json reads the live runtime + journal
+  # state fresh. The status cache is a post-action forensic snapshot (written by the
+  # action epilogue), never read on the poll path, so it is not written here.
   nordvpn_easy_emit_status_json
   exit $?
 fi
@@ -1140,12 +1137,11 @@ case "$ACTION" in
     ACTION_RC=$?
     ;;
   supervise)
-    # 2nd structural flag gate (S7 inc 5c): the supervised apply state machine runs
-    # ONLY under orchestrator=supervisor and ONLY for the enable apply; disable and
-    # legacy stay on the existing path. Placed after acquire_lock so the in-lock TTL
-    # reaper has already fired at head.
-    if [ "$(nordvpn_easy_orchestrator_mode)" != 'supervisor' ] || [ "${DESIRED_ENABLED:-0}" != '1' ]; then
-      log 'supervise: orchestrator=legacy or disable requested; staying on legacy path (no-op)'
+    # The supervised apply state machine runs for the enable apply; a disable request
+    # is handled by the stop path, not the supervisor. Placed after acquire_lock so the
+    # in-lock TTL reaper has already fired at head.
+    if [ "${DESIRED_ENABLED:-0}" != '1' ]; then
+      log 'supervise: disable requested; disable is handled by the stop path (no-op)'
       ACTION_RC=0
     else
       nordvpn_easy_supervise
@@ -1169,12 +1165,7 @@ case "$ACTION" in
     ;;
   stop_vpn)
     if validate_stop_runtime; then
-      if [ -f "${NORDVPN_EASY_CONNECT_APPLY_GUARD:-/tmp/run/nordvpn-easy/connect-apply-guard}" ] ||
-        [ "${NORDVPN_EASY_CONNECT_APPLY:-0}" = '1' ]; then
-        nordvpn_easy_stop_vpn_for_connect_apply
-      else
-        nordvpn_easy_stop_vpn_for_server_change
-      fi
+      nordvpn_easy_stop_vpn_for_server_change
       ACTION_RC=$?
     else
       ACTION_RC=1
@@ -1188,13 +1179,8 @@ case "$ACTION" in
     ;;
   setup)
     if validate_setup_runtime; then
-      if [ "${NORDVPN_EASY_CONNECT_APPLY:-0}" = '1' ]; then
-        provision_vpn connect_apply &&
-        log 'NordVPN configuration is ready (connect apply)'
-      else
-        provision_vpn connect_fresh &&
-        log 'NordVPN configuration is ready'
-      fi
+      provision_vpn connect_fresh &&
+      log 'NordVPN configuration is ready'
       ACTION_RC=$?
     else
       ACTION_RC=1

@@ -1,11 +1,11 @@
 #!/bin/sh
 
-# S7 increment 8: journal-authoritative in-flight recovery. nordvpn_easy_check_once,
-# under orchestrator=supervisor, RE-DRIVES a crashed apply -- a SAME-target,
-# non-terminal journal record whose owner_pid is dead -- by invoking the supervisor
-# (which ADOPTS the record and completes it). A FOREIGN record is reaped (5d), not
-# re-driven; a live-owner or terminal record is left. journal_finish becomes
-# owner-fenced for the supervisor (nordvpn_easy_fenced_journal_finish). The re-drive is
+# Journal-authoritative in-flight recovery. nordvpn_easy_check_once RE-DRIVES a crashed
+# apply -- a SAME-target, non-terminal journal record whose owner_pid is dead -- by
+# invoking the supervisor (which ADOPTS the record and completes it). A FOREIGN record is
+# reaped, not re-driven; a live-owner or terminal record is left. The re-drive is gated
+# only on `command -v nordvpn_easy_supervise` (S9: no orchestrator flag). journal_finish
+# is owner-fenced for the supervisor (nordvpn_easy_fenced_journal_finish). The re-drive is
 # loop-safe (a persistently failing apply ends FAILED = terminal, never re-driven) and
 # cannot double-apply (single held lock + owner fence). Uses a COUNTING supervise stub
 # that exercises the REAL open_txn ADOPT + a real terminal finish.
@@ -50,7 +50,6 @@ nordvpn_easy_log_blocker() { :; }
 nordvpn_easy_ping_interface() { return 0; }
 nordvpn_easy_check_once_finish() { :; }
 nordvpn_easy_target_identity() { printf '%s' 'fp-NEW:1'; }
-nordvpn_easy_orchestrator_mode() { printf '%s' "${MODE:-legacy}"; }
 
 # Counting re-drive stub: exercises the REAL open_txn (ADOPT keeps txn_id, clears
 # fetch_done) then a real terminal finish, so "journal reaches done" is observable.
@@ -74,7 +73,6 @@ seed() { # phase txn target owner_pid [fetch_done]
 # --- Case A: CRASHED same-target dead-owner -> RE-DRIVE ------------------------
 SUPERVISE_CALLS=0
 seed 'converge' 'T-crash' 'fp-NEW:1' '999999' '1'
-MODE='supervisor'
 nordvpn_easy_check_once >/dev/null 2>&1 || true
 assert_eq '1' "$SUPERVISE_CALLS" 'A: a crashed same-target apply is re-driven'
 assert_eq 'done' "$(nordvpn_easy_journal_get phase)" 'A: the re-drive completes the journal (done)'
@@ -84,7 +82,6 @@ assert_eq '' "$REDRIVE_FETCH_DONE_AFTER_OPEN" 'A: open_txn cleared fetch_done on
 # --- Case B: FOREIGN dead-owner -> reaped (5d), NOT re-driven ------------------
 SUPERVISE_CALLS=0
 seed 'configure' 'T-foreign' 'fp-OLD:1' '999999'
-MODE='supervisor'
 nordvpn_easy_check_once >/dev/null 2>&1 || true
 assert_eq 'failed' "$(nordvpn_easy_journal_get phase)" 'B: a foreign record is reaped to failed'
 assert_eq 'local.reaped_stale' "$(nordvpn_easy_journal_get last_error)" 'B: the reaped record carries the reaped_stale cause'
@@ -93,7 +90,6 @@ assert_eq '0' "$SUPERVISE_CALLS" 'B: a foreign record is NOT re-driven'
 # --- Case C: LIVE-owner same-target -> neither reaped nor re-driven ------------
 SUPERVISE_CALLS=0
 seed 'converge' 'T-live' 'fp-NEW:1' "$$"
-MODE='supervisor'
 nordvpn_easy_check_once >/dev/null 2>&1 || true
 assert_eq 'converge' "$(nordvpn_easy_journal_get phase)" 'C: a live-owner record is left untouched'
 assert_eq '0' "$SUPERVISE_CALLS" 'C: a live-owner record is not re-driven'
@@ -102,19 +98,10 @@ assert_eq '0' "$SUPERVISE_CALLS" 'C: a live-owner record is not re-driven'
 for term in 'done' 'failed'; do
 	SUPERVISE_CALLS=0
 	seed "$term" 'T-term' 'fp-NEW:1' '999999'
-	MODE='supervisor'
 	nordvpn_easy_check_once >/dev/null 2>&1 || true
 	assert_eq "$term" "$(nordvpn_easy_journal_get phase)" "D: a terminal ($term) record is left untouched"
 	assert_eq '0' "$SUPERVISE_CALLS" "D: a terminal ($term) record is NOT re-driven (loop-safe)"
 done
-
-# --- Case E: INERTNESS under legacy -------------------------------------------
-SUPERVISE_CALLS=0
-seed 'converge' 'T-legacy' 'fp-NEW:1' '999999'
-MODE='legacy'
-nordvpn_easy_check_once >/dev/null 2>&1 || true
-assert_eq 'converge' "$(nordvpn_easy_journal_get phase)" 'E: under legacy check_once does not touch the journal'
-assert_eq '0' "$SUPERVISE_CALLS" 'E: under legacy the re-drive never fires'
 
 # --- Case F: fenced_journal_finish -- refuse superseded, accept owner/tokenless -
 LOCK_DIR="$TMP_DIR/lock"
@@ -139,7 +126,6 @@ assert_eq 'failed' "$(nordvpn_easy_journal_get phase)" 'F: a tokenless finish pr
 # --- Case G: re-drive is IDEMPOTENT (running twice converges once) -------------
 SUPERVISE_CALLS=0
 seed 'converge' 'T-idem' 'fp-NEW:1' '999999' '1'
-MODE='supervisor'
 nordvpn_easy_check_once >/dev/null 2>&1 || true
 assert_eq '1' "$SUPERVISE_CALLS" 'G: first check re-drives once'
 assert_eq 'done' "$(nordvpn_easy_journal_get phase)" 'G: first check completes the journal'
@@ -155,7 +141,6 @@ assert_eq 'done' "$(nordvpn_easy_journal_get phase)" 'G: the journal stays done'
 nordvpn_easy_supervise_reap_stale_journal() { :; }
 SUPERVISE_CALLS=0
 seed 'converge' 'T-foreign2' 'fp-OLD:1' '999999'
-MODE='supervisor'
 nordvpn_easy_check_once >/dev/null 2>&1 || true
 assert_eq '0' "$SUPERVISE_CALLS" 'H: a foreign record is NOT re-driven even with the reap stubbed (same-target clause is load-bearing)'
 assert_eq 'converge' "$(nordvpn_easy_journal_get phase)" 'H: the foreign record is left non-terminal (reap stubbed, re-drive skipped)'

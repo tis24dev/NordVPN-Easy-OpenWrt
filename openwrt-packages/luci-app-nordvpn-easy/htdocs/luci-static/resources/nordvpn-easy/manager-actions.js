@@ -17,7 +17,6 @@ const MAX_DRIFT_RESTART_DEPTH = 1;
 const SAVE_APPLY_TIMEOUT_MS = 240000;
 const RUNTIME_ACTION_RECOVERY_POLL_MS = 3000;
 const APPLY_CONVERGENCE_POLL_MS = 1000;
-const CONNECT_APPLY_DISPATCH_CLOCK_SLACK_MS = 120000;
 const RUNTIME_ACTION_COOLDOWN_MS = SAVE_APPLY_TIMEOUT_MS + 30000;
 const ENABLED_RUNTIME_RECOVERY_COOLDOWN_MS = 15000;
 const POST_APPLY_RECOVERY_GRACE_MS = 120000;
@@ -471,19 +470,6 @@ function supervisedApplyFailed(state, status) {
 		String((status && status.journal_phase) || '') === 'failed';
 }
 
-function noteConnectApplyServerMarker(state, status) {
-	const runtimeStatus = status || {};
-	const startedAt = Number(runtimeStatus.connect_apply_started_at || 0);
-
-	if (!state || !state.connectApplyDispatchedAt || startedAt <= 0)
-		return;
-
-	state.connectApplyServerStartedAt = Math.max(
-		Number(state.connectApplyServerStartedAt || 0),
-		startedAt
-	);
-}
-
 function savedConfigForApplyState(state) {
 	const mode = normalizeSelectionMode(state.appliedMode || 'auto');
 
@@ -556,7 +542,7 @@ function applyRuntimeConvergenceSucceeded(savedConfig, status, state) {
 	return runtimeActionRecoverySucceeded(savedConfig, status, state);
 }
 
-function awaitRuntimeConvergenceAfterDispatch(state, savedConfig, applyAttemptId, successMessage, dispatchAction) {
+function awaitRuntimeConvergenceAfterDispatch(state, savedConfig, applyAttemptId, successMessage) {
 	const deadline = Date.now() + SAVE_APPLY_TIMEOUT_MS;
 
 	const pollForConvergence = function() {
@@ -578,51 +564,21 @@ function awaitRuntimeConvergenceAfterDispatch(state, savedConfig, applyAttemptId
 
 			const runtimeStatus = status || null;
 
-			// S8: the supervised apply (dispatchAction 'apply') reads convergence off the
-			// supervisor's OWN journal signal, bound to a txn we watched go in-flight, and
-			// RETURNS -- it never falls through to the legacy connect_apply_* markers or the
-			// live-state heuristic (which could mask a supervisor failure as success). The
-			// legacy connect phase passes no dispatchAction, so this branch is inert for it.
-			if (dispatchAction === 'apply') {
-				noteSupervisedApplyProgress(state, runtimeStatus);
+			// The supervised apply reads convergence off the supervisor's OWN journal
+			// signal, bound to a txn we watched go in-flight. It never re-derives success
+			// from the live country/station/handshake state (which could mask a supervisor
+			// failure as success): a terminal journal phase 'failed'/'done' is the sole
+			// verdict.
+			noteSupervisedApplyProgress(state, runtimeStatus);
 
-				if (supervisedApplyFailed(state, runtimeStatus)) {
-					const supervisedFailureMessage = String((runtimeStatus && runtimeStatus.last_error) || '').trim() ||
-						_('VPN connect failed.');
-
-					throw new Error(supervisedFailureMessage);
-				}
-
-				if (supervisedApplyConverged(state, runtimeStatus)) {
-					service.notifyInfo(successMessage);
-					return finishApplyCycle(state, {
-						suppressAutoReconcile: true,
-						applyAttemptId: applyAttemptId
-					});
-				}
-
-				return new Promise(function(resolve, reject) {
-					setTimeout(function() {
-						pollForConvergence().then(resolve, reject);
-					}, applyConvergencePollIntervalMs(state));
-				});
-			}
-
-			if (runtimeStatus)
-				noteConnectApplyServerMarker(state, runtimeStatus);
-
-			if (connectApplyJobFailed(state, runtimeStatus)) {
-				throw new Error(_('VPN connect failed.'));
-			}
-
-			if (runtimeActionFailureFromStatus(runtimeStatus)) {
-				const failureMessage = String((runtimeStatus && runtimeStatus.last_error) || '').trim() ||
+			if (supervisedApplyFailed(state, runtimeStatus)) {
+				const supervisedFailureMessage = String((runtimeStatus && runtimeStatus.last_error) || '').trim() ||
 					_('VPN connect failed.');
 
-				throw new Error(failureMessage);
+				throw new Error(supervisedFailureMessage);
 			}
 
-			if (applyRuntimeConvergenceSucceeded(savedConfig, runtimeStatus, state)) {
+			if (supervisedApplyConverged(state, runtimeStatus)) {
 				service.notifyInfo(successMessage);
 				return finishApplyCycle(state, {
 					suppressAutoReconcile: true,
@@ -638,7 +594,7 @@ function awaitRuntimeConvergenceAfterDispatch(state, savedConfig, applyAttemptId
 		});
 	};
 
-	return service.runAction(dispatchAction || 'start_connect').then(function(dispatchResult) {
+	return service.runAction('apply').then(function(dispatchResult) {
 		if (!applyAttemptIsCurrent(state, applyAttemptId))
 			return rejectStaleApplyAttempt();
 
@@ -649,37 +605,10 @@ function awaitRuntimeConvergenceAfterDispatch(state, savedConfig, applyAttemptId
 			throw error;
 		}
 
-		state.connectApplyDispatchedAt = Date.now();
 		return pollForConvergence();
 	});
 }
 
-
-function recoverEnabledRuntimeAfterApplyFailure() {
-	return service.runAction('abort_connect_apply').catch(function() {
-		return { success: true };
-	}).then(function() {
-		return service.runAction('start_connect');
-	});
-}
-
-function runtimeRecoveryRequested(submitted, state) {
-	const submittedEnabled = !!(submitted && submitted.enabled);
-	const status = (state && state.currentLocalStatus) || {};
-
-	return submittedEnabled || !!status.desired_enabled;
-}
-
-
-function shouldRecoverAfterApplyFailure(state, submitted) {
-	if (!runtimeRecoveryRequested(submitted, state))
-		return false;
-
-	if (state && state.connectApplyDispatchedAt)
-		return false;
-
-	return String((state && state.applyPhase) || '') === 'stop_vpn';
-}
 
 function runApplyCycleConfigurationPhase(viewState, state, ev, submitted, skipFormSave, applyAttemptId) {
 	if (!applyAttemptIsCurrent(state, applyAttemptId))
@@ -721,23 +650,6 @@ function runApplyCycleConfigurationPhase(viewState, state, ev, submitted, skipFo
 	});
 }
 
-function runApplyActionSequence(state, applyAttemptId, actions) {
-	return actions.reduce(function(chain, action) {
-		return chain.then(function() {
-			if (!applyAttemptIsCurrent(state, applyAttemptId))
-				return rejectStaleApplyAttempt();
-
-			return service.runAction(action).then(function(result) {
-				if (!applyAttemptIsCurrent(state, applyAttemptId))
-					return rejectStaleApplyAttempt();
-
-				if (!result.success)
-					throw service.resultToError(result);
-			});
-		});
-	}, Promise.resolve());
-}
-
 function runApplyCycleDisabledStop(state, applyAttemptId) {
 	if (!applyAttemptIsCurrent(state, applyAttemptId))
 		return rejectStaleApplyAttempt();
@@ -751,17 +663,6 @@ function runApplyCycleDisabledStop(state, applyAttemptId) {
 		if (!stopResult.success)
 			throw service.resultToError(stopResult);
 	});
-}
-
-function recentConnectApplySucceeded(status, maxAgeMs) {
-	const runtimeStatus = status || {};
-	const finishedAt = Number(runtimeStatus.connect_apply_finished_at || 0) * 1000;
-	const graceMs = Number(maxAgeMs) || POST_APPLY_RECOVERY_GRACE_MS;
-
-	if (!runtimeStatus.connect_apply_finished || !runtimeStatus.connect_apply_success || !finishedAt)
-		return false;
-
-	return (Date.now() - finishedAt) < graceMs;
 }
 
 function postApplyRecoveryGraceActive(state) {
@@ -779,13 +680,11 @@ function runtimeNeedsEnabledRecovery(status, state) {
 	if (state && (state.saveApplyInProgress || managerUI.isDisableRequested(state)))
 		return false;
 
+	// Suppress a spurious auto-reconcile immediately after a good supervised apply.
+	// finishApplyCycle stamps postApplyRecoveryGraceUntil = now + POST_APPLY_RECOVERY_GRACE_MS,
+	// so this grace window covers the post-apply period that the removed legacy
+	// apply-result status probes used to guard.
 	if (postApplyRecoveryGraceActive(state))
-		return false;
-
-	if (recentConnectApplySucceeded(runtimeStatus, POST_APPLY_RECOVERY_GRACE_MS))
-		return false;
-
-	if (runtimeStatus.connect_apply_pending)
 		return false;
 
 	if (runtimeOperationIsBusy(state, runtimeStatus))
@@ -865,40 +764,9 @@ function captureApplySelectionBaseline(state, viewState) {
 	return baseline;
 }
 
-function runtimeSelectionChanged(state, viewState, submitted) {
-	const baseline = captureApplySelectionBaseline(state, viewState);
-	const nextCountry = managerData.normalizeCountryCode((submitted && submitted.country) || '');
-	const nextMode = normalizeSelectionMode((submitted && submitted.mode) || 'auto');
-	const nextStation = String((submitted && submitted.preferredStation) || '');
-
-	return baseline.country !== nextCountry ||
-		baseline.mode !== nextMode ||
-		baseline.preferredStation !== nextStation;
-}
-
-// S7 tag 11: the backend clamps rpc_contract_level to >=2 ONLY under orchestrator=
-// supervisor, so this single check gates the async supervised apply on both "the
-// supervisor is engaged" and "the apply method is available". Reads the parsed local
-// status the poller stores (state.currentLocalStatus); absent/old backend -> defaults
-// to 1 -> legacy path.
-function applyIsSupervisorCapable(state) {
-	const rs = state && state.currentLocalStatus;
-	return !!rs && Number(rs.rpc_contract_level || 1) >= 2;
-}
-
-// A capability-absent RPC error (an inconsistent partial upgrade: the backend advertised
-// contract 2 but the apply method or its ACL grant is missing) -> fall back to legacy.
-function isCapabilityAbsentError(err) {
-	const m = (err && err.message) ? String(err.message) : String(err);
-	return m.indexOf('Object not found') !== -1 ||
-		m.indexOf('Access denied') !== -1 ||
-		m.indexOf('Method not found') !== -1;
-}
-
 // Dispatch the async supervised apply ONCE. awaitRuntimeConvergenceAfterDispatch does
-// the single service.runAction('apply'), checks its result (throwing on failure so the
-// caller's capability-absent fallback can fire), and reuses the same status_json
-// convergence poll as the legacy path -- no separate start_connect.
+// the single service.runAction('apply'), checks its result (throwing on failure), and
+// polls status_json for journal convergence. This is the sole apply path.
 function runApplyCycleSupervisedApply(state, savedConfig, applyAttemptId) {
 	if (!applyAttemptIsCurrent(state, applyAttemptId))
 		return rejectStaleApplyAttempt();
@@ -907,32 +775,10 @@ function runApplyCycleSupervisedApply(state, savedConfig, applyAttemptId) {
 	// txn we watch go through an in-flight phase from here on (never a stale leftover).
 	// supervisedApplyInFlight tells the background poller NOT to finish this apply via the
 	// live-state heuristic (which could mask a supervisor failure as success) -- the
-	// supervised poll below is the sole terminal. Cleared in finishApplyCycle and by the
-	// caller's capability-absent fallback (which reverts to the legacy live-state path).
+	// supervised poll below is the sole terminal. Cleared in finishApplyCycle.
 	state.supervisedApplyObservedTxn = '';
 	state.supervisedApplyInFlight = true;
-	return awaitRuntimeConvergenceAfterDispatch(state, savedConfig, applyAttemptId, APPLY_CYCLE_SUCCESS_CONNECTED, 'apply');
-}
-
-function runApplyCycleStopPhase(viewState, state, submitted, applyAttemptId) {
-	if (!applyAttemptIsCurrent(state, applyAttemptId))
-		return rejectStaleApplyAttempt();
-
-	state.applyPhase = 'stop_vpn';
-
-	const selectionChanged = runtimeSelectionChanged(state, viewState, submitted);
-	timingLog('runApplyCycleStopPhase', 'stop_phase', { selectionChanged: selectionChanged });
-
-	// A server/selection change stops FIRST then arms the connect-apply guard, so
-	// the stop runs in server-change mode and clears the stale recommendation
-	// caches; an unchanged selection arms the guard FIRST so the whole stop is
-	// guarded and the reusable recommendation cache is preserved. The two paths
-	// differ only in this ordering.
-	const sequence = selectionChanged
-		? [ 'stop_vpn', 'begin_connect_apply' ]
-		: [ 'begin_connect_apply', 'stop_vpn' ];
-
-	return runApplyActionSequence(state, applyAttemptId, sequence);
+	return awaitRuntimeConvergenceAfterDispatch(state, savedConfig, applyAttemptId, APPLY_CYCLE_SUCCESS_CONNECTED);
 }
 
 function shouldHideDiagnosticsAlerts(state) {
@@ -941,18 +787,6 @@ function shouldHideDiagnosticsAlerts(state) {
 
 	return !!state.saveApplyInProgress ||
 		!!managerData.normalizeCountryCode(state.applyTargetCountryCode || '');
-}
-
-function runApplyCycleConnectPhase(state, savedConfig, applyAttemptId) {
-	const successMessage = APPLY_CYCLE_SUCCESS_CONNECTED;
-
-	if (!applyAttemptIsCurrent(state, applyAttemptId))
-		return rejectStaleApplyAttempt();
-
-	state.applyPhase = 'connect';
-	timingLog('runApplyCycleConnectPhase', 'connect', {});
-
-	return awaitRuntimeConvergenceAfterDispatch(state, savedConfig, applyAttemptId, successMessage);
 }
 
 function runApplyCycle(viewState, state, ev, options) {
@@ -999,28 +833,9 @@ function runApplyCycle(viewState, state, ev, options) {
 			});
 		}
 
-		// S7 tag 11: when the backend advertises rpc_contract_level>=2 (only under
-		// orchestrator=supervisor), route the enable apply through the ASYNC supervised
-		// apply (one RPC that returns fast + a status_json poll) instead of the blocking
-		// legacy begin_connect_apply 3-RPC. Fall back to legacy if the apply method/ACL is
-		// somehow absent (an inconsistent partial upgrade).
-		if (applyIsSupervisorCapable(state)) {
-			return runApplyCycleSupervisedApply(state, savedConfig, applyAttemptId).catch(function(err) {
-				if (isCapabilityAbsentError(err)) {
-					// Reverting to the legacy live-state path: let the background poller
-					// finish it again (clear the supervised guard set at dispatch).
-					state.supervisedApplyInFlight = false;
-					return runApplyCycleStopPhase(viewState, state, submitted, applyAttemptId).then(function() {
-						return runApplyCycleConnectPhase(state, savedConfig, applyAttemptId);
-					});
-				}
-				throw err;
-			});
-		}
-
-		return runApplyCycleStopPhase(viewState, state, submitted, applyAttemptId).then(function() {
-			return runApplyCycleConnectPhase(state, savedConfig, applyAttemptId);
-		});
+		// Route the enable apply through the async supervised apply: one RPC that
+		// returns fast, then a status_json poll for journal convergence.
+		return runApplyCycleSupervisedApply(state, savedConfig, applyAttemptId);
 	}).then(function(refreshResult) {
 		if (!applyAttemptIsCurrent(state, applyAttemptId))
 			return rejectStaleApplyAttempt();
@@ -1326,84 +1141,14 @@ function savedRuntimeManualServerMatches(status, savedConfig) {
 	return savedMode !== 'manual' || !savedStation || runtimeStation === savedStation;
 }
 
-function connectApplyResultBelongsToDispatch(state, status) {
-	const runtimeStatus = status || {};
-	const dispatchedAt = Number((state && state.connectApplyDispatchedAt) || 0);
-	const startedAt = Number(runtimeStatus.connect_apply_started_at || 0);
-	const finishedAt = Number(runtimeStatus.connect_apply_finished_at || 0);
-	const serverStartedAt = Number((state && state.connectApplyServerStartedAt) || 0);
-	const markerSeconds = finishedAt || startedAt;
-
-	if (!dispatchedAt)
-		return false;
-
-	if (serverStartedAt > 0 && finishedAt > 0)
-		return finishedAt >= serverStartedAt;
-
-	if (!markerSeconds)
-		return !!runtimeStatus.connect_apply_finished;
-
-	return (markerSeconds * 1000) >= (dispatchedAt - CONNECT_APPLY_DISPATCH_CLOCK_SLACK_MS);
-}
-
-function connectApplyJobFailed(state, status) {
-	const runtimeStatus = status || {};
-
-	if (!state || !state.connectApplyDispatchedAt)
-		return false;
-
-	if (runtimeStatus.connect_apply_pending)
-		return false;
-
-	if (!runtimeStatus.connect_apply_finished || runtimeStatus.connect_apply_success)
-		return false;
-
-	return connectApplyResultBelongsToDispatch(state, runtimeStatus);
-}
-
-function connectApplyJobSucceeded(state, savedConfig, status) {
-	const runtimeStatus = status || {};
-	const savedCountry = managerData.normalizeCountryCode((savedConfig && savedConfig.country) || '');
-	const resultCountry = managerData.normalizeCountryCode(runtimeStatus.connect_apply_country || '');
-
-	if (!state || !state.connectApplyDispatchedAt)
-		return false;
-
-	if (runtimeStatus.connect_apply_pending)
-		return false;
-
-	if (!runtimeStatus.connect_apply_finished || !runtimeStatus.connect_apply_success)
-		return false;
-
-	if (!state.connectApplyServerStartedAt)
-		return false;
-
-	if (!connectApplyResultBelongsToDispatch(state, runtimeStatus))
-		return false;
-
-	if (savedCountry && resultCountry && resultCountry === savedCountry)
-		return savedRuntimeManualServerMatches(runtimeStatus, savedConfig);
-
-	return savedRuntimeCountryMatches(runtimeStatus, savedConfig) &&
-		savedRuntimeManualServerMatches(runtimeStatus, savedConfig);
-}
-
 function runtimeActionRecoverySucceeded(savedConfig, status, state) {
 	const runtimeStatus = status || {};
 	const savedEnabled = !!(savedConfig && savedConfig.enabled);
 
 	if (state && state.saveApplyInProgress &&
-		connectApplyJobSucceeded(state, savedConfig, runtimeStatus)) {
-		return true;
-	}
-
-	if (state && state.saveApplyInProgress &&
 		applyRuntimeLiveReady(savedConfig, runtimeStatus)) {
 		return true;
 	}
-
-	if (runtimeStatus.connect_apply_pending)
-		return false;
 
 	if ((!state || !state.saveApplyInProgress) && runtimeStatusIndicatesBusy(runtimeStatus))
 		return false;
@@ -1421,10 +1166,6 @@ function runtimeActionRecoverySucceeded(savedConfig, status, state) {
 		!!runtimeStatus.interface_disabled) {
 		return false;
 	}
-
-	if (runtimeStatus.connect_apply_finished && runtimeStatus.connect_apply_success)
-		return savedRuntimeCountryMatches(runtimeStatus, savedConfig) &&
-			savedRuntimeManualServerMatches(runtimeStatus, savedConfig);
 
 	if (!runtimeStatus.connected &&
 		String(runtimeStatus.vpn_status || '') !== 'active' &&
@@ -2131,7 +1872,6 @@ function handleSaveApply(viewState, state, ev) {
 	captureApplySelectionBaseline(state, viewState);
 	state.applyTargetEnabled = !!submittedRuntimeConfig.enabled;
 	state.applyTargetCountryCode = managerData.normalizeCountryCode(submittedRuntimeConfig.country || '');
-	state.connectApplyDispatchedAt = 0;
 	state.pendingOperationLabel = '';
 	state.applyPhase = 'configuration';
 	markRuntimeActionCooldown(state);
@@ -2184,9 +1924,7 @@ function handleSaveApply(viewState, state, ev) {
 
 			const timeoutError = new Error(_('Configuration apply timed out.'));
 			const timeoutApplyAttemptId = applyAttemptId + ':timeout';
-			const recoveryPromise = shouldRecoverAfterApplyFailure(state, submittedRuntimeConfig)
-				? recoverEnabledRuntimeAfterApplyFailure()
-				: Promise.resolve();
+			const recoveryPromise = Promise.resolve();
 
 			managerStore.setError(state, timeoutError);
 			state.currentApplyAttempt = timeoutApplyAttemptId;
@@ -2213,9 +1951,7 @@ function handleSaveApply(viewState, state, ev) {
 			finishResolve();
 		}).catch(function(err) {
 			const message = (err && err.message) ? err.message : String(err);
-			const recoveryPromise = shouldRecoverAfterApplyFailure(state, submittedRuntimeConfig)
-				? recoverEnabledRuntimeAfterApplyFailure()
-				: Promise.resolve();
+			const recoveryPromise = Promise.resolve();
 
 			if (!applyAttemptIsCurrent(state, applyAttemptId))
 				return;
@@ -2239,7 +1975,6 @@ function handleSaveApply(viewState, state, ev) {
 
 return baseclass.extend({
 	runApplyCycle: runApplyCycle,
-	applyIsSupervisorCapable: applyIsSupervisorCapable,
 	noteSupervisedApplyProgress: noteSupervisedApplyProgress,
 	supervisedApplyConverged: supervisedApplyConverged,
 	supervisedApplyFailed: supervisedApplyFailed,

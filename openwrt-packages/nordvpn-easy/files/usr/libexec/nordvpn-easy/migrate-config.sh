@@ -196,19 +196,6 @@ build_migrated_config() {
 			printf '%s\n' "nordvpn-easy: kept template default for option '$option'" >&2
 	done
 
-	# S7: preserve the orchestrator engine opt-in across the rebuild. It is deliberately
-	# OUTSIDE nordvpn_easy_uci_options (so flipping it never looks like a config change and
-	# never perturbs the config fingerprint), so the loop above does not carry it over --
-	# but it MUST survive a schema migration, else a supervisor device silently reverts to
-	# legacy on the next upgrade. Carry it forward only when it was explicitly engaged.
-	migrate_orchestrator_value="$(read_active_option orchestrator 2>/dev/null || printf '')"
-	case "$migrate_orchestrator_value" in
-		supervisor)
-			uci -c "$BUILD_DIR" -t "$delta_dir" set "${UCI_CONFIG}.${UCI_SECTION}.orchestrator=supervisor" ||
-				printf '%s\n' "nordvpn-easy: could not preserve orchestrator opt-in across migration" >&2
-			;;
-	esac
-
 	uci -c "$BUILD_DIR" -t "$delta_dir" -q delete "${UCI_CONFIG}.${UCI_SECTION}.nordvpn_basic_token" >/dev/null 2>&1 || true
 	uci -c "$BUILD_DIR" -t "$delta_dir" commit "$UCI_CONFIG" || {
 		printf '%s\n' "nordvpn-easy: failed to build migrated config" >&2

@@ -124,8 +124,8 @@ rpc_status() {
 
 	# Even on a read-only context-load failure, emit the canonical status
 	# document: it still sources the WireGuard runtime snapshot and the
-	# connect-apply / public-verification caches the LuCI poller depends on, so
-	# those blocks are not silently dropped.
+	# public-verification caches the LuCI poller depends on, so those blocks are
+	# not silently dropped.
 	if nordvpn_easy_emit_status_json 2>/dev/null; then
 		return 0
 	fi
@@ -134,7 +134,7 @@ rpc_status() {
 	# fail-safe (everything reads as down); manager-data.js parseLocalStatus fills
 	# safe defaults for every other field, so we do NOT hand-maintain a second
 	# full copy of the status contract here (it had already drifted from the
-	# emitter, dropping the connect_apply_* / public_verification_* blocks).
+	# emitter, dropping the public_verification_* blocks).
 	printf '{"updated_at":%s,"state":"failed","desired_enabled":false,"enabled":false,"runtime_disabled":true,"interface_disabled":true,"runtime_configured":false,"connected":false,"vpn_status":"error","operation_status":"idle","last_error":"failed to load runtime context from UCI"}\n' \
 		"$(date +%s 2>/dev/null || printf '%s' '0')"
 }
@@ -186,11 +186,6 @@ rpc_start_connect() {
 		fi
 	fi
 
-	# The connect-apply-result lifecycle is owned solely by the init
-	# connect_apply_guard_begin (run by begin_connect_apply and by the background
-	# connect worker). Do NOT begin it here: begin_connect_apply has already
-	# marked it pending before start_connect, and beginning ahead of the busy
-	# check below would leave a phantom 'pending' when the call is rejected busy.
 	# Decide whether to dispatch the background connect worker. The worker itself
 	# acquires the runtime transaction lock with a bounded wait (init connect ->
 	# acquire_runtime_transaction_lock), so a TRANSIENT holder (a country-change
@@ -246,23 +241,14 @@ rpc_reconnect() {
 	rpc_command_result 'reconnect' "$INIT_SCRIPT" reconnect
 }
 
-rpc_begin_connect_apply() {
-	rpc_command_result 'begin_connect_apply' "$INIT_SCRIPT" begin_connect_apply
-}
-
-rpc_abort_connect_apply() {
-	rpc_command_result 'abort_connect_apply' "$INIT_SCRIPT" abort_connect_apply
-}
-
 rpc_stop_vpn() {
 	rpc_command_result 'stop_vpn' "$INIT_SCRIPT" stop_vpn
 }
 
-# S7 tag 9: dispatch the ASYNC supervised apply. The init `apply` verb setsid-forks the
-# supervise worker (fds detached) and returns in <1s, so rpc_command_result captures an
-# empty stdout/stderr and yields the standard envelope well under the rpcd 180s ceiling
-# while the worker runs detached; the JS then polls status_json for convergence. Under
-# orchestrator=legacy the init apply verb forks nothing (benign no-op).
+# Dispatch the ASYNC supervised apply. The init `apply` verb setsid-forks the supervise
+# worker (fds detached) and returns in <1s, so rpc_command_result captures an empty
+# stdout/stderr and yields the standard envelope well under the rpcd 180s ceiling while
+# the worker runs detached; the JS then polls status_json for convergence.
 rpc_apply() {
 	rpc_command_result 'apply' "$INIT_SCRIPT" apply
 }
@@ -393,12 +379,6 @@ rpc_call() {
 		reconnect)
 			rpc_reconnect
 			;;
-		begin_connect_apply)
-			rpc_begin_connect_apply
-			;;
-		abort_connect_apply)
-			rpc_abort_connect_apply
-			;;
 		stop_vpn)
 			rpc_stop_vpn
 			;;
@@ -456,8 +436,6 @@ case "$1" in
   "start_connect": {},
   "disconnect": {},
   "reconnect": {},
-  "begin_connect_apply": {},
-  "abort_connect_apply": {},
   "stop_vpn": {},
   "apply": {},
   "reconcile": {},

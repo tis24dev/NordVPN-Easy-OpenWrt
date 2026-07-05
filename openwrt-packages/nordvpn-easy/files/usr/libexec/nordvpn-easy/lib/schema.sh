@@ -141,32 +141,11 @@ nordvpn_easy_runtime_env_keys() {
 		'POST_RESTART_DELAY'
 }
 
-# The orchestrator mode selects the apply engine: 'legacy' (the shipped 3-RPC
-# choreography) or 'supervisor' (the async state machine). It is an OPERATIONAL
-# toggle, deliberately kept OUT of uci_options/runtime_options/bindings/env_keys so
-# it never enters the config fingerprint (generation.sh iterates runtime_options)
-# or the runtime env -- flipping it must NOT look like a config change and trigger
-# a spurious reprovision. Absent or any non-'supervisor' value resolves to
-# 'legacy', so an upgrader who never seeded it stays on the inert legacy path with
-# no migration.
-nordvpn_easy_orchestrator_mode() {
-	case "$(uci -q get nordvpn_easy.main.orchestrator 2>/dev/null || printf 'legacy')" in
-		supervisor) printf 'supervisor' ;;
-		*) printf 'legacy' ;;
-	esac
-}
-
-# The RPC contract level the backend advertises in its status. The LuCI client uses
-# it as a capability probe: it only routes the supervised `apply` path when the
-# backend advertises >= 2 (bumped in the SAME tag that lands the apply method + its
-# ACL + the JS consumer). Level 1 = only the legacy 3-RPC choreography is supported,
-# so every client stays on the legacy path. Kept an integer so JS can compare it.
+# The RPC contract level the backend advertises in its status. Surfaced for
+# display/diagnostics. Kept an integer so JS can compare it.
 nordvpn_easy_rpc_contract_level() {
 	# 2 = the async supervised `apply` method + its ACL + the JS callApply consumer all
-	# ship (S7 tag 9-11). emit_status_json CLAMPS the advertised level back to 1 unless
-	# orchestrator=supervisor, so a legacy device advertises 1 and every client stays on
-	# the legacy 3-RPC path -- this getter is the raw build capability, not the per-device
-	# advertisement.
+	# ship; the supervisor is the sole apply path.
 	printf '2'
 }
 

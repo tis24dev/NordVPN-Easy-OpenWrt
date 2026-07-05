@@ -538,8 +538,8 @@ nordvpn_easy_fenced_journal_merge() {
 # owner -- or a tokenless caller (if-claimed) -- finishes normally. Like fenced_journal_set
 # this rides journal_finish's FULL-document write, so the terminal record carries only
 # journal_finish's fields; reap_stale and open_txn both short-circuit on a terminal phase
-# before reading the schema-2 fields, so dropping them is control-flow-harmless. The legacy
-# journal_finish in journal.sh stays unfenced for the connect-apply shadow dual-write.
+# before reading the schema-2 fields, so dropping them is control-flow-harmless. The bare
+# nordvpn_easy_journal_finish in journal.sh stays available for direct (unfenced) callers.
 nordvpn_easy_fenced_journal_finish() {
 	nordvpn_easy_owner_fence_denied && { nordvpn_easy_log_phase 'runtime' 'refusing journal finish: superseded execution-lock owner'; return 1; }
 	nordvpn_easy_journal_finish "$@"
@@ -611,126 +611,6 @@ nordvpn_easy_clear_stale_runtime_lock() {
 	fi
 
 	rm -rf "$lock_dir" 2>/dev/null || true
-	return 0
-}
-
-_nordvpn_easy_connect_apply_result_get() {
-	local target="$1"
-	local key="$2"
-
-	[ -r "$target" ] || return 1
-	sed -n "s/^${key}=//p" "$target" 2>/dev/null | head -n1
-}
-
-nordvpn_easy_connect_apply_result_begin() {
-	local target="${1:-/tmp/run/nordvpn-easy/connect-apply-result}"
-	local target_dir tmp now_ts started_at existing_state existing_started_at
-
-	target_dir="$(dirname "$target")"
-	mkdir -p "$target_dir" 2>/dev/null || return 1
-	tmp="$(mktemp "${target_dir}/.connect-apply-result.XXXXXX" 2>/dev/null)" || return 1
-	now_ts="$(date +%s 2>/dev/null || printf '%s' '0')"
-
-	# Idempotent re-begin: the connect-apply lifecycle is begun by several owners
-	# (rpcd start_connect, init connect, core stop_vpn). If an apply is already
-	# pending, keep its original started_at so a second begin does not move the
-	# start time backwards/forwards and skew the client's convergence window.
-	started_at="$now_ts"
-	existing_state="$(_nordvpn_easy_connect_apply_result_get "$target" state 2>/dev/null || true)"
-	if [ "$existing_state" = 'pending' ]; then
-		existing_started_at="$(_nordvpn_easy_connect_apply_result_get "$target" started_at 2>/dev/null || true)"
-		case "$existing_started_at" in
-			''|*[!0-9]*) ;;
-			*) started_at="$existing_started_at" ;;
-		esac
-	fi
-
-	if ! cat > "$tmp" <<EOF
-state=pending
-rc=
-finished_at=
-country=
-started_at=$started_at
-EOF
-	then
-		rm -f "$tmp" 2>/dev/null || true
-		return 1
-	fi
-
-	mv "$tmp" "$target" || {
-		rm -f "$tmp" 2>/dev/null || true
-		return 1
-	}
-
-	# Shadow dual-write: mirror the apply lifecycle into the journal (not yet
-	# authoritative). A journal error must never fail the result write.
-	if command -v nordvpn_easy_journal_begin >/dev/null 2>&1; then
-		nordvpn_easy_journal_begin apply >/dev/null 2>&1 || true
-	fi
-}
-
-nordvpn_easy_connect_apply_result_finish() {
-	local target="${1:-/tmp/run/nordvpn-easy/connect-apply-result}"
-	local rc="${2:-1}"
-	local country="${3:-}"
-	local target_dir tmp
-	local finished_at=''
-	local previous_started_at=''
-	local state='failed'
-
-	finished_at="$(date +%s 2>/dev/null || printf '%s' '0')"
-	[ "$rc" -eq 0 ] && state='success'
-	previous_started_at="$(_nordvpn_easy_connect_apply_result_get "$target" started_at 2>/dev/null)"
-
-	target_dir="$(dirname "$target")"
-	mkdir -p "$target_dir" 2>/dev/null || return 1
-	tmp="$(mktemp "${target_dir}/.connect-apply-result.XXXXXX" 2>/dev/null)" || return 1
-	if ! cat > "$tmp" <<EOF
-state=$state
-rc=$rc
-finished_at=$finished_at
-country=$(printf '%s' "$country" | tr 'a-z' 'A-Z')
-started_at=${previous_started_at:-$finished_at}
-EOF
-	then
-		rm -f "$tmp" 2>/dev/null || true
-		return 1
-	fi
-
-	mv "$tmp" "$target" || {
-		rm -f "$tmp" 2>/dev/null || true
-		return 1
-	}
-
-	# Shadow dual-write of the terminal phase before refreshing the status cache,
-	# so the cached status reflects the finished journal state.
-	if command -v nordvpn_easy_journal_finish >/dev/null 2>&1; then
-		nordvpn_easy_journal_finish "$rc" "$country" >/dev/null 2>&1 || true
-	fi
-
-	if command -v nordvpn_easy_write_status_cache >/dev/null 2>&1; then
-		nordvpn_easy_write_status_cache >/dev/null 2>&1 || true
-	fi
-}
-
-# Sets: CONNECT_APPLY_STATE CONNECT_APPLY_RC CONNECT_APPLY_FINISHED_AT CONNECT_APPLY_COUNTRY CONNECT_APPLY_STARTED_AT
-nordvpn_easy_connect_apply_result_read() {
-	local target="${1:-/tmp/run/nordvpn-easy/connect-apply-result}"
-
-	CONNECT_APPLY_STATE=''
-	CONNECT_APPLY_RC=''
-	CONNECT_APPLY_FINISHED_AT=''
-	CONNECT_APPLY_COUNTRY=''
-	CONNECT_APPLY_STARTED_AT=''
-
-	[ -r "$target" ] || return 1
-
-	CONNECT_APPLY_STATE="$(_nordvpn_easy_connect_apply_result_get "$target" state)"
-	CONNECT_APPLY_RC="$(_nordvpn_easy_connect_apply_result_get "$target" rc)"
-	CONNECT_APPLY_FINISHED_AT="$(_nordvpn_easy_connect_apply_result_get "$target" finished_at)"
-	CONNECT_APPLY_COUNTRY="$(_nordvpn_easy_connect_apply_result_get "$target" country)"
-	CONNECT_APPLY_STARTED_AT="$(_nordvpn_easy_connect_apply_result_get "$target" started_at)"
-	[ -n "$CONNECT_APPLY_STATE" ] || return 1
 	return 0
 }
 

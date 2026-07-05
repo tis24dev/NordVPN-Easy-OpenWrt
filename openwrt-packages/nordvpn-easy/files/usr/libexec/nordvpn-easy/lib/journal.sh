@@ -1,15 +1,14 @@
 #!/bin/sh
 
-# Durable apply-transaction journal (SHADOW in this step).
+# Durable apply-transaction journal (AUTHORITATIVE).
 #
 # A single flat key=value file under the tmpfs run dir, written atomically
 # (mktemp + rename) and DELIBERATELY NOT registered for the lock EXIT-trap
 # cleanup, so the in-flight signal survives one rpcd process exiting before the
-# next RPC runs. In this step the journal is written alongside the existing
-# connect-apply result file but is NOT authoritative: nothing reads it for
-# control yet. It validates the write/parse/schema mechanics, and provides the
-# (boot_id, status_seq) ordering stamps the LuCI poller uses to discard
-# out-of-order status responses.
+# next RPC runs. The supervisor is the authoritative writer: it opens/adopts a
+# transaction and stamps the terminal phase, and the LuCI supervised-apply poll
+# reads convergence off journal_phase. It also provides the (boot_id, status_seq)
+# ordering stamps the LuCI poller uses to discard out-of-order status responses.
 
 _NORDVPN_EASY_BOOT_ID=''
 

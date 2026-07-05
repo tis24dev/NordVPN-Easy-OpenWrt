@@ -46,11 +46,7 @@ eval "$(extract_function nordvpn_easy_cleanup_temp_paths "$COMMON_LIB")"
 NORDVPN_EASY_TEMP_PATHS=''
 
 eval "$(extract_function run_core_action)"
-eval "$(extract_function connect_apply_guard_begin)"
-eval "$(extract_function connect_apply_guard_end)"
 eval "$(extract_function prepare_connect_setup_config_cache)"
-eval "$(extract_function begin_connect_apply)"
-eval "$(extract_function abort_connect_apply)"
 eval "$(extract_function connect)"
 eval "$(extract_function disconnect)"
 eval "$(extract_function stop_vpn)"
@@ -109,16 +105,7 @@ INSTALL_HOOKS_COUNT=0
 DISABLE_RUNTIME_COUNT=0
 RUN_STATE_DIR="$TMP_DIR/run-state"
 CONNECT_SETUP_CONFIG_CACHE="${RUN_STATE_DIR}/connect-setup.conf"
-CONNECT_APPLY_GUARD="${RUN_STATE_DIR}/connect-apply-guard"
-CONNECT_APPLY_RESULT="${RUN_STATE_DIR}/connect-apply-result"
 RUNTIME_LOCK_DIR="$TMP_DIR/runtime-lock"
-nordvpn_easy_connect_apply_result_begin() {
-	mkdir -p "$(dirname "$CONNECT_APPLY_RESULT")" 2>/dev/null || true
-	printf 'state=pending\nrc=\nfinished_at=\ncountry=\nstarted_at=1\n' > "$CONNECT_APPLY_RESULT"
-}
-nordvpn_easy_connect_apply_result_finish() { :; }
-nordvpn_easy_clear_stale_runtime_lock() { :; }
-connect_apply_result_finish() { :; }
 UCI_CONFIG='nordvpn_easy'
 UCI_SECTION='main'
 uci() {
@@ -200,10 +187,6 @@ connect || RC=$?
 assert_eq '0' "$RC" 'connect succeeds when setup and hook installation succeed'
 assert_eq '1' "$SETUP_COUNT" 'successful connect runs setup once'
 assert_eq '1' "$INSTALL_HOOKS_COUNT" 'successful connect installs hooks via install_hooks_if_needed once'
-[ ! -f "$CONNECT_APPLY_GUARD" ] || {
-	printf '%s\n' 'FAIL: connect should clear apply guard on success' >&2
-	exit 1
-}
 [ ! -f "$CONNECT_SETUP_CONFIG_CACHE" ] || {
 	printf '%s\n' 'FAIL: connect should remove setup config cache after setup' >&2
 	exit 1
@@ -471,70 +454,21 @@ assert_eq '1' "$RC" 'run_core_action fails when rendered config validation fails
 
 
 mkdir -p "$RUN_STATE_DIR"
-rm -f "$CONNECT_APPLY_GUARD" "$CONNECT_APPLY_RESULT"
-RC=0
-begin_connect_apply || RC=$?
-assert_eq '0' "$RC" 'begin_connect_apply succeeds'
-[ -f "$CONNECT_APPLY_GUARD" ] || {
-	printf '%s
-' 'FAIL: begin_connect_apply should create connect apply guard' >&2
-	exit 1
-}
-case "$(sed -n 's/^state=//p' "$CONNECT_APPLY_RESULT" 2>/dev/null | head -n1)" in
-	pending) ;;
-	*)
-		printf '%s
-' 'FAIL: begin_connect_apply should leave connect apply result pending' >&2
-		exit 1
-		;;
-esac
-RC=0
-abort_connect_apply || RC=$?
-assert_eq '0' "$RC" 'abort_connect_apply succeeds'
-[ ! -f "$CONNECT_APPLY_GUARD" ] || {
-	printf '%s
-' 'FAIL: abort_connect_apply should remove connect apply guard' >&2
-	exit 1
-}
 
 # Transaction-lock contention: the mutating verbs must defer with RC_BUSY and
 # run no setup / core action / hook work, so a second operation can never
 # interleave into the gaps of an in-flight connect/reconnect/reconcile.
 TRANSACTION_LOCK_RC="$NORDVPN_EASY_RC_BUSY"
 
-rm -f "$CONNECT_APPLY_GUARD" "$CONNECT_APPLY_RESULT"
-RC=0
-begin_connect_apply || RC=$?
-assert_eq "$NORDVPN_EASY_RC_BUSY" "$RC" 'begin_connect_apply defers with RC_BUSY when the runtime lock is held'
-[ ! -f "$CONNECT_APPLY_GUARD" ] || {
-	printf '%s\n' 'FAIL: busy begin_connect_apply should not create connect apply guard' >&2
-	exit 1
-}
-
-: > "$CONNECT_APPLY_GUARD"
-RC=0
-abort_connect_apply || RC=$?
-assert_eq "$NORDVPN_EASY_RC_BUSY" "$RC" 'abort_connect_apply defers with RC_BUSY when the runtime lock is held'
-[ -f "$CONNECT_APPLY_GUARD" ] || {
-	printf '%s\n' 'FAIL: busy abort_connect_apply should not remove connect apply guard' >&2
-	exit 1
-}
-rm -f "$CONNECT_APPLY_GUARD"
-
 cfg_enabled=1
 cfg_nordvpn_token='token-secret'
 cfg_vpn_if='wg0'
 SETUP_COUNT=0
 INSTALL_HOOKS_COUNT=0
-rm -f "$CONNECT_APPLY_GUARD"
 RC=0
 connect || RC=$?
 assert_eq "$NORDVPN_EASY_RC_BUSY" "$RC" 'connect defers with RC_BUSY when the runtime lock is held'
 assert_eq '0' "$SETUP_COUNT" 'busy connect does not run setup'
-[ ! -f "$CONNECT_APPLY_GUARD" ] || {
-	printf '%s\n' 'FAIL: busy connect should not begin the connect apply guard' >&2
-	exit 1
-}
 
 rm -f "$CORE_CAPTURE"
 SETUP_COUNT=0
@@ -563,24 +497,5 @@ assert_eq '0' "$SETUP_COUNT" 'busy reconcile does not connect/setup'
 }
 
 TRANSACTION_LOCK_RC=0
-
-# The connect-apply guard suppresses the cron recovery check while it exists, so
-# an interrupted connect-apply (no connect_apply_guard_end) must not leave it
-# behind. guard_begin registers the guard with the lock's exit-cleanup, so the
-# trap removes it even when guard_end never runs.
-NORDVPN_EASY_TEMP_PATHS=''
-rm -f "$CONNECT_APPLY_GUARD"
-connect_apply_guard_begin
-[ -f "$CONNECT_APPLY_GUARD" ] || {
-	printf '%s\n' 'FAIL: guard_begin should create the connect-apply guard' >&2
-	exit 1
-}
-# Simulate an abnormal exit: guard_end did NOT run; the exit cleanup must remove
-# the guard so cron recovery is not suppressed forever.
-nordvpn_easy_cleanup_temp_paths
-[ ! -f "$CONNECT_APPLY_GUARD" ] || {
-	printf '%s\n' 'FAIL: an interrupted connect-apply guard must be cleaned on exit' >&2
-	exit 1
-}
 
 printf '%s\n' 'test-init-run-core.sh: ok'

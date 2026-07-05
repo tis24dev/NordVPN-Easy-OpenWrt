@@ -57,8 +57,8 @@ CRONTAB_PATH="$TMP_DIR/crontabs/root"
 CRON_PATH="$TMP_DIR/cron.d/nordvpn-easy"
 CRON_BLOCK_BEGIN='# BEGIN nordvpn-easy'
 CRON_BLOCK_END='# END nordvpn-easy'
-LINE1='*/15 * * * * [ -f /tmp/run/nordvpn-easy/connect-apply-guard ] || /etc/init.d/nordvpn-easy check'
-LINE2='*/30 * * * * [ -f /tmp/run/nordvpn-easy/connect-apply-guard ] || /etc/init.d/nordvpn-easy check'
+LINE1='*/15 * * * * NORDVPN_EASY_BUSY_IS_OK=1 /etc/init.d/nordvpn-easy check'
+LINE2='*/30 * * * * NORDVPN_EASY_BUSY_IS_OK=1 /etc/init.d/nordvpn-easy check'
 FOREIGN='5 4 * * * /usr/bin/other-app-job'
 
 log_service_error() { :; }

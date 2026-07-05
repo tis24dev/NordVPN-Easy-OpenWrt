@@ -110,44 +110,20 @@ assert_eq '' "$CHECK_CRON_SCHEDULE" 'cron default disabled'
 assert_eq '86400' "$SERVER_CACHE_TTL" 'environment ttl default'
 assert_eq '15' "$WIREGUARD_PERSISTENT_KEEPALIVE" 'environment keepalive default'
 
-# orchestrator mode reader (S7 increment 1): exact 'supervisor' -> supervisor;
-# absent or any other value (incl. wrong case) -> legacy (fail-safe inert default).
-uci() {
-	case "$*" in
-		'-q get nordvpn_easy.main.orchestrator')
-			[ -n "${MOCK_ORCHESTRATOR:-}" ] && printf '%s\n' "$MOCK_ORCHESTRATOR" || return 1
-			;;
-		*) return 1 ;;
-	esac
-}
-MOCK_ORCHESTRATOR=''
-assert_eq 'legacy' "$(nordvpn_easy_orchestrator_mode)" 'orchestrator absent resolves to legacy'
-MOCK_ORCHESTRATOR='legacy'
-assert_eq 'legacy' "$(nordvpn_easy_orchestrator_mode)" 'orchestrator legacy resolves to legacy'
-MOCK_ORCHESTRATOR='supervisor'
-assert_eq 'supervisor' "$(nordvpn_easy_orchestrator_mode)" 'orchestrator supervisor resolves to supervisor'
-MOCK_ORCHESTRATOR='garbage'
-assert_eq 'legacy' "$(nordvpn_easy_orchestrator_mode)" 'a garbage orchestrator value resolves to legacy'
-MOCK_ORCHESTRATOR='Supervisor'
-assert_eq 'legacy' "$(nordvpn_easy_orchestrator_mode)" 'a wrong-case orchestrator value resolves to legacy'
-MOCK_ORCHESTRATOR='supervisord'
-assert_eq 'legacy' "$(nordvpn_easy_orchestrator_mode)" 'a superstring of supervisor resolves to legacy (exact match only)'
-MOCK_ORCHESTRATOR=' supervisor'
-assert_eq 'legacy' "$(nordvpn_easy_orchestrator_mode)" 'a leading-space supervisor value resolves to legacy (exact match only)'
-unset -f uci
-unset MOCK_ORCHESTRATOR
-
-# The defaults template must seed the flag so fresh installs are explicitly legacy.
-grep -q "option orchestrator 'legacy'" "$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/share/nordvpn-easy/defaults/nordvpn_easy" || {
-	printf '%s\n' 'FAIL: the defaults template must seed option orchestrator legacy' >&2
+# S9: the orchestrator flag is removed. The supervisor is the sole apply path, so there
+# is no orchestrator mode reader and the defaults template no longer seeds the flag.
+if command -v nordvpn_easy_orchestrator_mode >/dev/null 2>&1; then
+	printf '%s\n' 'FAIL: nordvpn_easy_orchestrator_mode must be removed (the orchestrator flag is gone)' >&2
 	exit 1
-}
+fi
+if grep -q 'orchestrator' "$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/share/nordvpn-easy/defaults/nordvpn_easy"; then
+	printf '%s\n' 'FAIL: the defaults template must not seed an orchestrator option (the flag is removed)' >&2
+	exit 1
+fi
 
-# RPC contract level getter (S7 tag 11): the build now supports contract 2 (the async
-# supervised apply method + its ACL + the JS callApply consumer all shipped), so the raw
-# getter returns 2. emit_status_json CLAMPS the advertised level back to 1 unless
-# orchestrator=supervisor (covered in test-runtime.sh), so a legacy device still routes
-# the legacy 3-RPC path -- this getter is the raw build capability.
+# RPC contract level getter: the build supports contract 2 (the async supervised apply
+# method + its ACL + the JS callApply consumer all shipped), so the getter returns 2
+# unconditionally. The old orchestrator clamp is gone.
 assert_eq '2' "$(nordvpn_easy_rpc_contract_level)" 'the advertised RPC contract level is 2 (async apply method shipped)'
 case "$(nordvpn_easy_rpc_contract_level)" in
 	''|*[!0-9]*|0?*) printf '%s\n' 'FAIL: rpc_contract_level must be a bare non-zero-padded integer (valid JSON number)' >&2; exit 1 ;;

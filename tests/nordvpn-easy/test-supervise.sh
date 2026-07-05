@@ -232,11 +232,10 @@ _supervise_persist || cf_rc=$?
 nordvpn_easy_fenced_uci_commit() { return 0; }
 
 # =============================================================================
-# GROUP 4: nordvpn_easy_supervise orchestration -- the flag gate, disable refusal,
-# phase order. The phase BODIES are overridden with loggers so this exercises the
-# orchestration (gates, order, journal finish), not the provision internals.
+# GROUP 4: nordvpn_easy_supervise orchestration -- the DESIRED_ENABLED gate, disable
+# refusal, phase order. The phase BODIES are overridden with loggers so this exercises
+# the orchestration (gate, order, journal finish), not the provision internals.
 # =============================================================================
-nordvpn_easy_orchestrator_mode() { printf '%s' "${MODE:-legacy}"; }
 nordvpn_easy_target_identity() { printf '%s' "${TARGET:-fp-NEW:1}"; }
 _supervise_validate() { printf 'validate\n' >> "$CALL_LOG"; return "${P_VALIDATE_RC:-0}"; }
 _supervise_persist() { printf 'persist\n' >> "$CALL_LOG"; return "${P_PERSIST_RC:-0}"; }
@@ -244,32 +243,19 @@ _supervise_hooks() { printf 'hooks\n' >> "$CALL_LOG"; return "${P_HOOKS_RC:-0}";
 _supervise_converge() { printf 'converge\n' >> "$CALL_LOG"; return "${P_CONVERGE_RC:-0}"; }
 _supervise_verify() { printf 'verify\n' >> "$CALL_LOG"; return "${P_VERIFY_RC:-0}"; }
 
-# flag gate: legacy -> strict no-op, no phase body runs, rc 0
+# disable gate: DESIRED_ENABLED=0 -> no-op, no txn, no phase body (the stop path
+# handles a disable, not the supervisor).
 reset_journal
-MODE='legacy' DESIRED_ENABLED='1'
-sup_rc=0
-nordvpn_easy_supervise || sup_rc=$?
-assert_eq '0' "$sup_rc" 'supervise under orchestrator=legacy returns 0'
-[ ! -f "$CALL_LOG" ] || fail 'INERTNESS: no phase body may run under orchestrator=legacy'
-[ ! -f "$NORDVPN_EASY_JOURNAL_FILE" ] || fail 'INERTNESS: no journal transaction opens under legacy'
-
-# flag gate: garbage -> legacy -> no-op
-reset_journal
-MODE='bogus' DESIRED_ENABLED='1'
-nordvpn_easy_supervise || fail 'supervise under a garbage orchestrator value must be a benign no-op'
-[ ! -f "$CALL_LOG" ] || fail 'INERTNESS: garbage orchestrator value must not run any phase'
-
-# disable refused: supervisor + DESIRED_ENABLED=0 -> no-op, no txn
-reset_journal
-MODE='supervisor' DESIRED_ENABLED='0'
+DESIRED_ENABLED='0'
 dis_rc=0
 nordvpn_easy_supervise || dis_rc=$?
 assert_eq '0' "$dis_rc" 'supervise refuses a disable apply (returns 0)'
-[ ! -f "$CALL_LOG" ] || fail 'a disable apply must not run any phase (stays on legacy)'
+[ ! -f "$CALL_LOG" ] || fail 'a disable apply must not run any phase (handled by the stop path)'
+[ ! -f "$NORDVPN_EASY_JOURNAL_FILE" ] || fail 'a disable apply must not open a journal transaction'
 
 # happy path: full phase order + journal done
 reset_journal
-MODE='supervisor' DESIRED_ENABLED='1' TARGET='fp-NEW:1'
+DESIRED_ENABLED='1' TARGET='fp-NEW:1'
 P_VALIDATE_RC=0 P_PERSIST_RC=0 P_HOOKS_RC=0 P_CONVERGE_RC=0 P_VERIFY_RC=0
 nordvpn_easy_supervise || fail 'a fully-successful supervised apply must return 0'
 assert_eq 'validate persist hooks converge verify' "$(tr '\n' ' ' < "$CALL_LOG" | sed 's/ $//')" 'supervise runs the phases in order'
@@ -279,7 +265,7 @@ assert_eq 'done' "$(nordvpn_easy_journal_get phase)" 'a successful apply finishe
 # NOT stamp the journal done at the finish site -- proves nordvpn_easy_supervise calls
 # the fenced_journal_finish wrapper, not the unfenced journal_finish.
 reset_journal
-MODE='supervisor' DESIRED_ENABLED='1' TARGET='fp-NEW:1'
+DESIRED_ENABLED='1' TARGET='fp-NEW:1'
 mkdir -p "$LOCK_DIR"
 printf '%s\n' 'someone-else' > "$LOCK_DIR/token"
 NORDVPN_EASY_OWNER_TOKEN='mine'
@@ -290,20 +276,20 @@ rm -f "$LOCK_DIR/token"
 
 # hooks non-fatal: a hooks failure does NOT abort the apply
 reset_journal
-MODE='supervisor' DESIRED_ENABLED='1' P_HOOKS_RC=1
+DESIRED_ENABLED='1' P_HOOKS_RC=1
 nordvpn_easy_supervise || fail 'a hooks failure must be non-fatal (apply still succeeds)'
 assert_eq 'done' "$(nordvpn_easy_journal_get phase)" 'a hooks failure still finishes done'
 grep -q '^converge$' "$CALL_LOG" || fail 'converge must still run after a non-fatal hooks failure'
 
 # verify non-fatal: a verify failure does NOT fail the apply
 reset_journal
-MODE='supervisor' DESIRED_ENABLED='1' P_HOOKS_RC=0 P_VERIFY_RC=1
+DESIRED_ENABLED='1' P_HOOKS_RC=0 P_VERIFY_RC=1
 nordvpn_easy_supervise || fail 'a verify failure must be non-fatal'
 assert_eq 'done' "$(nordvpn_easy_journal_get phase)" 'a verify failure still finishes done'
 
 # a fatal phase (converge) fails -> journal failed, rc!=0
 reset_journal
-MODE='supervisor' DESIRED_ENABLED='1' P_VERIFY_RC=0 P_CONVERGE_RC=1
+DESIRED_ENABLED='1' P_VERIFY_RC=0 P_CONVERGE_RC=1
 fat_rc=0
 nordvpn_easy_supervise || fat_rc=$?
 [ "$fat_rc" -ne 0 ] || fail 'a converge failure must make the apply fail'
@@ -315,12 +301,12 @@ grep -q '^verify$' "$CALL_LOG" && fail 'verify must NOT run after a converge fai
 # failing apply -> the detail survives.
 reset_journal
 printf 'supervise: provision prerequisite fetch failed\n' > "$NORDVPN_EASY_LAST_ERROR_CACHE"
-MODE='supervisor' DESIRED_ENABLED='1' P_CONVERGE_RC=1
+DESIRED_ENABLED='1' P_CONVERGE_RC=1
 nordvpn_easy_supervise >/dev/null 2>&1 || :
 grep -q 'provision prerequisite fetch failed' "$NORDVPN_EASY_LAST_ERROR_CACHE" || fail 'S8: the epilogue must not clobber a detail already in the last-error cache'
 # But with an EMPTY cache the epilogue DOES record a non-generic fallback cause.
 reset_journal
-MODE='supervisor' DESIRED_ENABLED='1' P_CONVERGE_RC=1
+DESIRED_ENABLED='1' P_CONVERGE_RC=1
 nordvpn_easy_supervise >/dev/null 2>&1 || :
 grep -q 'convergence failed' "$NORDVPN_EASY_LAST_ERROR_CACHE" || fail 'S8: with an empty cache the epilogue records a non-generic fallback'
 P_CONVERGE_RC=0

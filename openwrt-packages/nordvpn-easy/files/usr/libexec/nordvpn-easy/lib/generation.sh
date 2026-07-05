@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# Config-identity helpers for the supervised orchestrator.
+# Config-identity helpers for the supervisor.
 #
 # The desired config is identified by a CONTENT FINGERPRINT (equality only, never
 # ordered): two identical desired configs hash the same, and any persisted

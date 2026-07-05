@@ -73,18 +73,16 @@ CONNECT_SETUP_CONFIG_CACHE="$TMP_DIR/connect-setup.conf"
 cfg_vpn_country=''
 
 CALL_LOG="$TMP_DIR/call-log.txt"
-RESULT_LOG="$TMP_DIR/result-log.txt"
 
-# Stable mocks shared by all scenarios.
+# Stable mocks shared by all scenarios. S9: connect() no longer touches any
+# connect-apply guard/result -- it is lock -> prepare_connect_setup_config_cache ->
+# enabled=1 fenced commit -> install_hooks_if_needed -> setup.
 load_service_config() { :; }
 acquire_runtime_transaction_lock() { return 0; }
 log_service_info() { :; }
 log_service_error() { :; }
 nordvpn_easy_service_debug_summary() { printf '%s' 'cfg-summary'; }
-connect_apply_guard_begin() { printf '%s\n' 'guard_begin' >> "$CALL_LOG"; }
-connect_apply_guard_end() { printf '%s\n' 'guard_end' >> "$CALL_LOG"; }
 prepare_connect_setup_config_cache() { return 0; }
-connect_apply_result_finish() { printf '%s\n' "result_finish:${1:-}" >> "$RESULT_LOG"; }
 uci() { return 0; }
 # connect() commits enabled=1 through the S7a owner fence (defined in common.sh,
 # not sourced here); pass it through to the mocked uci.
@@ -92,7 +90,6 @@ nordvpn_easy_fenced_uci_commit() { uci commit "$@"; }
 
 reset_logs() {
 	: > "$CALL_LOG"
-	: > "$RESULT_LOG"
 }
 
 # --- Scenario A: setup fails -> hooks were already installed before setup ----
@@ -106,7 +103,6 @@ connect || SCENARIO_RC=$?
 CALL_ORDER="$(tr '\n' ' ' < "$CALL_LOG")"
 assert_eq '1' "$SCENARIO_RC" 'connect returns the setup failure code'
 assert_contains "$CALL_ORDER" 'install_hooks setup' 'recovery hooks are installed before setup'
-assert_eq 'result_finish:1' "$(tr -d '\n' < "$RESULT_LOG")" 'a failed setup finishes the apply as failed'
 
 # --- Scenario B: setup succeeds -> hooks still installed before setup --------
 reset_logs
@@ -119,7 +115,6 @@ connect || SCENARIO_RC=$?
 CALL_ORDER="$(tr '\n' ' ' < "$CALL_LOG")"
 assert_eq '0' "$SCENARIO_RC" 'connect succeeds when setup succeeds'
 assert_contains "$CALL_ORDER" 'install_hooks setup' 'hooks precede setup on the success path too'
-assert_eq 'result_finish:0' "$(tr -d '\n' < "$RESULT_LOG")" 'a successful connect finishes the apply as success'
 
 # --- Scenario C: hook install fails -> setup is not attempted ----------------
 reset_logs
@@ -133,6 +128,5 @@ CALL_ORDER="$(tr '\n' ' ' < "$CALL_LOG")"
 assert_eq '1' "$SCENARIO_RC" 'connect fails when recovery hooks cannot be installed'
 assert_contains "$CALL_ORDER" 'install_hooks' 'hook install is attempted'
 assert_excludes "$CALL_ORDER" 'setup' 'setup is not attempted when hooks cannot be installed'
-assert_eq 'result_finish:1' "$(tr -d '\n' < "$RESULT_LOG")" 'a failed hook install finishes the apply as failed'
 
 printf '%s\n' 'test-init-connect-hooks-order.sh: ok'

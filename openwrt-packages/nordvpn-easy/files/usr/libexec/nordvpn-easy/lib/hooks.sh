@@ -95,7 +95,7 @@ write_desired_cron_hook_to() {
 
 		effective_cron_schedule="$(normalize_cron_schedule "$cfg_check_cron_schedule")"
 		cat > "$target" <<EOF
-$effective_cron_schedule [ -f $CONNECT_APPLY_GUARD ] || NORDVPN_EASY_BUSY_IS_OK=1 /etc/init.d/$SERVICE_NAME check 2>&1 | logger -t $SERVICE_NAME-cron
+$effective_cron_schedule NORDVPN_EASY_BUSY_IS_OK=1 /etc/init.d/$SERVICE_NAME check 2>&1 | logger -t $SERVICE_NAME-cron
 EOF
 	else
 		: > "$target"
@@ -378,11 +378,6 @@ if [ "\$LAST_TS" -gt 0 ] && [ \$((NOW_TS - LAST_TS)) -lt "\$DEBOUNCE_SECONDS" ];
 fi
 
 printf '%s\n' "\$NOW_TS" > "\$STAMP_FILE" 2>/dev/null || true
-
-if [ -f "\$RUN_DIR/connect-apply-guard" ]; then
-	logger -t $SERVICE_NAME-hotplug "skipped \$ACTION for \$INTERFACE during connect apply"
-	exit 0
-fi
 
 if [ -r "\$LOCK_DIR/pid" ]; then
 	LOCK_PID="\$(cat "\$LOCK_DIR/pid" 2>/dev/null || true)"

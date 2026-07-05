@@ -31,20 +31,16 @@ HOTPLUG_PATH='/etc/hotplug.d/iface/95-nordvpn-easy'
 . "$HOOKS_LIB"
 RUN_STATE_DIR='/tmp/run/nordvpn-easy'
 CONNECT_SETUP_CONFIG_CACHE="${RUN_STATE_DIR}/connect-setup.conf"
-CONNECT_APPLY_GUARD="${RUN_STATE_DIR}/connect-apply-guard"
-CONNECT_APPLY_RESULT="${RUN_STATE_DIR}/connect-apply-result"
 RUNTIME_LOCK_DIR='/tmp/nordvpn-easy.lock'
 SERVICE_BACKEND_PAYLOAD_SIGNATURE='render-contract-v3'
 NORDVPN_EASY_RC_BUSY="${NORDVPN_EASY_RC_BUSY:-75}"
 # OpenWrt rc.common consumes the command/help metadata.
 # shellcheck disable=SC2034
-EXTRA_COMMANDS='connect disconnect stop_vpn begin_connect_apply abort_connect_apply reconnect reconcile setup check rotate refresh_countries refresh_countries_force server_catalog public_ip operation_status vpn_status status_json diagnostics_log diagnostics_summary install_hooks remove_hooks disable_runtime render_runtime_config supervise apply'
+EXTRA_COMMANDS='connect disconnect stop_vpn reconnect reconcile setup check rotate refresh_countries refresh_countries_force server_catalog public_ip operation_status vpn_status status_json diagnostics_log diagnostics_summary install_hooks remove_hooks disable_runtime render_runtime_config supervise apply'
 # shellcheck disable=SC2034
 EXTRA_HELP='  connect               Enable, run setup, then install hooks transactionally
   disconnect            Disable runtime and remove hooks
-  stop_vpn              Stop VPN interface (connect-apply teardown when apply guard is active)
-  begin_connect_apply   Mark connect apply pending before stop_vpn during Save & Apply
-  abort_connect_apply   Finish a failed connect apply and clear the apply guard
+  stop_vpn              Stop VPN interface
   reconnect             Compatibility alias for stop_vpn then connect
   reconcile             Synchronize runtime state with the saved UCI config
   setup                 Run setup immediately
@@ -194,16 +190,12 @@ run_core_action() {
 			log_service_info "apply: rendered temporary config for '$action' at $action_config (written_options=$written_options, $(nordvpn_easy_runtime_file_debug_summary "$action_config"), $(nordvpn_easy_runtime_config_validation_summary), $(nordvpn_easy_service_backend_payload_summary))"
 		fi
 	fi
-	if [ -f "$CONNECT_APPLY_GUARD" ] && { [ "$action" = 'setup' ] || [ "$action" = 'stop_vpn' ]; }; then
-		export NORDVPN_EASY_CONNECT_APPLY=1
-	fi
 	if [ "$direct_uci_config" -eq 1 ]; then
 		"$CORE_SCRIPT" "$action" "$@"
 	else
 		"$CORE_SCRIPT" "$action" --config "$action_config" "$@"
 	fi
 	rc=$?
-	unset NORDVPN_EASY_CONNECT_APPLY 2>/dev/null || true
 	[ -z "$action_temp_dir" ] || rm -rf -- "$action_temp_dir"
 	action_finished_at="$(date +%s 2>/dev/null || printf '%s' '0')"
 	case "$action_started_at" in
@@ -279,8 +271,8 @@ acquire_runtime_transaction_lock() {
 	# reject the connect with RC_BUSY and leave the VPN torn down. These run async
 	# (no LuCI rpc client timeout on the call), so let them wait briefly for a
 	# transient holder to finish instead of aborting. Background/auto verbs
-	# (reconcile, disconnect, begin_connect_apply) keep fail-fast semantics so they
-	# yield to a foreground apply instead of queueing behind it.
+	# (reconcile, disconnect) keep fail-fast semantics so they yield to a
+	# foreground apply instead of queueing behind it.
 	case "$action_label" in
 		connect|reconnect)
 			lock_wait_seconds="${NORDVPN_EASY_APPLY_LOCK_WAIT_SECONDS:-90}"
@@ -311,34 +303,6 @@ acquire_runtime_transaction_lock() {
 	holder_action="$(cat "${RUNTIME_LOCK_DIR}/action" 2>/dev/null || true)"
 	log_service_info "apply: $action_label deferred because another runtime operation is running (holder_action=${holder_action:-unknown}, holder_pid=${holder_pid:-unknown})"
 	return "$NORDVPN_EASY_RC_BUSY"
-}
-
-connect_apply_guard_begin() {
-	mkdir -p "$RUN_STATE_DIR" 2>/dev/null || true
-	: > "$CONNECT_APPLY_GUARD" 2>/dev/null || true
-	# The guard suppresses the cron recovery check while a connect-apply is in
-	# flight; connect_apply_guard_end removes it on every normal path. Register it
-	# for the lock's exit trap so a TERM/INT/HUP or crash before guard_end cannot
-	# leave it behind and silently suppress cron/hotplug recovery forever. The
-	# result file is intentionally NOT registered: it must persist for the LuCI
-	# frontend to read the apply outcome. The lock is already held here, so the
-	# trap is installed.
-	nordvpn_easy_register_temp_path "$CONNECT_APPLY_GUARD" 2>/dev/null || true
-	nordvpn_easy_connect_apply_result_begin "$CONNECT_APPLY_RESULT" 2>/dev/null || true
-}
-
-connect_apply_guard_end() {
-	rm -f "$CONNECT_APPLY_GUARD" 2>/dev/null || true
-}
-
-connect_apply_result_finish() {
-	local rc="${1:-1}"
-
-	load_service_config || return 1
-	nordvpn_easy_connect_apply_result_finish "$CONNECT_APPLY_RESULT" "$rc" "$cfg_vpn_country" 2>/dev/null || true
-	if [ "$rc" -eq 0 ]; then
-		nordvpn_easy_clear_stale_runtime_lock "$RUNTIME_LOCK_DIR" 2>/dev/null || true
-	fi
 }
 
 prepare_connect_setup_config_cache() {
@@ -515,29 +479,20 @@ connect() {
 	acquire_runtime_transaction_lock connect || return $?
 	log_service_info "connect requested; enabling runtime transactionally; $(nordvpn_easy_service_debug_summary 'cfg_')"
 
-	connect_apply_guard_begin
 	log_service_info "connect: preparing setup cache from UCI vpn_country=${cfg_vpn_country:-automatic}"
 	# Validate the request (render + validate the runtime config) BEFORE recording
 	# desired=enabled. An invalid config must not be persisted as enabled=1, or
 	# every cron retry would fail forever on the same bad config. A transient
 	# failure later (setup) still leaves enabled=1 so the cron check converges the
 	# runtime; only an unachievable request is rejected up front.
-	prepare_connect_setup_config_cache || {
-		connect_apply_result_finish 1
-		connect_apply_guard_end
-		return 1
-	}
+	prepare_connect_setup_config_cache || return 1
 
 	uci set "${UCI_CONFIG}.${UCI_SECTION}.enabled=1" || {
 		log_service_error 'connect failed while setting enabled=1'
-		connect_apply_result_finish 1
-		connect_apply_guard_end
 		return 1
 	}
 	nordvpn_easy_fenced_uci_commit "$UCI_CONFIG" || {
 		log_service_error 'connect failed while committing enabled=1'
-		connect_apply_result_finish 1
-		connect_apply_guard_end
 		return 1
 	}
 
@@ -545,28 +500,17 @@ connect() {
 	# and BEFORE setup. setup brings the tunnel up (fetch/teardown/configure/
 	# bringup); if it fails transiently, the hooks already exist so cron/hotplug
 	# recovery can converge the runtime. Installing hooks only after setup would
-	# leave a persisted enabled=1 with no retry path whenever setup fails. The
-	# connect-apply guard and the held transaction lock both suppress the hotplug
-	# hook from re-entering during our own setup ifup/ifdown.
-	install_hooks_if_needed || {
-		connect_apply_result_finish 1
-		connect_apply_guard_end
-		return 1
-	}
+	# leave a persisted enabled=1 with no retry path whenever setup fails. The held
+	# transaction lock suppresses the cron/hotplug recovery check (it sees RC_BUSY)
+	# from re-entering during our own setup ifup/ifdown.
+	install_hooks_if_needed || return 1
 
 	export NORDVPN_EASY_SETUP_CONFIG_CACHE="$CONNECT_SETUP_CONFIG_CACHE"
 	setup || rc=$?
 	unset NORDVPN_EASY_SETUP_CONFIG_CACHE
 	rm -f "$CONNECT_SETUP_CONFIG_CACHE" 2>/dev/null || true
 
-	if [ "$rc" -ne 0 ]; then
-		connect_apply_result_finish "$rc"
-		connect_apply_guard_end
-		return "$rc"
-	fi
-
-	connect_apply_result_finish 0
-	connect_apply_guard_end
+	return "$rc"
 }
 
 disconnect() {
@@ -582,21 +526,6 @@ disconnect() {
 		return 1
 	}
 	disable_vpn_runtime
-}
-
-begin_connect_apply() {
-	acquire_runtime_transaction_lock begin_connect_apply || return $?
-	load_service_config || return 1
-	log_service_info 'begin_connect_apply requested; marking connect apply pending'
-	connect_apply_guard_begin
-}
-
-abort_connect_apply() {
-	acquire_runtime_transaction_lock abort_connect_apply || return $?
-	load_service_config || return 1
-	log_service_info 'abort_connect_apply requested; finishing connect apply as failed'
-	connect_apply_result_finish 1
-	connect_apply_guard_end
 }
 
 stop_vpn() {
@@ -675,44 +604,35 @@ check() {
 	run_core_action check
 }
 
-# 1st structural flag gate (S7 inc 5c): the supervised apply verb. Under
-# orchestrator=legacy (default) it is a strict no-op, so the legacy connect/setup
-# path is untouched. Only reachable via an explicit `/etc/init.d/nordvpn-easy
-# supervise` invocation; nothing in the package calls it yet.
+# The supervised apply verb: the sole apply path. Reached by the `apply` verb's
+# setsid fork and by an explicit `/etc/init.d/nordvpn-easy supervise` invocation.
+# A disable request (cfg_enabled != 1) is handled by the disable/stop path, not
+# the supervisor, so it refuses here.
 supervise() {
 	log_service_info 'supervisor apply requested'
 	load_service_config || return 1
-	if [ "$(nordvpn_easy_orchestrator_mode)" != 'supervisor' ]; then
-		log_service_info 'orchestrator mode is legacy; supervise verb is a no-op (staying on legacy path)'
-		return 0
-	fi
 	if [ "${cfg_enabled:-0}" != '1' ]; then
-		log_service_info 'disable requested; supervisor refuses in inc 5c, staying on legacy path'
+		log_service_info 'disable requested; supervisor refuses (disable is handled by the stop path)'
 		return 0
 	fi
 	run_core_action supervise
 }
 
-# S7 tag 9: async entry for the supervised apply (the RPC apply method + the CLI both
-# reach the supervisor here). Gate on orchestrator mode BEFORE forking (legacy spawns
-# nothing = structural inertness), then setsid-reparent the SYNCHRONOUS supervise
-# worker into a NEW SESSION with its fds detached (</dev/null >/dev/null 2>&1), so it
-# survives rpcd tearing down the handler's process group and this verb -- and thus the
-# rpc handler -- returns in <1s while the worker runs ~60s detached. The trailing & is
+# Async entry for the supervised apply (the RPC apply method + the CLI both reach
+# the supervisor here). setsid-reparent the SYNCHRONOUS supervise worker into a NEW
+# SESSION with its fds detached (</dev/null >/dev/null 2>&1), so it survives rpcd
+# tearing down the handler's process group and this verb -- and thus the rpc handler
+# -- returns in <1s while the worker runs ~60s detached. The trailing & is
 # load-bearing: BusyBox setsid execs PROG and returns only when PROG exits. setsid is a
 # compile-time BusyBox applet; fall back to a bare backgrounded subshell on an image
 # that lacks it. cfg_enabled/DESIRED gates stay authoritative inside supervise().
 apply() {
 	load_service_config || return 1
-	if [ "$(nordvpn_easy_orchestrator_mode)" != 'supervisor' ]; then
-		log_service_info 'orchestrator mode is legacy; apply verb is a no-op (staying on legacy path)'
-		return 0
-	fi
-	# S7 tag 11: clear the last-error cache SYNCHRONOUSLY, before dispatching the async
-	# worker, so the JS status_json poll that immediately follows this apply RPC cannot
-	# read a STALE error from a prior failed apply and report a false failure. The legacy
-	# path clears it synchronously in its stop phase; the async worker would only clear it
-	# in its success epilogue (~60s later), racing the first poll. mirrors core.sh's cache.
+	# Clear the last-error cache SYNCHRONOUSLY, before dispatching the async worker,
+	# so the JS status_json poll that immediately follows this apply RPC cannot read a
+	# STALE error from a prior failed apply and report a false failure. The async
+	# worker would only clear it in its success epilogue (~60s later), racing the first
+	# poll. Mirrors core.sh's cache.
 	rm -f "${RUN_STATE_DIR:-/tmp/run/nordvpn-easy}/last_error" 2>/dev/null || true
 	if command -v setsid >/dev/null 2>&1; then
 		setsid /etc/init.d/"$SERVICE_NAME" supervise </dev/null >/dev/null 2>&1 &

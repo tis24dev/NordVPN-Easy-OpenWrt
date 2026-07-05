@@ -70,9 +70,25 @@ SERVER_LIST_FILE="$DIAG_TMP/nordvpn-server-list.json"
 COUNTRIES_CACHE_FILE="$DIAG_TMP/nordvpn-countries.json"
 COUNTRIES_CACHE_TS_FILE="$DIAG_TMP/nordvpn-countries.timestamp"
 NORDVPN_EASY_LAST_ERROR_CACHE="$DIAG_TMP/last_error"
-NORDVPN_EASY_CONNECT_APPLY_RESULT="$DIAG_TMP/connect-apply-result"
-NORDVPN_EASY_CONNECT_APPLY_GUARD="$DIAG_TMP/connect-apply-guard"
 NORDVPN_EASY_PUBLIC_VERIFICATION_CACHE="$DIAG_TMP/public_verification"
+
+# S9: a runtime transition (which suppresses transient findings) is detected off the
+# operation lock state, not a connect-apply guard file. Seed a held lock whose action
+# is a transition verb so the diagnostics collect reports held:<action>.
+DIAG_LOCK_DIR="$DIAG_TMP/lock"
+LOCK_DIR="$DIAG_TMP/no-lock"
+seed_transition_lock() {
+	mkdir -p "$DIAG_LOCK_DIR"
+	printf '%s\n' "$$" > "$DIAG_LOCK_DIR/pid"
+	printf '%s\n' "${1:-reconnect}" > "$DIAG_LOCK_DIR/action"
+	: > "$DIAG_LOCK_DIR/state"
+	date +%s > "$DIAG_LOCK_DIR/started_at"
+	LOCK_DIR="$DIAG_LOCK_DIR"
+}
+clear_transition_lock() {
+	rm -rf "$DIAG_LOCK_DIR"
+	LOCK_DIR="$DIAG_TMP/no-lock"
+}
 
 printf '%s\n' '[{"station":"hk270"}]' > "$SERVER_LIST_FILE"
 printf '%s\n' '[{"code":"HK","name":"Hong Kong"}]' > "$COUNTRIES_CACHE_FILE"
@@ -357,17 +373,16 @@ uci() {
 }
 JSON="$(assert_scenario_primary 'runtime.link_down' 'runtime.link_down is primary when VPN link is absent')"
 assert_scenario_includes "$JSON" 'runtime.link_down' 'runtime.link_down appears in findings'
-nordvpn_easy_connect_apply_result_begin "$NORDVPN_EASY_CONNECT_APPLY_RESULT"
+seed_transition_lock reconnect
 JSON="$(emit_scenario_json)"
 assert_eq 'none' "$(primary_code "$JSON")" \
-	'runtime.link_down is suppressed during pending connect_apply'
+	'runtime.link_down is suppressed during an active runtime transition'
 if printf '%s' "$JSON" | jq -e '.findings[]? | select(.code == "runtime.link_down")' >/dev/null 2>&1; then
-	printf '%s\n' 'FAIL: runtime.link_down should not appear during pending connect_apply' >&2
+	printf '%s\n' 'FAIL: runtime.link_down should not appear during an active runtime transition' >&2
 	exit 1
 fi
-rm -f "$NORDVPN_EASY_CONNECT_APPLY_RESULT"
+clear_transition_lock
 
-DIAG_CONNECT_APPLY_PENDING='no'
 DIAG_OPERATION_LOCK_STATE='held'
 DIAG_OPERATION_LOCK_ACTION='reconnect'
 nordvpn_easy_diagnostics_runtime_transition_active || {
@@ -412,15 +427,15 @@ uci() {
 	fi
 	uci_wg0_no_peer "$@"
 }
-: >"$NORDVPN_EASY_CONNECT_APPLY_GUARD"
+seed_transition_lock reconnect
 JSON="$(emit_scenario_json)"
 assert_eq 'none' "$(primary_code "$JSON")" \
-	'config.peer_missing is suppressed during connect_apply when guard is active'
+	'config.peer_missing is suppressed during an active runtime transition'
 if printf '%s' "$JSON" | jq -e '.findings[]? | select(.code == "config.peer_missing")' >/dev/null 2>&1; then
-	printf '%s\n' 'FAIL: config.peer_missing should not appear during connect_apply guard' >&2
+	printf '%s\n' 'FAIL: config.peer_missing should not appear during an active runtime transition' >&2
 	exit 1
 fi
-rm -f "$NORDVPN_EASY_CONNECT_APPLY_GUARD"
+clear_transition_lock
 
 wg() { wg_no_peers "$@"; }
 ip() { ip_healthy "$@"; }
@@ -444,15 +459,15 @@ uci() {
 	fi
 	uci_wg0_absent "$@"
 }
-: >"$NORDVPN_EASY_CONNECT_APPLY_GUARD"
+seed_transition_lock reconnect
 JSON="$(emit_scenario_json)"
 assert_eq 'none' "$(primary_code "$JSON")" \
-	'config.not_wireguard is suppressed during connect_apply when wg0 is torn down'
+	'config.not_wireguard is suppressed during an active runtime transition when wg0 is torn down'
 if printf '%s' "$JSON" | jq -e '.findings[]? | select(.code == "config.not_wireguard")' >/dev/null 2>&1; then
-	printf '%s\n' 'FAIL: config.not_wireguard should not appear during connect_apply guard' >&2
+	printf '%s\n' 'FAIL: config.not_wireguard should not appear during an active runtime transition' >&2
 	exit 1
 fi
-rm -f "$NORDVPN_EASY_CONNECT_APPLY_GUARD"
+clear_transition_lock
 
 wg() { wg_connected "$@"; }
 ip() { ip_healthy "$@"; }
@@ -527,18 +542,18 @@ assert_not_contains 'Complete the WireGuard interface keys' "$(primary_action "$
 	'corrected interface_incomplete action no longer tells the user to edit keys'
 
 printf '%s\n' 'could not retrieve NordLynx private key from NordVPN API (curl_rc=22: HTTP error response, http_code=400)' > "$NORDVPN_EASY_LAST_ERROR_CACHE"
-: >"$NORDVPN_EASY_CONNECT_APPLY_GUARD"
+seed_transition_lock reconnect
 JSON="$(emit_scenario_json)"
-# The credentials blocker keys off the incomplete-interface emission, which the
-# connect_apply guard suppresses; the unchanged operational.last_error gate then
+# The credentials blocker keys off the incomplete-interface emission, which an active
+# runtime transition suppresses; the unchanged operational.last_error gate then
 # surfaces the raw error as a generic fallback (never the suppressed blocker).
 assert_not_contains 'config.connect_blocked_credentials' "$(primary_code "$JSON")" \
-	'config.connect_blocked_credentials is not primary during connect_apply guard'
+	'config.connect_blocked_credentials is not primary during an active runtime transition'
 if printf '%s' "$JSON" | jq -e '.findings[]? | select(.code == "config.connect_blocked_credentials")' >/dev/null 2>&1; then
-	printf '%s\n' 'FAIL: config.connect_blocked_credentials should not appear during connect_apply guard' >&2
+	printf '%s\n' 'FAIL: config.connect_blocked_credentials should not appear during an active runtime transition' >&2
 	exit 1
 fi
-rm -f "$NORDVPN_EASY_CONNECT_APPLY_GUARD"
+clear_transition_lock
 
 printf '%s\n' 'could not retrieve NordLynx private key from NordVPN API (curl_rc=6: name resolution failure, http_code=000)' > "$NORDVPN_EASY_LAST_ERROR_CACHE"
 JSON="$(assert_scenario_primary 'config.connect_blocked_credentials' 'credentials blocker maps on a stable substring regardless of curl tail')"

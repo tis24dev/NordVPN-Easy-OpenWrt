@@ -165,19 +165,18 @@ assert_eq '2026-02-01T00:00:00Z' "$(printf '%s' "$STATUS_JSON" | jq -r '.public_
 assert_eq 'https://ifconfig.me/ip' "$(printf '%s' "$STATUS_JSON" | jq -r '.public_ip_source')" 'status json exposes public IP lookup source'
 assert_eq 'ok' "$(printf '%s' "$STATUS_JSON" | jq -r '.public_verification_status')" 'status json exposes public verification status'
 assert_eq '1770000002' "$(printf '%s' "$STATUS_JSON" | jq -r '.public_verification_checked_at')" 'status json exposes public verification timestamp'
-# Capability probe (S7): the backend advertises its RPC contract level so the LuCI
-# client can gate the supervised apply path on >= 2. The emit CLAMPS to 1 unless
-# orchestrator=supervisor; here schema.sh is not sourced (getter + orchestrator_mode
-# absent) so it clamps to 1 = legacy.
-assert_eq '1' "$(printf '%s' "$STATUS_JSON" | jq -r '.rpc_contract_level')" 'status json advertises the RPC contract level (clamped to 1 without the supervisor)'
+# The backend advertises its RPC contract level in status_json. runtime.sh reads it
+# from nordvpn_easy_rpc_contract_level (schema.sh), defaulting to 1 if that getter is
+# unsourced. This test does not source schema.sh, so here the getter is absent -> 1.
+assert_eq '1' "$(printf '%s' "$STATUS_JSON" | jq -r '.rpc_contract_level')" 'status json defaults the RPC contract level to 1 when the getter is unsourced'
 assert_eq 'number' "$(printf '%s' "$STATUS_JSON" | jq -r '.rpc_contract_level | type')" 'rpc_contract_level is a JSON number so the client compares it numerically'
-# S7 tag 11: the clamp -- with the getter advertising 2 AND orchestrator=supervisor the
-# emitted level is 2 (the async apply capability); either condition absent -> 1.
+# With the getter sourced (schema.sh returns 2) the emitted level is UNCONDITIONALLY 2:
+# the orchestrator clamp is gone, so there is no per-device downgrade.
 nordvpn_easy_rpc_contract_level() { printf '2'; }
-nordvpn_easy_orchestrator_mode() { printf 'supervisor'; }
-assert_eq '2' "$(nordvpn_easy_emit_status_json | jq -r '.rpc_contract_level')" 'under orchestrator=supervisor the advertised contract level is 2'
-nordvpn_easy_orchestrator_mode() { printf 'legacy'; }
-assert_eq '1' "$(nordvpn_easy_emit_status_json | jq -r '.rpc_contract_level')" 'under orchestrator=legacy the level is clamped to 1 even when the getter advertises 2'
+assert_eq '2' "$(nordvpn_easy_emit_status_json | jq -r '.rpc_contract_level')" 'the advertised contract level is 2 (unconditional; no orchestrator clamp)'
+# The emitted status_json must stay valid JSON after the connect_apply_* keys were
+# removed and the trailing comma fixed on the now-last key.
+nordvpn_easy_emit_status_json | jq . >/dev/null || { printf '%s\n' 'FAIL: emitted status_json is not valid JSON' >&2; exit 1; }
 assert_eq '0' "$(nordvpn_easy_wg_runtime_non_negative_int 'not-a-number')" 'non-numeric epoch sanitizes to zero'
 assert_eq '1770000000' "$(nordvpn_easy_wg_runtime_non_negative_int '1770000000')" 'numeric epoch is preserved'
 

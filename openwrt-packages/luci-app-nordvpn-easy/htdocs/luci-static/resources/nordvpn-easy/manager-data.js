@@ -102,9 +102,7 @@ function parseLocalStatus(raw) {
 		public_verification_status: String(status.public_verification_status || 'unknown'),
 		public_verification_checked_at: Number(status.public_verification_checked_at || 0),
 		last_error: String(status.last_error || ''),
-		// S7 tag 11: the capability probe (rpc_contract_level>=2 -> the async supervised
-		// apply is available) + the supervisor progress (journal phase/txn), surfaced so
-		// the apply cycle can route + poll. Absent on an old backend -> defaults to 1.
+		// The backend RPC contract level (constant 2). Surfaced for display/diagnostics.
 		rpc_contract_level: Number(status.rpc_contract_level || 1),
 		journal_phase: String(status.journal_phase || ''),
 		journal_txn_id: String(status.journal_txn_id || ''),
@@ -121,13 +119,6 @@ function parseLocalStatus(raw) {
 		current_server_load: String(status.current_server_load || ''),
 		preferred_server_hostname: String(status.preferred_server_hostname || ''),
 		preferred_server_station: String(status.preferred_server_station || ''),
-		connect_apply_pending: !!status.connect_apply_pending,
-		connect_apply_finished: !!status.connect_apply_finished,
-		connect_apply_success: !!status.connect_apply_success,
-		connect_apply_rc: Number(status.connect_apply_rc || 0),
-		connect_apply_country: normalizeCountryCode(status.connect_apply_country || ''),
-		connect_apply_started_at: Number(status.connect_apply_started_at || 0),
-		connect_apply_finished_at: Number(status.connect_apply_finished_at || 0),
 		boot_id: String(status.boot_id || ''),
 		status_seq: Number(status.status_seq || 0)
 	};
