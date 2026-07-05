@@ -105,6 +105,11 @@ function parseLocalStatus(raw) {
 		// The backend RPC contract level (constant 2). Surfaced for display/diagnostics.
 		rpc_contract_level: Number(status.rpc_contract_level || 1),
 		journal_phase: String(status.journal_phase || ''),
+		// Status honesty: the supervisor's honest sub-phase during a supervised apply
+		// (fetching/tearing_down/configuring/connecting/verifying). '' when no supervised
+		// converge is in flight (idle, legacy op, terminal) or when the backend predates
+		// the field (old backend) -- degrades cleanly either way.
+		journal_sub_phase: String(status.journal_sub_phase || ''),
 		journal_txn_id: String(status.journal_txn_id || ''),
 		// S8: the desired vs applied config identity, so the supervised poll can read
 		// convergence off the backend's own signal (applied == config once mark_applied

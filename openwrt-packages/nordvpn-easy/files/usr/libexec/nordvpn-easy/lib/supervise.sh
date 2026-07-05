@@ -220,6 +220,7 @@ nordvpn_easy_supervise_open_txn() {
 			"owner_pid=$$" \
 			"started_at=$started_at" \
 			'fetch_done=' \
+			'sub_phase=' \
 			'last_error=' \
 			'finished_at=' \
 			'rc=' \
@@ -234,6 +235,7 @@ nordvpn_easy_supervise_open_txn() {
 		"owner_pid=$$" \
 		"started_at=$now" \
 		'fetch_done=' \
+		'sub_phase=' \
 		'last_error=' \
 		'finished_at=' \
 		'rc=' \
@@ -353,6 +355,14 @@ nordvpn_easy_supervise_mark_self_ifevent() {
 # fetch-before-teardown invariant [B1]: a FETCH failure returns before teardown,
 # so network.${VPN_IF} is never destroyed without a fresh key/server in hand.
 _supervise_converge() {
+	# Status honesty: stamp the honest sub_phase at each real sub-step boundary
+	# (ADDITIVE, owner-fenced; mirrors the fetch_done merge below, proven to work in
+	# the run_phase background subshell). emit_status_json surfaces it as
+	# journal_sub_phase and derives the honest transitional vpn_status/state from it.
+	# 'fetching' is the FIRST statement so a converge RETRY re-stamps it (resetting a
+	# stale value from a prior attempt) -- the whole apply stays honest, never leading
+	# reality. The lock action and journal `phase` are left untouched.
+	nordvpn_easy_fenced_journal_merge 'sub_phase=fetching' >/dev/null 2>&1 || true
 	if ! nordvpn_easy_fetch_provision_prerequisites; then
 		nordvpn_easy_supervise_record_error 'network.fetch' 'provision prerequisite fetch failed'
 		return 1
@@ -362,11 +372,13 @@ _supervise_converge() {
 	nordvpn_easy_fenced_journal_merge 'fetch_done=1' >/dev/null 2>&1 || true
 	# B1: teardown gated on the durable fetch_done flag.
 	if [ "$(nordvpn_easy_journal_get fetch_done 2>/dev/null || printf '')" = '1' ]; then
+		nordvpn_easy_fenced_journal_merge 'sub_phase=tearing_down' >/dev/null 2>&1 || true
 		if ! nordvpn_easy_teardown_vpn; then
 			nordvpn_easy_supervise_record_error 'local.teardown' 'vpn teardown failed (commit refused or interface persisted)'
 			return 1
 		fi
 	fi
+	nordvpn_easy_fenced_journal_merge 'sub_phase=configuring' >/dev/null 2>&1 || true
 	if ! nordvpn_easy_configure_vpn_interface_no_bringup; then
 		nordvpn_easy_supervise_record_error 'config.configure' 'interface configure/commit failed (fenced refusal or invalid config)'
 		return 1
@@ -375,6 +387,9 @@ _supervise_converge() {
 	# hotplug hook skips it (see nordvpn_easy_supervise_mark_self_ifevent). Written
 	# BEFORE the ifup so the sentinel is already in place when the async hotplug fires.
 	nordvpn_easy_supervise_mark_self_ifevent "$VPN_IF"
+	# 'connecting' spans bring_up + wait_for_vpn_connectivity (both render as
+	# Connecting; vpn_status shows Connected only once a fresh handshake lands).
+	nordvpn_easy_fenced_journal_merge 'sub_phase=connecting' >/dev/null 2>&1 || true
 	if ! nordvpn_easy_bring_up_vpn_interface "$VPN_IF"; then
 		nordvpn_easy_supervise_record_error 'local.bringup' 'interface bring-up failed'
 		return 1
@@ -398,6 +413,9 @@ _supervise_converge() {
 # mark_applied (best-effort, command -v guarded) run here, exactly where the
 # legacy default provision tail runs them.
 _supervise_verify() {
+	# Status honesty: VERIFYING runs with the tunnel up; stamp it so the Operation
+	# row reads 'Applying (verifying)...' and vpn_status keeps live detection.
+	nordvpn_easy_fenced_journal_merge 'sub_phase=verifying' >/dev/null 2>&1 || true
 	verify_public_country_selection >/dev/null 2>&1 || true
 	nordvpn_easy_commit_pending_server_preference >/dev/null 2>&1 || true
 	if command -v nordvpn_easy_mark_applied >/dev/null 2>&1; then

@@ -594,6 +594,12 @@ function testRenderLocalStatusSnapshotHonestDuringApply() {
 	assert.deepEqual(indicators.vpn, { state: 'stopping', label: 'Stopping' },
 		'Connection follows vpn_status to Stopping during the teardown');
 
+	// The interface is then (re)configured before bring-up: Connection reads
+	// Configuring (amber), distinct from both teardown and connecting.
+	actions.renderLocalStatusSnapshot(state, Object.assign({}, status, { vpn_status: 'configuring', connected: false }));
+	assert.deepEqual(indicators.vpn, { state: 'configuring', label: 'Configuring' },
+		'Connection follows vpn_status to Configuring while the interface is (re)configured');
+
 	// Then the new tunnel comes up as starting -> Connecting.
 	actions.renderLocalStatusSnapshot(state, Object.assign({}, status, { vpn_status: 'starting', connected: false }));
 	assert.deepEqual(indicators.vpn, { state: 'starting', label: 'Connecting' },
@@ -2593,7 +2599,169 @@ function testCountryMatchTimingLogIsLabOptIn() {
 	assert.equal(posts[0].payload.event, 'country_match', 'Country Match timing log keeps the diagnostics event marker');
 }
 
+function testEffectiveOperationStatusHonestSubPhase() {
+	const actions = loadManagerActionsModule({}).managerActions;
+
+	// A supervised apply keeps the opaque 'supervise' lock action for the whole
+	// rebuild; the Operation row is driven by the honest journal_sub_phase. The
+	// status below is a SAME-country/station STALE old session (fresh handshake) --
+	// exactly the trap where the busy:finishing live-heuristic would otherwise match
+	// and jump the row to Finishing during teardown/configure.
+	function supStatus(subPhase, handshakeAge) {
+		return {
+			operation_status: 'busy:supervise',
+			operation_lock_state: 'held',
+			operation_lock_action: 'supervise',
+			journal_sub_phase: subPhase,
+			vpn_status: 'active',
+			connected: true,
+			state: 'connected',
+			handshake_age_seconds: (handshakeAge == null ? 30 : handshakeAge),
+			current_server_country: 'IT',
+			current_server_station: 'it123',
+			selected_country: 'IT'
+		};
+	}
+	// Saved config matches the CURRENT (stale) session -> a same-country/station re-apply.
+	const state = {
+		saveApplyInProgress: true,
+		appliedEnabled: true,
+		appliedCountryCode: 'IT',
+		appliedMode: 'manual',
+		appliedPreferredStation: 'it123'
+	};
+
+	// remap busy:supervise -> busy:<sub_phase>, and the busy:finishing heuristic is
+	// SKIPPED while the sub_phase has not reached connecting/verifying.
+	assert.equal(actions.effectiveOperationStatus(supStatus('fetching'), state), 'busy:fetching',
+		'busy:supervise + fetching remaps to busy:fetching (finishing suppressed during fetch)');
+	assert.equal(actions.effectiveOperationStatus(supStatus('tearing_down'), state), 'busy:tearing_down',
+		'busy:supervise + tearing_down remaps to busy:tearing_down (finishing suppressed during teardown)');
+	assert.equal(actions.effectiveOperationStatus(supStatus('configuring'), state), 'busy:configuring',
+		'busy:supervise + configuring remaps to busy:configuring (finishing suppressed during configure)');
+	assert.equal(actions.effectiveOperationStatus(supStatus(''), state), 'busy:supervise',
+		'busy:supervise + empty sub_phase stays busy:supervise (finishing suppressed pre-converge)');
+
+	// Once the tunnel is genuinely (re)connecting with a fresh handshake, OR verifying,
+	// the finishing heuristic is allowed to promote the row.
+	assert.equal(actions.effectiveOperationStatus(supStatus('connecting', 30), state), 'busy:finishing',
+		'busy:supervise + connecting WITH a fresh handshake allows busy:finishing');
+	assert.equal(actions.effectiveOperationStatus(supStatus('verifying', 30), state), 'busy:finishing',
+		'busy:supervise + verifying allows busy:finishing');
+	// connecting but the (old) handshake is NOT fresh -> convergence has not succeeded,
+	// so the row stays busy:connecting (no premature Finishing).
+	assert.equal(actions.effectiveOperationStatus(supStatus('connecting', 9999), state), 'busy:connecting',
+		'busy:supervise + connecting with a STALE handshake stays busy:connecting (no premature finishing)');
+
+	// Legacy/non-supervised apply paths are UNAFFECTED: the busy:finishing heuristic
+	// fires exactly as before once convergence has succeeded (the gate is scoped to
+	// operation === busy:supervise).
+	const legacyStatus = {
+		operation_status: 'idle',
+		operation_lock_state: 'none',
+		operation_lock_action: '',
+		journal_sub_phase: '',
+		vpn_status: 'active',
+		connected: true,
+		state: 'connected',
+		handshake_age_seconds: 30,
+		current_server_country: 'IT',
+		current_server_station: 'it123',
+		selected_country: 'IT'
+	};
+	const legacyState = Object.assign({}, state, { applyPhase: 'setup' });
+	assert.equal(actions.effectiveOperationStatus(legacyStatus, legacyState), 'busy:finishing',
+		'a legacy (non-supervised) apply still shows busy:finishing once convergence succeeds (gate scoped to busy:supervise)');
+}
+
+function testSupervisedApplyOperationRowHonesty() {
+	const indicators = {};
+	const fields = {};
+	const actions = loadManagerActionsModule({
+		managerData: {
+			normalizeCountryCode(value) { return String(value || '').trim().toUpperCase(); },
+			parseLocalStatus(raw) { return JSON.parse(raw || '{}'); }
+		},
+		// Mirror the real humanizeAction (underscore -> space) so the Operation row text
+		// matches what LuCI renders.
+		managerFormat: {
+			humanizeAction(action) { return String(action || '').replace(/_/g, ' '); }
+		},
+		managerStore: {
+			PHASES: { RUNTIME_BUSY: 'runtime_busy', SAVING: 'saving' },
+			syncPhase(state) { state.phase = 'synced'; },
+			setPhase(state, phase) { state.phase = phase; }
+		},
+		managerUI: {
+			ids: {
+				CURRENT_SERVER_STATUS_ID: 'current', PREFERRED_SERVER_STATUS_ID: 'preferred',
+				ENDPOINT_STATUS_ID: 'endpoint', HANDSHAKE_STATUS_ID: 'handshake',
+				TRANSFER_STATUS_ID: 'transfer', OPERATION_STATUS_ID: 'operation',
+				LAST_ERROR_STATUS_ID: 'last_error', PUBLIC_IP_STATUS_ID: 'public_ip',
+				PUBLIC_COUNTRY_STATUS_ID: 'public_country'
+			},
+			replaceStatusText(id, value) { fields[id] = value; },
+			setManagerControlsDisabled() {},
+			setVpnStatusIndicator(state, label) { indicators.vpn = { state: state, label: String(label) }; },
+			updateCountryMatchStatus() {},
+			updateServerSelectionState() {},
+			currentServerSummaryFromStatus() { return 'srv'; },
+			preferredServerSummaryFromStatus() { return 'auto'; },
+			isDisableRequested() { return false; }
+		}
+	}).managerActions;
+
+	// A same-country + same-station re-apply: the STALE old session stays up and fresh
+	// throughout teardown/configure, so without the gate the live convergence heuristic
+	// would jump the Operation row to 'Finishing connection...' before reconnecting.
+	function supStatus(subPhase, vpnStatus, handshakeAge) {
+		return {
+			desired_enabled: true, runtime_disabled: false, interface_disabled: false,
+			runtime_configured: true,
+			operation_status: 'busy:supervise', operation_lock_state: 'held',
+			operation_lock_action: 'supervise', journal_sub_phase: subPhase,
+			vpn_status: vpnStatus, connected: true, state: 'connected',
+			handshake_age_seconds: (handshakeAge == null ? 30 : handshakeAge),
+			current_server_country: 'IT', current_server_station: 'it123', selected_country: 'IT',
+			endpoint: 'it123.nordvpn.com:51820', latest_handshake: '5 seconds ago',
+			transfer_rx: '1 B', transfer_tx: '1 B', public_ip_cached: '', public_country_cached: '', last_error: ''
+		};
+	}
+	const state = {
+		appliedEnabled: true, appliedCountryCode: 'IT', appliedMode: 'manual', appliedPreferredStation: 'it123',
+		saveApplyInProgress: true, applyPhase: 'supervise', applyTransitionActive: false,
+		currentLocalStatus: {}, currentOperationStatus: 'idle', pendingOperationLabel: '',
+		currentPublicIp: '', currentPublicCountry: ''
+	};
+
+	// Walk the honest pre-converge sub_phase sequence: the Operation row is honest and
+	// NEVER reads 'Finishing connection...' before sub_phase reaches connecting/verifying.
+	const preConverge = [
+		['', 'active', 'Applying (supervise)...'],
+		['fetching', 'active', 'Applying (fetching)...'],
+		['tearing_down', 'stopping', 'Applying (tearing down)...'],
+		['configuring', 'configuring', 'Applying (configuring)...']
+	];
+	preConverge.forEach(function(step) {
+		actions.renderLocalStatusSnapshot(state, supStatus(step[0], step[1]));
+		assert.equal(fields.operation, step[2],
+			'Operation row is honest ("' + step[2] + '") at sub_phase "' + step[0] + '"');
+		assert.notEqual(fields.operation, 'Finishing connection...',
+			'Operation row does NOT read Finishing before sub_phase connecting/verifying (sub_phase "' + step[0] + '")');
+		assert.equal(state.applyTransitionActive, true,
+			'applyTransitionActive stays true during the pre-converge sub_phase "' + step[0] + '" (No-VPN suppression holds)');
+	});
+
+	// Once connecting with a fresh handshake, the convergence heuristic is allowed to
+	// promote the row to Finishing (the honest end of the apply).
+	actions.renderLocalStatusSnapshot(state, supStatus('connecting', 'active', 30));
+	assert.equal(fields.operation, 'Finishing connection...',
+		'Operation row may read Finishing once sub_phase connecting has a fresh handshake');
+}
+
 Promise.resolve().then(async function() {
+	testEffectiveOperationStatusHonestSubPhase();
+	testSupervisedApplyOperationRowHonesty();
 	testCountryMatchTimingLogIsLabOptIn();
 	testManualApplyConvergenceRequiresStation();
 	testForcedCatalogRefreshUsesADistinctSlot();

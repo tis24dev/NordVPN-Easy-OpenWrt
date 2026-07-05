@@ -295,4 +295,109 @@ assert_eq 'true' "$(printf '%s' "$SNAPSHOT_STATUS_JSON" | jq -r '.connected')" '
 assert_eq "$HANDSHAKE_EPOCH" "$(printf '%s' "$SNAPSHOT_STATUS_JSON" | jq -r '.latest_handshake_epoch')" 'status json uses wireguard snapshot handshake epoch'
 assert_eq 'connected' "$(printf '%s' "$SNAPSHOT_STATUS_JSON" | jq -r '.state')" 'status json uses shared enterprise state helper when tunnel is up'
 
+# =============================================================================
+# Status honesty (sub_phase): during a supervised apply (operation=busy:supervise)
+# vpn_status_value + enterprise_state_value derive the honest transitional state
+# from the 4th/6th sub_phase arg, gated on busy:supervise so every legacy path is
+# byte-identical. Placed last so the stubs below can be freely redefined.
+# =============================================================================
+SUP_HS_EPOCH="$(date +%s)"
+# A wg stub that reports a FRESH handshake via latest-handshakes (what
+# nordvpn_easy_wg_handshake_epoch reads); ip link present; ifstatus unknown.
+wg() {
+	case "$1 $2 $3" in
+		'show wg0 latest-handshakes') printf 'peerpub\t%s\n' "$SUP_HS_EPOCH" ;;
+		*) return 1 ;;
+	esac
+}
+ip() {
+	case "$*" in
+		'link show dev wg0') return 0 ;;
+		*) return 1 ;;
+	esac
+}
+ifstatus() { return 1; }
+
+# --- vpn_status_value per sub_phase ---
+assert_eq 'stopping'    "$(nordvpn_easy_vpn_status_value 1 wg0 'busy:supervise' 'tearing_down')" 'sub_phase tearing_down => stopping (never active during teardown)'
+assert_eq 'configuring' "$(nordvpn_easy_vpn_status_value 1 wg0 'busy:supervise' 'configuring')"  'sub_phase configuring => configuring (distinct transitional value)'
+assert_eq 'active'      "$(nordvpn_easy_vpn_status_value 1 wg0 'busy:supervise' 'connecting')"   'sub_phase connecting WITH a fresh handshake => active (gated on a real handshake)'
+
+# connecting with NO fresh handshake => starting, even if netifd reports the
+# interface up: the connecting arm short-circuits before the ifstatus.up path, so
+# there is no premature Connected.
+NO_HS_UP="$(
+	wg() { return 1; }
+	ifstatus() { printf '%s\n' '{"up":true}'; }
+	nordvpn_easy_vpn_status_value 1 wg0 'busy:supervise' 'connecting'
+)"
+assert_eq 'starting' "$NO_HS_UP" 'sub_phase connecting with no fresh handshake => starting (ifstatus.up-alone suppressed)'
+
+# fetching / verifying / '' fall through to the UNCHANGED live detection: the OLD
+# tunnel honestly reads active during fetch when its handshake is still fresh.
+assert_eq 'active' "$(nordvpn_easy_vpn_status_value 1 wg0 'busy:supervise' 'fetching')"  'sub_phase fetching falls through to live detection (fresh handshake => active)'
+assert_eq 'active' "$(nordvpn_easy_vpn_status_value 1 wg0 'busy:supervise' 'verifying')" 'sub_phase verifying falls through to live detection (fresh handshake => active)'
+assert_eq 'active' "$(nordvpn_easy_vpn_status_value 1 wg0 'busy:supervise' '')"          'empty sub_phase under busy:supervise falls through to live detection'
+# fetching with no live session (dead handshake, no ifstatus) => inactive.
+FETCH_DEAD="$(
+	wg() { return 1; }
+	ifstatus() { return 1; }
+	nordvpn_easy_vpn_status_value 1 wg0 'busy:supervise' 'fetching'
+)"
+assert_eq 'inactive' "$FETCH_DEAD" 'sub_phase fetching with no live session falls through to inactive'
+
+# --- gate proof: legacy operations are byte-identical WITH and WITHOUT a sub_phase arg ---
+wg() { return 1; }
+ifstatus() { return 1; }
+for op in 'busy:stop_vpn' 'busy:setup' 'busy:check' 'busy:rotate' 'idle' 'busy:disable_runtime'; do
+	vs_without="$(nordvpn_easy_vpn_status_value 1 wg0 "$op")"
+	vs_with="$(nordvpn_easy_vpn_status_value 1 wg0 "$op" 'tearing_down')"
+	assert_eq "$vs_without" "$vs_with" "vpn_status_value is byte-identical for $op with and without a sub_phase arg"
+done
+
+# --- enterprise_state_value: sub_phase remap for a supervised apply (not stuck recovering) ---
+assert_eq 'disconnecting' "$(nordvpn_easy_enterprise_state_value 1 0 yes yes 'busy:supervise' 'tearing_down')" 'busy:supervise tearing_down => disconnecting (not recovering)'
+assert_eq 'connecting'    "$(nordvpn_easy_enterprise_state_value 1 0 yes no  'busy:supervise' 'configuring')"  'busy:supervise configuring => connecting'
+assert_eq 'connecting'    "$(nordvpn_easy_enterprise_state_value 1 0 yes no  'busy:supervise' 'connecting')"   'busy:supervise connecting => connecting'
+assert_eq 'connecting'    "$(nordvpn_easy_enterprise_state_value 1 0 yes yes 'busy:supervise' 'verifying')"    'busy:supervise verifying => connecting'
+assert_eq 'recovering'    "$(nordvpn_easy_enterprise_state_value 1 0 yes yes 'busy:supervise' 'fetching')"     'busy:supervise fetching keeps the recovering default (old tunnel still up)'
+assert_eq 'recovering'    "$(nordvpn_easy_enterprise_state_value 1 0 yes yes 'busy:supervise' '')"             'busy:supervise with empty sub_phase keeps recovering (byte-identical to pre-change)'
+
+# gate proof: legacy ops byte-identical with and without the 6th sub_phase arg.
+for op in 'busy:check' 'busy:setup' 'busy:rotate' 'busy:disable_runtime' 'idle' 'busy:stop_vpn'; do
+	es_without="$(nordvpn_easy_enterprise_state_value 1 0 yes yes "$op")"
+	es_with="$(nordvpn_easy_enterprise_state_value 1 0 yes yes "$op" 'tearing_down')"
+	assert_eq "$es_without" "$es_with" "enterprise_state_value is byte-identical for $op with and without a sub_phase arg"
+done
+
+# --- emit_status_json: journal_sub_phase is an additive field, empty for a
+#     non-supervised (idle) status, always a string, document stays valid JSON. ---
+# A safe wg stub (rc 0, empty) so the runtime snapshot's `wg show ... dump`
+# assignment does not trip the harness `set -e` (vpn_status here is derived from
+# the operation/sub_phase, not the wg dump).
+wg() { return 0; }
+END_STATUS_JSON="$(nordvpn_easy_emit_status_json)"
+printf '%s' "$END_STATUS_JSON" | jq . >/dev/null || { printf '%s\n' 'FAIL: emit with journal_sub_phase is not valid JSON' >&2; exit 1; }
+assert_eq 'true'   "$(printf '%s' "$END_STATUS_JSON" | jq -r 'has("journal_sub_phase")')" 'status json carries the additive journal_sub_phase field'
+assert_eq ''       "$(printf '%s' "$END_STATUS_JSON" | jq -r '.journal_sub_phase')"        'journal_sub_phase is empty for a non-supervised (idle) status'
+assert_eq 'string' "$(printf '%s' "$END_STATUS_JSON" | jq -r '.journal_sub_phase | type')" 'journal_sub_phase is always a JSON string'
+
+# When a supervised apply is in flight (operation=busy:supervise) and the journal
+# getter is available, emit surfaces the live sub_phase and derives the honest
+# transitional vpn_status/state from it.
+SUP_LOCK_DIR="$TMP_DIR/suplock"
+mkdir -p "$SUP_LOCK_DIR"
+printf '%s\n' "$$" > "$SUP_LOCK_DIR/pid"
+printf '%s\n' 'supervise' > "$SUP_LOCK_DIR/action"
+printf '%s\n' 'held' > "$SUP_LOCK_DIR/state"
+printf '%s\n' "$(date +%s)" > "$SUP_LOCK_DIR/started_at"
+LOCK_DIR="$SUP_LOCK_DIR"
+nordvpn_easy_journal_get() { case "$1" in sub_phase) printf 'tearing_down' ;; *) return 1 ;; esac; }
+SUP_STATUS_JSON="$(nordvpn_easy_emit_status_json)"
+printf '%s' "$SUP_STATUS_JSON" | jq . >/dev/null || { printf '%s\n' 'FAIL: supervised emit is not valid JSON' >&2; exit 1; }
+assert_eq 'busy:supervise' "$(printf '%s' "$SUP_STATUS_JSON" | jq -r '.operation_status')"   'a supervised apply reports operation_status busy:supervise'
+assert_eq 'tearing_down'   "$(printf '%s' "$SUP_STATUS_JSON" | jq -r '.journal_sub_phase')"   'emit surfaces the live sub_phase during a supervised apply'
+assert_eq 'stopping'       "$(printf '%s' "$SUP_STATUS_JSON" | jq -r '.vpn_status')"          'emit derives vpn_status stopping from sub_phase=tearing_down'
+assert_eq 'disconnecting'  "$(printf '%s' "$SUP_STATUS_JSON" | jq -r '.state')"               'emit derives enterprise state disconnecting from sub_phase=tearing_down'
+
 printf '%s\n' 'test-runtime.sh: ok'

@@ -196,6 +196,74 @@ assert_eq 'network.connectivity' "$(nordvpn_easy_journal_get last_error)" 'a con
 unset FETCH_RC TEARDOWN_RC CONFIGURE_RC BRINGUP_RC WAIT_RC
 
 # =============================================================================
+# GROUP 3c (status honesty): _supervise_converge stamps the honest sub_phase at
+# each real sub-step boundary (fetching->tearing_down->configuring->connecting),
+# a converge RETRY re-stamps fetching at the TOP, and the terminal writes drop it.
+# Capture the sub_phase VISIBLE at each helper call via a capturing stub.
+# =============================================================================
+SUBPHASE_LOG="$TMP_DIR/subphase"
+nordvpn_easy_fetch_provision_prerequisites() { printf 'fetch=%s\n' "$(nordvpn_easy_journal_get sub_phase)" >> "$SUBPHASE_LOG"; return "${FETCH_RC:-0}"; }
+nordvpn_easy_teardown_vpn() { printf 'teardown=%s\n' "$(nordvpn_easy_journal_get sub_phase)" >> "$SUBPHASE_LOG"; : > "$SENTINEL"; return "${TEARDOWN_RC:-0}"; }
+nordvpn_easy_configure_vpn_interface_no_bringup() { printf 'configure=%s\n' "$(nordvpn_easy_journal_get sub_phase)" >> "$SUBPHASE_LOG"; return "${CONFIGURE_RC:-0}"; }
+nordvpn_easy_bring_up_vpn_interface() { printf 'bringup=%s\n' "$(nordvpn_easy_journal_get sub_phase)" >> "$SUBPHASE_LOG"; return "${BRINGUP_RC:-0}"; }
+nordvpn_easy_wait_for_vpn_connectivity() { printf 'wait=%s\n' "$(nordvpn_easy_journal_get sub_phase)" >> "$SUBPHASE_LOG"; return "${WAIT_RC:-0}"; }
+
+reset_journal
+rm -f "$SUBPHASE_LOG"
+FETCH_RC=0 TEARDOWN_RC=0 CONFIGURE_RC=0 BRINGUP_RC=0 WAIT_RC=0
+_supervise_converge || fail 'converge must succeed (subphase group)'
+assert_eq 'fetching'     "$(sed -n 's/^fetch=//p' "$SUBPHASE_LOG")"     'sub_phase is fetching when FETCH runs'
+assert_eq 'tearing_down' "$(sed -n 's/^teardown=//p' "$SUBPHASE_LOG")"  'sub_phase is tearing_down when TEARDOWN runs'
+assert_eq 'configuring'  "$(sed -n 's/^configure=//p' "$SUBPHASE_LOG")" 'sub_phase is configuring when CONFIGURE runs'
+assert_eq 'connecting'   "$(sed -n 's/^bringup=//p' "$SUBPHASE_LOG")"   'sub_phase is connecting when BRING-UP runs'
+assert_eq 'connecting'   "$(sed -n 's/^wait=//p' "$SUBPHASE_LOG")"      'sub_phase stays connecting through the connectivity wait'
+assert_eq 'connecting'   "$(nordvpn_easy_journal_get sub_phase)"        'sub_phase lands on connecting after a full converge'
+
+# A converge RETRY re-stamps fetching at the TOP, resetting a STALE sub_phase from
+# a prior attempt (e.g. connecting) so the second attempt is honest from the start.
+reset_journal
+rm -f "$SUBPHASE_LOG"
+nordvpn_easy_journal_write_full 'phase=converge' 'txn_id=T-retry' 'sub_phase=connecting'
+FETCH_RC=0 TEARDOWN_RC=0 CONFIGURE_RC=0 BRINGUP_RC=0 WAIT_RC=0
+_supervise_converge || fail 'converge retry must succeed'
+assert_eq 'fetching' "$(sed -n 's/^fetch=//p' "$SUBPHASE_LOG")" 'a converge retry re-stamps sub_phase=fetching at the top (resets a stale connecting)'
+unset FETCH_RC TEARDOWN_RC CONFIGURE_RC BRINGUP_RC WAIT_RC
+
+# open_txn (adopt) CLEARS sub_phase so an adopted re-entry never inherits a stale
+# sub_phase from a crashed predecessor.
+reset_journal
+nordvpn_easy_journal_write_full 'phase=applying' 'txn_id=T-sp-adopt' 'target_fingerprint=fp-NEW:1' 'started_at=222' 'sub_phase=connecting'
+nordvpn_easy_supervise_open_txn 'fp-NEW:1'
+assert_eq 'T-sp-adopt' "$(nordvpn_easy_journal_get txn_id)" 'open_txn adopts the same-target txn (subphase group)'
+assert_eq '' "$(nordvpn_easy_journal_get sub_phase)" 'open_txn CLEARS sub_phase on adopt'
+
+# open_txn (fresh) also leaves sub_phase empty.
+reset_journal
+nordvpn_easy_journal_write_full 'phase=applying' 'txn_id=T-sp-other' 'target_fingerprint=fp-DIFFERENT:1' 'sub_phase=tearing_down'
+nordvpn_easy_supervise_open_txn 'fp-NEW:1'
+assert_eq '' "$(nordvpn_easy_journal_get sub_phase)" 'a FRESH open_txn leaves sub_phase empty'
+
+# journal_finish (done/failed) DROPS sub_phase via its full-document terminal write.
+reset_journal
+nordvpn_easy_journal_write_full 'phase=converge' 'txn_id=T-sp-fin' 'sub_phase=connecting'
+nordvpn_easy_journal_finish 0 'ES'
+assert_eq 'done' "$(nordvpn_easy_journal_get phase)" 'journal_finish(0) stamps done (subphase group)'
+assert_eq '' "$(nordvpn_easy_journal_get sub_phase)" 'journal_finish(0) drops sub_phase (terminal full-document write)'
+reset_journal
+nordvpn_easy_journal_write_full 'phase=converge' 'txn_id=T-sp-fin2' 'sub_phase=tearing_down'
+nordvpn_easy_journal_finish 1 ''
+assert_eq 'failed' "$(nordvpn_easy_journal_get phase)" 'journal_finish(1) stamps failed (subphase group)'
+assert_eq '' "$(nordvpn_easy_journal_get sub_phase)" 'journal_finish(1) drops sub_phase (terminal full-document write)'
+
+# Restore the original GROUP 3 helper stubs (write CALL_LOG) so a later group that
+# re-uses them is unaffected.
+nordvpn_easy_fetch_provision_prerequisites() { printf 'fetch\n' >> "$CALL_LOG"; return "${FETCH_RC:-0}"; }
+nordvpn_easy_teardown_vpn() { printf 'teardown\n' >> "$CALL_LOG"; : > "$SENTINEL"; return "${TEARDOWN_RC:-0}"; }
+nordvpn_easy_configure_vpn_interface_no_bringup() { printf 'configure\n' >> "$CALL_LOG"; return "${CONFIGURE_RC:-0}"; }
+nordvpn_easy_bring_up_vpn_interface() { printf 'bringup\n' >> "$CALL_LOG"; return "${BRINGUP_RC:-0}"; }
+nordvpn_easy_wait_for_vpn_connectivity() { printf 'wait\n' >> "$CALL_LOG"; return "${WAIT_RC:-0}"; }
+
+# =============================================================================
 # GROUP 3b: _supervise_persist arms the kill-switch EARLY (inc 6) -- it stages
 # enabled=1, commits, THEN calls ensure_vpn_firewall so the teardown->configure
 # window in CONVERGE is already protected. A firewall arm failure fails the phase.

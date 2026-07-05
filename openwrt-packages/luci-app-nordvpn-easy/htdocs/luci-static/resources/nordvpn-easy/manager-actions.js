@@ -1072,6 +1072,19 @@ function effectiveOperationStatus(runtimeStatus, state) {
 
 		operation = phase ? ('busy:' + phase) : 'busy:configuration';
 	}
+
+	// Status honesty: the supervised apply holds the lock as the opaque 'supervise'
+	// for the whole rebuild, so surface the supervisor's own honest sub_phase
+	// (fetching / tearing_down / configuring / connecting / verifying) as the Operation
+	// row verb -> humanizeAction renders 'Applying (tearing down / configuring /
+	// connecting / verifying)...'. journal_sub_phase is '' unless a supervised converge
+	// is in flight, so legacy/non-supervised operations are untouched.
+	const isSupervised = (operation === 'busy:supervise');
+	const subPhase = String(status.journal_sub_phase || '').trim();
+
+	if (isSupervised && subPhase)
+		operation = 'busy:' + subPhase;
+
 	if (state && state.saveApplyInProgress &&
 		operation === 'busy:stop_vpn' &&
 		String(status.vpn_status || '') === 'inactive') {
@@ -1079,10 +1092,25 @@ function effectiveOperationStatus(runtimeStatus, state) {
 	}
 
 	if (state && state.saveApplyInProgress) {
-		const applySaved = savedConfigForApplyState(state);
+		// Gate the live convergence heuristic during a supervised apply so the Operation
+		// row cannot jump to 'Finishing connection...' before the tunnel is genuinely
+		// (re)connecting. Only permit it at sub_phase 'verifying', or 'connecting' with a
+		// fresh handshake (which applyRuntimeConvergenceSucceeded verifies). Skip it for
+		// '', fetching, tearing_down and configuring so a same-country / same-station
+		// re-apply matching the STALE old session cannot show Finishing while the
+		// supervisor is still fetching / tearing down / configuring. Legacy/non-supervised
+		// apply paths are unaffected (isSupervised is false), keeping applyTransitionActive
+		// true through early converge so the 'No VPN' suppression holds.
+		const finishingAllowed = !isSupervised ||
+			subPhase === 'verifying' ||
+			subPhase === 'connecting';
 
-		if (applyRuntimeConvergenceSucceeded(applySaved, status, state))
-			return 'busy:finishing';
+		if (finishingAllowed) {
+			const applySaved = savedConfigForApplyState(state);
+
+			if (applyRuntimeConvergenceSucceeded(applySaved, status, state))
+				return 'busy:finishing';
+		}
 	}
 
 	return operation;
@@ -1444,6 +1472,8 @@ function renderLocalStatusSnapshot(state, status) {
 		managerUI.setVpnStatusIndicator('active', _('Connected'));
 	else if (String(runtimeStatus.vpn_status || '') === 'stopping')
 		managerUI.setVpnStatusIndicator('stopping', _('Stopping'));
+	else if (String(runtimeStatus.vpn_status || '') === 'configuring')
+		managerUI.setVpnStatusIndicator('configuring', _('Configuring'));
 	else if (String(runtimeStatus.vpn_status || '') === 'starting')
 		managerUI.setVpnStatusIndicator('starting', _('Connecting'));
 	else if (String(runtimeStatus.vpn_status || '') === 'error')
@@ -1984,6 +2014,7 @@ return baseclass.extend({
 	maybeEnsureEnabledRuntime: maybeEnsureEnabledRuntime,
 	maybeAutoReconcileSelectionDrift: maybeAutoReconcileSelectionDrift,
 	runtimeOperationIsBusy: runtimeOperationIsBusy,
+	effectiveOperationStatus: effectiveOperationStatus,
 	loadServerCatalog: loadServerCatalog,
 	renderLocalStatusSnapshot: renderLocalStatusSnapshot,
 	renderLocalStatusUnavailable: renderLocalStatusUnavailable,

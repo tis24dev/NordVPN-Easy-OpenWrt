@@ -103,5 +103,10 @@ jq -er 'has("connect_apply_pending") | not' "$TMP_DIR/status-out" >/dev/null \
 dumps="$(grep -c '^wg show wg_test_dispatch dump$' "$TMP_DIR/cmds" || true)"
 [ "$dumps" = '1' ] || fail "status_json must collect the WireGuard dump once, got $dumps"
 [ ! -e "$RUN_DIR/status.json" ] || fail 'status_json poll must NOT write the status cache'
+# Status honesty: an idle status_json carries the additive journal_sub_phase key as
+# an empty string (a supervised apply is the only path that populates it), locking in
+# the operation!=busy:supervise gate.
+jq -er '.journal_sub_phase == ""' "$TMP_DIR/status-out" >/dev/null \
+	|| fail 'idle status_json must carry journal_sub_phase as an empty string'
 
 printf '%s\n' 'test-core-dispatch.sh: ok'
