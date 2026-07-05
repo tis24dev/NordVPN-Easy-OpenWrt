@@ -164,7 +164,7 @@ function setVpnStatusIndicator(state, label) {
 
 	if (state === 'active')
 		color = '#2ea043';
-	else if (state === 'activating' || state === 'starting' || state === 'stopping')
+	else if (state === 'activating' || state === 'starting' || state === 'stopping' || state === 'configuring')
 		color = '#d29922';
 	else if (state === 'inactive')
 		color = '#8c959f';

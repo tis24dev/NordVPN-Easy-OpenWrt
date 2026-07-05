@@ -362,7 +362,14 @@ nordvpn_easy_fetch_provision_prerequisites() {
 	return 0
 }
 
-nordvpn_easy_configure_vpn_interface() {
+# Everything up to (but NOT including) the interface bring-up: fetch-if-needed,
+# firewall, the network UCI + peer sections, the fenced network commit and the perm
+# hardening. Split out (S7 increment 5a) so the supervisor state machine can run the
+# CONFIGURE phase separately from BRINGUP while the legacy connect() path stays
+# byte-identical -- the wrapper below re-composes the exact legacy sequence
+# (configure -> bring up -> success log -> post-bring-up state snapshot), including
+# emitting NO 'created successfully' log when bring-up fails.
+nordvpn_easy_configure_vpn_interface_no_bringup() {
 	nordvpn_easy_require_core_action_helpers get_private_key || return 1
 	log "apply: creating WireGuard interface $VPN_IF with address $VPN_ADDR and endpoint port $VPN_PORT"
 	nordvpn_easy_log_vpn_interface_state 'before-create'
@@ -400,11 +407,19 @@ nordvpn_easy_configure_vpn_interface() {
 
 	uci set "network.${WAN_IF}.metric"='1024'
 	log "apply: committing network configuration for $VPN_IF"
-	uci commit network || {
+	nordvpn_easy_fenced_uci_commit network || {
+		# Discard the staged interface/peer edits so a superseded (reaped) writer
+		# whose commit the fence refused cannot leave them for a later unfenced
+		# network commit to flush; also cleans up after a genuine commit failure.
+		uci -q revert network 2>/dev/null || true
 		nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" 'could not commit network configuration while creating the VPN interface'
 		return 1
 	}
 	nordvpn_easy_harden_secret_config_perms network
+}
+
+nordvpn_easy_configure_vpn_interface() {
+	nordvpn_easy_configure_vpn_interface_no_bringup || return 1
 
 	nordvpn_easy_bring_up_vpn_interface "$VPN_IF" || return 1
 
@@ -419,20 +434,6 @@ nordvpn_easy_stop_vpn_for_server_change() {
 	# The destructive UCI teardown now happens in the provision step AFTER a
 	# successful fetch (fetch -> teardown -> configure), so a failed fetch can
 	# never leave network.${VPN_IF} deleted.
-	return 0
-}
-
-nordvpn_easy_stop_vpn_for_connect_apply() {
-	log 'apply: stopping VPN for connect apply (live tunnel down; interface config preserved until reprovision succeeds, reusable server recommendation cache kept)'
-	nordvpn_easy_immediate_vpn_shutdown || return 1
-	nordvpn_easy_clear_connect_apply_caches || return 1
-	# The destructive UCI teardown now happens in the provision step AFTER a
-	# successful credential/server fetch (fetch -> teardown -> configure), so a
-	# failed fetch can never leave network.${VPN_IF} deleted.
-	# Do not touch the connect-apply-result here: it is owned by the init
-	# connect_apply_guard_begin (which runs before this stop in the apply flow),
-	# clear_connect_apply_caches above does not remove it, and re-beginning it
-	# would just duplicate that owner.
 	return 0
 }
 
@@ -455,24 +456,6 @@ nordvpn_easy_start_public_verification_background() {
 		nordvpn_easy_run_public_ip_check verbose >/dev/null 2>&1 || true
 	) &
 	log 'apply: public IP check queued in background after WireGuard readiness; country check will reuse the IP result'
-	return 0
-}
-
-nordvpn_easy_provision_vpn_connect_apply() {
-	log 'apply: provisioning VPN after connect apply stop (reusing server cache when valid for selected country)'
-	nordvpn_easy_fetch_provision_prerequisites || return 1
-	NORDVPN_EASY_PROVISION_FETCH_DONE=1
-	nordvpn_easy_teardown_vpn || return 1
-	nordvpn_easy_configure_vpn_interface || return 1
-	unset NORDVPN_EASY_PROVISION_FETCH_DONE
-
-	if ! nordvpn_easy_wait_for_vpn_connectivity "$VPN_IF" "$POST_RESTART_DELAY" "provisioning $VPN_IF"; then
-		log 'apply: VPN connection is not OK after provisioning'
-		return 1
-	fi
-
-	nordvpn_easy_start_public_verification_background || true
-	log 'apply: VPN provisioning completed'
 	return 0
 }
 
@@ -508,7 +491,7 @@ nordvpn_easy_commit_pending_server_preference() {
 	nordvpn_easy_set_server_preference_in_uci \
 		"${NORDVPN_EASY_PENDING_PREFERENCE_HOSTNAME:-}" \
 		"$NORDVPN_EASY_PENDING_PREFERENCE_STATION"
-	uci commit nordvpn_easy ||
+	nordvpn_easy_fenced_uci_commit nordvpn_easy ||
 		log 'WARNING: COULD NOT COMMIT ROTATED SERVER PREFERENCE AFTER VERIFICATION'
 	nordvpn_easy_harden_secret_config_perms nordvpn_easy
 	NORDVPN_EASY_PENDING_PREFERENCE_HOSTNAME=''
@@ -538,35 +521,34 @@ nordvpn_easy_provision_vpn() {
 	fi
 
 	if [ "$mode" = 'server_change' ]; then
-		nordvpn_easy_provision_vpn_server_change
-		return $?
+		nordvpn_easy_provision_vpn_server_change || return $?
+	elif [ "$mode" = 'connect_fresh' ]; then
+		nordvpn_easy_provision_vpn_connect_fresh || return $?
+	else
+		nordvpn_easy_fetch_provision_prerequisites || return 1
+		NORDVPN_EASY_PROVISION_FETCH_DONE=1
+		nordvpn_easy_teardown_vpn || return 1
+		nordvpn_easy_configure_vpn_interface || return 1
+		unset NORDVPN_EASY_PROVISION_FETCH_DONE
+
+		if ! nordvpn_easy_wait_for_vpn_connectivity "$VPN_IF" "$POST_RESTART_DELAY" "provisioning $VPN_IF"; then
+			log 'apply: VPN connection is not OK after provisioning'
+			return 1
+		fi
+
+		verify_public_country_selection ||
+			log 'apply: public IP/country verification did not pass; leaving the tunnel up (status reflects the result)'
+		nordvpn_easy_commit_pending_server_preference
+		log 'apply: VPN provisioning completed'
 	fi
 
-	if [ "$mode" = 'connect_fresh' ]; then
-		nordvpn_easy_provision_vpn_connect_fresh
-		return $?
+	# Record that the live runtime now matches the desired config (durable
+	# applied_fingerprint + tmpfs runtime-token sentinel). Additive: no control
+	# path keys on it yet, and a failure here must never fail an otherwise
+	# successful provision.
+	if command -v nordvpn_easy_mark_applied >/dev/null 2>&1; then
+		nordvpn_easy_mark_applied "$(nordvpn_easy_config_fingerprint)" 2>/dev/null || true
 	fi
-
-	if [ "$mode" = 'connect_apply' ]; then
-		nordvpn_easy_provision_vpn_connect_apply
-		return $?
-	fi
-
-	nordvpn_easy_fetch_provision_prerequisites || return 1
-	NORDVPN_EASY_PROVISION_FETCH_DONE=1
-	nordvpn_easy_teardown_vpn || return 1
-	nordvpn_easy_configure_vpn_interface || return 1
-	unset NORDVPN_EASY_PROVISION_FETCH_DONE
-
-	if ! nordvpn_easy_wait_for_vpn_connectivity "$VPN_IF" "$POST_RESTART_DELAY" "provisioning $VPN_IF"; then
-		log 'apply: VPN connection is not OK after provisioning'
-		return 1
-	fi
-
-	verify_public_country_selection ||
-		log 'apply: public IP/country verification did not pass; leaving the tunnel up (status reflects the result)'
-	nordvpn_easy_commit_pending_server_preference
-	log 'apply: VPN provisioning completed'
 }
 
 nordvpn_easy_reconcile_action() {
@@ -584,7 +566,55 @@ nordvpn_easy_check_once_finish() {
 	nordvpn_easy_log_enterprise_state_if_degraded "${VPN_IF:-wg0}" 'healthcheck' || true
 }
 
+# Cheap signature of the saved desired state, used by the health check to detect
+# a user Save & Apply / disconnect that landed while the lock was released for
+# the retry wait. Compared for equality only; the account token is filtered out
+# so it never transits into the captured value, and the signature is never
+# logged. enabled / country / mode / preferred server / kill switch all live in
+# nordvpn_easy.main; a disconnect additionally flips network.<vpn_if>.disabled.
+nordvpn_easy_desired_state_signature() {
+	uci -q show 'nordvpn_easy.main' 2>/dev/null | grep -v 'nordvpn_token=' || true
+	uci -q show "network.${VPN_IF:-wg0}.disabled" 2>/dev/null || true
+}
+
 nordvpn_easy_check_once() {
+	local healthcheck_pre_wait_signature=''
+
+	# Reap a FOREIGN stale supervise journal record (a crashed apply for a now-superseded
+	# config identity) at the head of the periodic health-check, mirroring the reap at the
+	# head of nordvpn_easy_supervise. reap_stale never touches a SAME-target record, so a
+	# same-config crashed apply is left for the re-drive below.
+	if command -v nordvpn_easy_supervise_reap_stale_journal >/dev/null 2>&1; then
+		nordvpn_easy_supervise_reap_stale_journal "$(nordvpn_easy_target_identity 2>/dev/null || printf '')" || true
+	fi
+
+	# Journal-authoritative in-flight recovery -- re-drive a CRASHED apply. The reap above
+	# only stamps FOREIGN target-mismatch records FAILED; a SAME-target crashed apply (a
+	# non-terminal record whose owner_pid is DEAD) is deliberately left to this branch.
+	# When the journal holds one, re-drive it IN THIS PROCESS, under the execution lock +
+	# owner token already held from core.sh acquire_lock (the in-lock TTL reaper reclaimed
+	# the dead owner's lock and minted our token). nordvpn_easy_supervise's open_txn ADOPTS
+	# the record (keeps txn_id, clears fetch_done so the lost PRIVATE_KEY is re-fetched) and
+	# re-runs the idempotent phases to a TERMINAL state -- so a persistently failing re-drive
+	# ends FAILED and is NOT re-driven again (no loop), and the single held lock + owner
+	# fence prevent a double-apply. A no-op when there is no same-target crashed record.
+	if command -v nordvpn_easy_supervise >/dev/null 2>&1; then
+		local redrive_phase redrive_target redrive_owner_pid redrive_target_now
+		redrive_phase="$(nordvpn_easy_journal_get phase 2>/dev/null || printf '')"
+		redrive_target="$(nordvpn_easy_journal_get target_fingerprint 2>/dev/null || printf '')"
+		redrive_owner_pid="$(nordvpn_easy_journal_get owner_pid 2>/dev/null || printf '')"
+		redrive_target_now="$(nordvpn_easy_target_identity 2>/dev/null || printf '')"
+		if ! nordvpn_easy_supervise_phase_is_terminal "$redrive_phase" &&
+			[ -n "$redrive_target" ] &&
+			[ "$redrive_target" = "$redrive_target_now" ] &&
+			! nordvpn_easy_supervise_pid_alive "$redrive_owner_pid"; then
+			log "healthcheck: re-driving crashed same-target apply (phase=${redrive_phase}, dead owner_pid=${redrive_owner_pid:-unknown})"
+			nordvpn_easy_supervise || true
+			nordvpn_easy_check_once_finish
+			return 0
+		fi
+	fi
+
 	log "healthcheck: starting VPN health-check on interface $VPN_IF (failure_retry_delay=${FAILURE_RETRY_DELAY:-unset})"
 
 	if nordvpn_easy_ping_interface "$VPN_IF"; then
@@ -614,10 +644,20 @@ nordvpn_easy_check_once() {
 	# the lock (run via core.sh), release it around the sleep and reacquire after;
 	# if another operation took over meanwhile, yield to it.
 	if [ "${LOCK_ACQUIRED:-0}" = '1' ]; then
+		healthcheck_pre_wait_signature="$(nordvpn_easy_desired_state_signature)"
 		nordvpn_easy_release_lock
 		sleep "${FAILURE_RETRY_DELAY:-6}"
 		if ! nordvpn_easy_acquire_lock; then
 			log 'healthcheck: another operation took over during the retry wait; yielding'
+			nordvpn_easy_check_once_finish
+			return 0
+		fi
+		# A user Save & Apply or disconnect can complete while we hold no lock
+		# during the retry wait. Reprovisioning the pre-wait snapshot would undo
+		# that newer intent, so compare the desired-state signature and yield to
+		# the newer state instead of reverting it.
+		if [ "$(nordvpn_easy_desired_state_signature)" != "$healthcheck_pre_wait_signature" ]; then
+			log 'healthcheck: desired config changed during the retry wait; yielding to the newer state'
 			nordvpn_easy_check_once_finish
 			return 0
 		fi

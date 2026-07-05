@@ -110,4 +110,23 @@ assert_eq '' "$CHECK_CRON_SCHEDULE" 'cron default disabled'
 assert_eq '86400' "$SERVER_CACHE_TTL" 'environment ttl default'
 assert_eq '15' "$WIREGUARD_PERSISTENT_KEEPALIVE" 'environment keepalive default'
 
+# S9: the orchestrator flag is removed. The supervisor is the sole apply path, so there
+# is no orchestrator mode reader and the defaults template no longer seeds the flag.
+if command -v nordvpn_easy_orchestrator_mode >/dev/null 2>&1; then
+	printf '%s\n' 'FAIL: nordvpn_easy_orchestrator_mode must be removed (the orchestrator flag is gone)' >&2
+	exit 1
+fi
+if grep -q 'orchestrator' "$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/share/nordvpn-easy/defaults/nordvpn_easy"; then
+	printf '%s\n' 'FAIL: the defaults template must not seed an orchestrator option (the flag is removed)' >&2
+	exit 1
+fi
+
+# RPC contract level getter: the build supports contract 2 (the async supervised apply
+# method + its ACL + the JS callApply consumer all shipped), so the getter returns 2
+# unconditionally. The old orchestrator clamp is gone.
+assert_eq '2' "$(nordvpn_easy_rpc_contract_level)" 'the advertised RPC contract level is 2 (async apply method shipped)'
+case "$(nordvpn_easy_rpc_contract_level)" in
+	''|*[!0-9]*|0?*) printf '%s\n' 'FAIL: rpc_contract_level must be a bare non-zero-padded integer (valid JSON number)' >&2; exit 1 ;;
+esac
+
 printf '%s\n' 'test-schema.sh: ok'

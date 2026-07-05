@@ -1,6 +1,6 @@
 include $(TOPDIR)/rules.mk
 
-NORDVPN_EASY_DEFAULT_VERSION:=0.9.1
+NORDVPN_EASY_DEFAULT_VERSION:=1.0.0
 NORDVPN_EASY_DEFAULT_RELEASE:=1
 NORDVPN_EASY_PACKAGE_MAINTAINER?=tis24dev
 NORDVPN_EASY_PACKAGE_URL?=https://github.com/tis24dev/NordVPN-Easy-OpenWrt
@@ -48,6 +48,19 @@ luci_app_installed() {
 nordvpn_easy_cleanup_files() {
 	rm -f /etc/config/nordvpn_easy /etc/config/nordvpn_easy-opkg
 	rm -f /etc/cron.d/nordvpn-easy /etc/hotplug.d/iface/95-nordvpn-easy
+	if [ -f /etc/crontabs/root ]; then
+		crontab_begins="$$(grep -Fxc '# BEGIN nordvpn-easy' /etc/crontabs/root 2>/dev/null)"; \
+		crontab_ends="$$(grep -Fxc '# END nordvpn-easy' /etc/crontabs/root 2>/dev/null)"; \
+		if [ "$${crontab_begins:-0}" = "$${crontab_ends:-0}" ] && \
+			crontab_tmp="$$(mktemp /etc/crontabs/.root.XXXXXX 2>/dev/null)"; then \
+			awk '
+				$$0 == "# BEGIN nordvpn-easy" { skip = 1; next }
+				$$0 == "# END nordvpn-easy" { skip = 0; next }
+				!skip { print }
+			' /etc/crontabs/root > "$$crontab_tmp" && mv "$$crontab_tmp" /etc/crontabs/root || rm -f "$$crontab_tmp"; \
+		fi
+		/etc/init.d/cron restart >/dev/null 2>&1 || /etc/init.d/cron reload >/dev/null 2>&1 || true
+	fi
 	rm -f /var/etc/nordvpn-easy.conf
 	rm -f /tmp/nordvpn.json \
 		/tmp/nordvpn-easy-countries.json \
@@ -96,6 +109,16 @@ fi
 
 # /etc/config/nordvpn_easy holds the NordVPN account token; keep it root-only.
 chmod 0600 /etc/config/nordvpn_easy 2>/dev/null || true
+
+# S7 tag 9: this package ships the rpcd plugin (usr/libexec/rpcd/nordvpn.easy), so a
+# backend-only upgrade that adds the async `apply` method needs rpcd reloaded to
+# register it (the luci-app postinst reloads too, but it may not be upgraded in lockstep).
+RPCD_OUTPUT="$$(/etc/init.d/rpcd reload 2>&1)"
+RPCD_STATUS=$$?
+if [ "$$RPCD_STATUS" -ne 0 ]; then
+	printf "%s\n" "nordvpn-easy: rpcd reload failed with exit code $$RPCD_STATUS" >&2
+	[ -n "$$RPCD_OUTPUT" ] && printf "%s\n" "$$RPCD_OUTPUT" >&2
+fi
 
 exit 0
 endef

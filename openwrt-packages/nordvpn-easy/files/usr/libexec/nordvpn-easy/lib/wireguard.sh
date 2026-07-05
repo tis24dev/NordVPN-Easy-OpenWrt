@@ -47,13 +47,13 @@ nordvpn_easy_immediate_vpn_shutdown() {
 	log "apply: stopping VPN interface $VPN_IF before server change"
 
 	if nordvpn_easy_vpn_link_is_present; then
-		ifdown "$VPN_IF" >/dev/null 2>&1 || true
+		nordvpn_easy_fenced_ifupdown down "$VPN_IF" >/dev/null 2>&1 || true
 		if command -v wg >/dev/null 2>&1 &&
 			wg show "$VPN_IF" >/dev/null 2>&1; then
-			ip link del dev "$VPN_IF" >/dev/null 2>&1 || true
+			nordvpn_easy_fenced_ip_link_del "$VPN_IF" >/dev/null 2>&1 || true
 		fi
 	elif nordvpn_easy_vpn_is_configured; then
-		ifdown "$VPN_IF" >/dev/null 2>&1 || true
+		nordvpn_easy_fenced_ifupdown down "$VPN_IF" >/dev/null 2>&1 || true
 	fi
 
 	return 0
@@ -69,7 +69,7 @@ nordvpn_easy_teardown_vpn() {
 	nordvpn_easy_log_vpn_interface_state 'before-teardown'
 
 	if nordvpn_easy_vpn_link_is_present; then
-		ifdown "$VPN_IF" >/dev/null 2>&1 || true
+		nordvpn_easy_fenced_ifupdown down "$VPN_IF" >/dev/null 2>&1 || true
 		sleep "${INTERFACE_RESTART_DELAY:-2}"
 	fi
 
@@ -90,7 +90,11 @@ EOF
 	wan_metric="$(uci -q get "network.${WAN_IF}.metric" 2>/dev/null || true)"
 	[ "$wan_metric" = '1024' ] && uci -q delete "network.${WAN_IF}.metric" || true
 
-	uci commit network || {
+	nordvpn_easy_fenced_uci_commit network || {
+		# Discard the staged deletes so a superseded (reaped) writer whose commit
+		# the fence refused cannot leave them for a later unfenced network commit
+		# to flush; also cleans up after a genuine commit failure.
+		uci -q revert network 2>/dev/null || true
 		nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "could not commit network configuration while tearing down $VPN_IF"
 		return 1
 	}
@@ -106,7 +110,7 @@ EOF
 		# gone so a failed reload cannot leave a live wg device behind with its
 		# config stripped (a split runtime/config state).
 		if nordvpn_easy_vpn_link_is_present; then
-			ip link del "$VPN_IF" 2>/dev/null || true
+			nordvpn_easy_fenced_ip_link_del "$VPN_IF" 2>/dev/null || true
 		fi
 		if nordvpn_easy_vpn_link_is_present; then
 			nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "VPN interface $VPN_IF is still present after teardown reload/restart fallback"
@@ -174,14 +178,35 @@ nordvpn_easy_bring_up_vpn_interface() {
 
 	[ -n "$vpn_if" ] || return 1
 
+	# A superseded/reaped owner (its token no longer matches the on-disk lock) must
+	# NOT touch the new owner's runtime: bail before the unfenced network reload so a
+	# revoked worker cannot reload/restart the network stack out from under the owner
+	# that replaced it. The legitimate owner (token matches) and tokenless boot/CLI
+	# callers (no token held) are unaffected -- owner_fence_denied is true only when a
+	# token is held AND differs from disk.
+	if command -v nordvpn_easy_owner_fence_denied >/dev/null 2>&1 && nordvpn_easy_owner_fence_denied; then
+		nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "apply: bring-up of $vpn_if refused (superseded/reaped owner); skipping network reload/restart"
+		return 1
+	fi
+
 	log "apply: reloading network and bringing up $vpn_if"
 	"$network_init" reload || {
 		log 'ERROR: NETWORK RELOAD FAILED'
 		return 1
 	}
 
-	if ifup "$vpn_if" >/dev/null 2>&1; then
+	if nordvpn_easy_fenced_ifupdown up "$vpn_if" >/dev/null 2>&1; then
 		return 0
+	fi
+
+	# fenced_ifupdown returns nonzero for BOTH a genuine ifup failure AND a fence
+	# DENIAL (superseded owner). Only a genuine failure should escalate to the
+	# aggressive unfenced `network restart`; a denial means we lost the lock mid-flight
+	# (e.g. the TTL reaper revoked us), so bail instead of restarting the new owner's
+	# network stack (which would drop conntrack + every forwarded session).
+	if command -v nordvpn_easy_owner_fence_denied >/dev/null 2>&1 && nordvpn_easy_owner_fence_denied; then
+		nordvpn_easy_log_blocker "${LOG_PHASE:-runtime}" "apply: ifup $vpn_if refused (superseded/reaped owner); skipping network restart"
+		return 1
 	fi
 
 	log "apply: ifup $vpn_if failed; falling back to full network restart"
@@ -591,7 +616,11 @@ nordvpn_easy_ensure_vpn_firewall() {
 		uci set "firewall.nordvpn_ks4_${idx}.target=DROP"
 	done
 
-	uci commit firewall || {
+	nordvpn_easy_fenced_uci_commit firewall || {
+		# Discard the staged zone/forwarding/killswitch edits so a superseded
+		# (reaped) writer whose commit the fence refused cannot leave them for a
+		# later unfenced firewall commit to flush; also cleans up a genuine failure.
+		uci -q revert firewall 2>/dev/null || true
 		log 'ERROR: COULD NOT COMMIT FIREWALL CONFIGURATION'
 		return 1
 	}

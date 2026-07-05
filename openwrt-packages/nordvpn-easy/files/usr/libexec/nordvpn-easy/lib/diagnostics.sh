@@ -65,7 +65,6 @@ DIAG_API_COUNTRIES_CACHE_AGE_SECONDS='unknown'
 DIAG_LAST_ERROR=''
 DIAG_OPERATION_LOCK_STATE='none'
 DIAG_OPERATION_LOCK_ACTION=''
-DIAG_CONNECT_APPLY_PENDING='no'
 DIAG_RUNTIME_CONFIGURED='unknown'
 DIAG_PUBLIC_VERIFICATION_STATUS='unknown'
 DIAG_PUBLIC_VERIFICATION_CHECKED_AT='0'
@@ -133,7 +132,6 @@ nordvpn_easy_diagnostics_reset_state() {
 	DIAG_LAST_ERROR=''
 	DIAG_OPERATION_LOCK_STATE='none'
 	DIAG_OPERATION_LOCK_ACTION=''
-	DIAG_CONNECT_APPLY_PENDING='no'
 	DIAG_RUNTIME_CONFIGURED='unknown'
 	DIAG_PUBLIC_VERIFICATION_STATUS='unknown'
 	DIAG_PUBLIC_VERIFICATION_CHECKED_AT='0'
@@ -726,14 +724,6 @@ nordvpn_easy_diagnostics_collect_runtime() {
 		DIAG_OPERATION_LOCK_ACTION="${OPERATION_LOCK_ACTION:-}"
 	fi
 
-	if [ -f "${NORDVPN_EASY_CONNECT_APPLY_GUARD:-/tmp/run/nordvpn-easy/connect-apply-guard}" ]; then
-		DIAG_CONNECT_APPLY_PENDING='yes'
-	elif command -v nordvpn_easy_connect_apply_result_read >/dev/null 2>&1 &&
-		nordvpn_easy_connect_apply_result_read "${NORDVPN_EASY_CONNECT_APPLY_RESULT:-/tmp/run/nordvpn-easy/connect-apply-result}" &&
-		[ "${CONNECT_APPLY_STATE:-}" = 'pending' ]; then
-		DIAG_CONNECT_APPLY_PENDING='yes'
-	fi
-
 	if command -v nordvpn_easy_vpn_status_value >/dev/null 2>&1; then
 		DIAG_VPN_STATUS="$(nordvpn_easy_vpn_status_value "$DIAG_DESIRED_ENABLED" "$vpn_if" "$operation")"
 	fi
@@ -801,10 +791,13 @@ nordvpn_easy_diagnostics_collect_caches() {
 }
 
 nordvpn_easy_diagnostics_runtime_transition_active() {
-	[ "$DIAG_CONNECT_APPLY_PENDING" = 'yes' ] && return 0
-
+	# The lock action for a supervised Save & Apply is 'supervise', and the underlying
+	# provision verb takes the lock as 'connect'; both are in-flight runtime transitions
+	# and must be suppressed like the others, otherwise a supervised apply reads as a
+	# non-transition. 'start_connect' is only an rpc method name (never a lock action);
+	# left as a harmless legacy entry.
 	case "${DIAG_OPERATION_LOCK_STATE:-none}:${DIAG_OPERATION_LOCK_ACTION:-}" in
-		held:setup|held:stop_vpn|held:start_connect|held:reconnect|held:reconcile|stale_recovered:setup|stale_recovered:stop_vpn|stale_recovered:start_connect|stale_recovered:reconnect|stale_recovered:reconcile)
+		held:setup|held:stop_vpn|held:connect|held:supervise|held:start_connect|held:reconnect|held:reconcile|stale_recovered:setup|stale_recovered:stop_vpn|stale_recovered:connect|stale_recovered:supervise|stale_recovered:start_connect|stale_recovered:reconnect|stale_recovered:reconcile)
 			return 0
 			;;
 	esac
@@ -1107,7 +1100,7 @@ nordvpn_easy_try_clear_routing_blackhole() {
 	fi
 
 	log "$phase: default route uses $vpn_if without WireGuard handshake; running ifdown to restore WAN connectivity"
-	ifdown "$vpn_if" 2>/dev/null || log "WARNING: $phase: ifdown failed for $vpn_if while clearing routing blackhole"
+	nordvpn_easy_fenced_ifupdown down "$vpn_if" 2>/dev/null || log "WARNING: $phase: ifdown failed for $vpn_if while clearing routing blackhole"
 	sleep "${INTERFACE_RESTART_DELAY:-2}"
 	nordvpn_easy_diagnostics_reset_state
 	return 0
@@ -1154,7 +1147,6 @@ nordvpn_easy_diagnostics_print_health_summary() {
 	printf 'vpn_status=%s\n' "$DIAG_VPN_STATUS"
 	printf 'desired_enabled=%s\n' "$DIAG_DESIRED_ENABLED"
 	printf 'service_enabled_mismatch=%s\n' "$DIAG_SERVICE_ENABLED_MISMATCH"
-	printf 'connect_apply_pending=%s\n' "$DIAG_CONNECT_APPLY_PENDING"
 	printf 'default_route_device=%s\n' "$DIAG_DEFAULT_ROUTE_DEVICE"
 	printf 'default_route_via_vpn=%s\n' "$DIAG_DEFAULT_ROUTE_VIA_VPN"
 	printf 'route_allowed_ips=%s\n' "${DIAG_ROUTE_ALLOWED_IPS:-unset}"
@@ -1203,7 +1195,6 @@ nordvpn_easy_diagnostics_print_runtime_caches() {
 	printf 'last_error=%s\n' "$DIAG_LAST_ERROR"
 	printf 'operation_lock_state=%s\n' "$DIAG_OPERATION_LOCK_STATE"
 	printf 'operation_lock_action=%s\n' "${DIAG_OPERATION_LOCK_ACTION:-none}"
-	printf 'connect_apply_pending=%s\n' "$DIAG_CONNECT_APPLY_PENDING"
 	printf 'public_verification_status=%s\n' "$DIAG_PUBLIC_VERIFICATION_STATUS"
 	printf 'public_verification_checked_at=%s\n' "$DIAG_PUBLIC_VERIFICATION_CHECKED_AT"
 	printf 'public_verification_message=%s\n' "$DIAG_PUBLIC_VERIFICATION_MESSAGE"

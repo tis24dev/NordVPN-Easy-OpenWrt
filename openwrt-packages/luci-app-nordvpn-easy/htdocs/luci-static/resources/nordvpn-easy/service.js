@@ -61,22 +61,19 @@ const callStartConnect = rpc.declare({
 	timeout: START_CONNECT_RPC_TIMEOUT
 });
 
-const callBeginConnectApply = rpc.declare({
-	object: 'nordvpn.easy',
-	method: 'begin_connect_apply',
-	timeout: START_CONNECT_RPC_TIMEOUT
-});
-
-const callAbortConnectApply = rpc.declare({
-	object: 'nordvpn.easy',
-	method: 'abort_connect_apply',
-	timeout: START_CONNECT_RPC_TIMEOUT
-});
-
 const callStopVpn = rpc.declare({
 	object: 'nordvpn.easy',
 	method: 'stop_vpn',
 	timeout: RUNTIME_RPC_TIMEOUT
+});
+
+// The async supervised apply. The backend setsid-forks the supervise worker
+// and this RPC returns in <1s (the JS then polls status_json for convergence), so a
+// short START_CONNECT_RPC_TIMEOUT is enough. This is the sole apply path.
+const callApply = rpc.declare({
+	object: 'nordvpn.easy',
+	method: 'apply',
+	timeout: START_CONNECT_RPC_TIMEOUT
 });
 
 const callRotate = rpc.declare({
@@ -253,12 +250,10 @@ function callSimpleAction(action) {
 		return callWithLuCiRpcTimeout(RUNTIME_RPC_TIMEOUT, callConnect);
 	case 'start_connect':
 		return callWithLuCiRpcTimeout(START_CONNECT_RPC_TIMEOUT, callStartConnect);
-	case 'begin_connect_apply':
-		return callWithLuCiRpcTimeout(START_CONNECT_RPC_TIMEOUT, callBeginConnectApply);
-	case 'abort_connect_apply':
-		return callWithLuCiRpcTimeout(START_CONNECT_RPC_TIMEOUT, callAbortConnectApply);
 	case 'stop_vpn':
 		return callWithLuCiRpcTimeout(RUNTIME_RPC_TIMEOUT, callStopVpn);
+	case 'apply':
+		return callWithLuCiRpcTimeout(START_CONNECT_RPC_TIMEOUT, callApply);
 	case 'rotate':
 		return callWithLuCiRpcTimeout(RUNTIME_RPC_TIMEOUT, callRotate);
 	case 'setup':

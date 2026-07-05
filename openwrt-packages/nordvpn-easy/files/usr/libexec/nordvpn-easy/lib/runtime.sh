@@ -244,6 +244,10 @@ nordvpn_easy_enterprise_state_value() {
 	local runtime_configured="$3"
 	local connected="$4"
 	local operation="$5"
+	# Status honesty: the supervised apply's honest sub-phase. Only consulted for
+	# operation=='busy:supervise' (below), so legacy callers passing 5 args are
+	# byte-identical.
+	local sub_phase="${6:-}"
 
 	if ! nordvpn_easy_truthy "$desired_enabled"; then
 		printf '%s\n' 'disabled'
@@ -275,6 +279,22 @@ nordvpn_easy_enterprise_state_value() {
 			;;
 		busy:disable_runtime)
 			printf '%s\n' 'disabled'
+			;;
+		busy:supervise)
+			# A supervised apply is a clean rebuild, not recovery: map the honest
+			# sub_phase to a directional state. fetching/'' keep the old 'recovering'
+			# default (the old tunnel is still up, no direction yet).
+			case "$sub_phase" in
+				tearing_down)
+					printf '%s\n' 'disconnecting'
+					;;
+				configuring|connecting|verifying)
+					printf '%s\n' 'connecting'
+					;;
+				*)
+					printf '%s\n' 'recovering'
+					;;
+			esac
 			;;
 		*)
 			printf '%s\n' 'recovering'
@@ -403,6 +423,11 @@ nordvpn_easy_vpn_status_value() {
 	local desired_enabled="${1:-${DESIRED_ENABLED:-0}}"
 	local vpn_if="${2:-$VPN_IF}"
 	local operation="${3:-}"
+	# Status honesty: the supervised apply's honest sub-phase. Only consulted when
+	# operation=='busy:supervise' (below), so legacy callers passing 3 args are
+	# byte-identical. Empty ('' / fetching / verifying) falls through to the
+	# unchanged live handshake/ifstatus detection.
+	local sub_phase="${4:-}"
 	local handshake_epoch='0'
 	local ifstatus_json=''
 
@@ -423,6 +448,37 @@ nordvpn_easy_vpn_status_value() {
 			printf '%s\n' 'inactive'
 		fi
 		return 0
+	fi
+
+	# Status honesty: during a supervised apply the lock action stays the opaque
+	# 'supervise' the whole rebuild, so derive the honest transitional state from the
+	# supervisor's own sub_phase. Gated on busy:supervise so every legacy/diagnostics/
+	# recovery path below is byte-identical. tearing_down/configuring force the honest
+	# transitional value; connecting shows 'active' ONLY on a FRESH handshake (never a
+	# premature Connected from ifstatus.up alone), else 'starting'. fetching/verifying/''
+	# fall through to the UNCHANGED live detection (the OLD tunnel honestly reads active
+	# during fetch).
+	if [ "$operation" = 'busy:supervise' ]; then
+		case "$sub_phase" in
+			tearing_down)
+				printf '%s\n' 'stopping'
+				return 0
+				;;
+			configuring)
+				printf '%s\n' 'configuring'
+				return 0
+				;;
+			connecting)
+				handshake_epoch="$(nordvpn_easy_wg_handshake_epoch "$vpn_if")"
+				if nordvpn_easy_handshake_epoch_indicates_connection "$handshake_epoch" &&
+					ip link show dev "$vpn_if" >/dev/null 2>&1; then
+					printf '%s\n' 'active'
+				else
+					printf '%s\n' 'starting'
+				fi
+				return 0
+				;;
+		esac
 	fi
 
 	if ! nordvpn_easy_runtime_configured "$vpn_if"; then
@@ -519,13 +575,18 @@ nordvpn_easy_emit_status_json() {
 	local public_verification_status='unknown'
 	local public_verification_checked_at='0'
 	local last_error=''
-	local connect_apply_pending='false'
-	local connect_apply_finished='false'
-	local connect_apply_success='false'
-	local connect_apply_rc='0'
-	local connect_apply_country=''
-	local connect_apply_started_at='0'
-	local connect_apply_finished_at='0'
+	local recovery_cron_installed='false'
+	local config_fingerprint=''
+	local applied_fingerprint=''
+	local runtime_token=''
+	local applied_current='false'
+	local status_seq='0'
+	local boot_id=''
+	local journal_phase=''
+	local journal_sub_phase=''
+	local journal_txn_id=''
+	local journal_started_at='0'
+	local rpc_contract_level='1'
 
 	nordvpn_easy_load_lock_metadata "${LOCK_DIR:-/tmp/nordvpn-easy.lock}"
 	operation="$(nordvpn_easy_operation_status_from_loaded_lock)"
@@ -533,7 +594,14 @@ nordvpn_easy_emit_status_json() {
 	operation_lock_pid="$OPERATION_LOCK_PID"
 	operation_lock_action="$OPERATION_LOCK_ACTION"
 	operation_lock_age_seconds="$OPERATION_LOCK_AGE_SECONDS"
-	vpn_state="$(nordvpn_easy_vpn_status_value "$desired_enabled" "$VPN_IF" "$operation")"
+	# Status honesty: read the supervisor's honest sub_phase ONLY during a supervised
+	# apply (operation=='busy:supervise') and only when the journal getter is sourced.
+	# Otherwise it stays '' so the emitted journal_sub_phase is empty and vpn_status/
+	# enterprise_state derivation is byte-identical for every other caller/path.
+	if [ "$operation" = 'busy:supervise' ] && command -v nordvpn_easy_journal_get >/dev/null 2>&1; then
+		journal_sub_phase="$(nordvpn_easy_journal_get sub_phase 2>/dev/null || printf '')"
+	fi
+	vpn_state="$(nordvpn_easy_vpn_status_value "$desired_enabled" "$VPN_IF" "$operation" "$journal_sub_phase")"
 
 	if [ "$(uci -q get "network.${VPN_IF}.disabled" 2>/dev/null)" = '1' ]; then
 		interface_disabled='true'
@@ -574,7 +642,8 @@ nordvpn_easy_emit_status_json() {
 		"$interface_disabled" \
 		"$runtime_configured" \
 		"$NORDVPN_EASY_WG_RT_CONNECTED" \
-		"$operation")"
+		"$operation" \
+		"$journal_sub_phase")"
 
 	if [ -r "$NORDVPN_EASY_PUBLIC_IP_CACHE" ]; then
 		public_ip_cached="$(sed -n 's/^ip=//p' "$NORDVPN_EASY_PUBLIC_IP_CACHE" 2>/dev/null | sed -n '1p')"
@@ -617,53 +686,56 @@ nordvpn_easy_emit_status_json() {
 			;;
 	esac
 
-	if nordvpn_easy_connect_apply_result_read "${NORDVPN_EASY_CONNECT_APPLY_RESULT:-/tmp/run/nordvpn-easy/connect-apply-result}"; then
-		connect_apply_country="$(printf '%s' "${CONNECT_APPLY_COUNTRY:-}" | tr 'a-z' 'A-Z')"
-		case "${CONNECT_APPLY_STARTED_AT:-}" in
-			''|*[!0-9]*)
-				connect_apply_started_at='0'
-				;;
-			*)
-				connect_apply_started_at="$CONNECT_APPLY_STARTED_AT"
-				;;
-		esac
-		case "${CONNECT_APPLY_FINISHED_AT:-}" in
-			''|*[!0-9]*)
-				connect_apply_finished_at='0'
-				;;
-			*)
-				connect_apply_finished_at="$CONNECT_APPLY_FINISHED_AT"
-				;;
-		esac
-		case "${CONNECT_APPLY_STATE:-}" in
-			pending)
-				connect_apply_pending='true'
-				;;
-			success)
-				connect_apply_pending='false'
-				connect_apply_finished='true'
-				connect_apply_success='true'
-				connect_apply_rc='0'
-				;;
-			failed)
-				connect_apply_pending='false'
-				connect_apply_finished='true'
-				connect_apply_success='false'
-				case "${CONNECT_APPLY_RC:-}" in
-					''|*[!0-9]*)
-						connect_apply_rc='1'
-						;;
-					*)
-						connect_apply_rc="$CONNECT_APPLY_RC"
-						;;
-				esac
-				;;
-		esac
+	# Reflect whether our managed recovery cron block is present in the shared root
+	# crontab (BusyBox crond reads /etc/crontabs/root, never /etc/cron.d). The
+	# marker must match the CRON_BLOCK_BEGIN written by the init service.
+	if grep -Fxq '# BEGIN nordvpn-easy' "${NORDVPN_EASY_CRONTAB_PATH:-/etc/crontabs/root}" 2>/dev/null; then
+		recovery_cron_installed='true'
 	fi
 
-	if [ -f "${NORDVPN_EASY_CONNECT_APPLY_GUARD:-/tmp/run/nordvpn-easy/connect-apply-guard}" ]; then
-		connect_apply_pending='true'
+	# Config-identity fields (additive, observability only). config_fingerprint is
+	# the desired-config identity; applied_fingerprint the last one provisioned;
+	# applied_current is true when the live runtime is caught up to the desired
+	# config. Empty when the fingerprint hasher is unavailable.
+	if command -v nordvpn_easy_config_fingerprint >/dev/null 2>&1; then
+		config_fingerprint="$(nordvpn_easy_config_fingerprint 2>/dev/null || printf '')"
+		applied_fingerprint="$(nordvpn_easy_applied_fingerprint 2>/dev/null || printf '')"
+		runtime_token="$(nordvpn_easy_runtime_token_value 2>/dev/null || printf '')"
+		if [ -n "$config_fingerprint" ] && [ "$config_fingerprint" = "$applied_fingerprint" ]; then
+			applied_current='true'
+		fi
 	fi
+
+	# Ordering stamps and shadow journal phase (additive). status_seq + boot_id let
+	# the LuCI poller discard out-of-order status responses; journal_phase/txn_id
+	# expose the (not yet authoritative) apply transaction.
+	if command -v nordvpn_easy_journal_next_seq >/dev/null 2>&1; then
+		status_seq="$(nordvpn_easy_journal_next_seq 2>/dev/null || printf '0')"
+		boot_id="$(nordvpn_easy_journal_boot_id 2>/dev/null || printf '')"
+		journal_phase="$(nordvpn_easy_journal_get phase 2>/dev/null || printf '')"
+		journal_txn_id="$(nordvpn_easy_journal_get txn_id 2>/dev/null || printf '')"
+		# When the transaction opened (router epoch). The JS supervised poll uses it as a
+		# freshness gate: a 'done' whose txn STARTED AFTER the apply's first poll is this
+		# apply's result even if the poll never caught a non-terminal phase (an instant/
+		# mocked converge); a stale leftover 'done' keeps its older started_at and is not
+		# accepted.
+		journal_started_at="$(nordvpn_easy_journal_get started_at 2>/dev/null || printf '0')"
+	fi
+	case "$status_seq" in
+		''|*[!0-9]*) status_seq='0' ;;
+	esac
+	case "$journal_started_at" in
+		''|*[!0-9]*) journal_started_at='0' ;;
+	esac
+
+	# The RPC contract level the emitted status advertises (constant 2). Defaults to 1
+	# if the getter is somehow unsourced, so a client never sees a spurious high level.
+	if command -v nordvpn_easy_rpc_contract_level >/dev/null 2>&1; then
+		rpc_contract_level="$(nordvpn_easy_rpc_contract_level 2>/dev/null || printf '1')"
+	fi
+	case "$rpc_contract_level" in
+		''|*[!0-9]*) rpc_contract_level='1' ;;
+	esac
 
 	cat <<EOF
 {
@@ -676,6 +748,18 @@ nordvpn_easy_emit_status_json() {
   "runtime_configured": $runtime_configured,
   "server_selection_mode": "$(nordvpn_easy_json_escape "${SERVER_SELECTION_MODE:-auto}")",
   "kill_switch_enabled": $([ "${KILL_SWITCH_ENABLED:-0}" = '1' ] && printf '%s' 'true' || printf '%s' 'false'),
+  "recovery_cron_installed": $recovery_cron_installed,
+  "config_fingerprint": "$(nordvpn_easy_json_escape "$config_fingerprint")",
+  "applied_fingerprint": "$(nordvpn_easy_json_escape "$applied_fingerprint")",
+  "runtime_token": "$(nordvpn_easy_json_escape "$runtime_token")",
+  "applied_current": $applied_current,
+  "status_seq": $status_seq,
+  "boot_id": "$(nordvpn_easy_json_escape "$boot_id")",
+  "journal_phase": "$(nordvpn_easy_json_escape "$journal_phase")",
+  "journal_sub_phase": "$(nordvpn_easy_json_escape "$journal_sub_phase")",
+  "journal_txn_id": "$(nordvpn_easy_json_escape "$journal_txn_id")",
+  "journal_started_at": $journal_started_at,
+  "rpc_contract_level": $rpc_contract_level,
   "selected_country": "$(nordvpn_easy_json_escape "${VPN_COUNTRY:-}")",
   "interface": "$(nordvpn_easy_json_escape "${VPN_IF:-}")",
   "vpn_status": "$(nordvpn_easy_json_escape "$vpn_state")",
@@ -711,14 +795,7 @@ nordvpn_easy_emit_status_json() {
   "current_server_country": "$(nordvpn_easy_json_escape "$current_country")",
   "current_server_load": "$(nordvpn_easy_json_escape "$current_load")",
   "preferred_server_hostname": "$(nordvpn_easy_json_escape "$preferred_hostname")",
-  "preferred_server_station": "$(nordvpn_easy_json_escape "$preferred_station")",
-  "connect_apply_pending": $connect_apply_pending,
-  "connect_apply_finished": $connect_apply_finished,
-  "connect_apply_success": $connect_apply_success,
-  "connect_apply_rc": $connect_apply_rc,
-  "connect_apply_country": "$(nordvpn_easy_json_escape "$connect_apply_country")",
-  "connect_apply_started_at": $connect_apply_started_at,
-  "connect_apply_finished_at": $connect_apply_finished_at
+  "preferred_server_station": "$(nordvpn_easy_json_escape "$preferred_station")"
 }
 EOF
 }

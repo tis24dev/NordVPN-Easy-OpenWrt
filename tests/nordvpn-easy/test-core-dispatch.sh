@@ -80,47 +80,33 @@ fi
 # --- status_json: single live emit, no per-poll cache write (E-hybrid) ---
 # The status poll path must emit the status document live and must NOT write the
 # status cache (a post-action forensic snapshot, written by the action epilogue,
-# never on a poll). Anchors: HEAD's guard branch emitted twice (-> 2 wg dumps) and
-# every poll wrote the cache.
+# never on a poll). S9: the connect-apply guard branch is gone -- there is a single
+# unconditional live emit path.
 RUN_DIR="$TMP_DIR/run"
-GUARD="$RUN_DIR/connect-apply-guard"
 mkdir -p "$RUN_DIR"
 
-# Guarded poll: still a single emit; honors connect_apply_pending; one wg dump; no cache.
+# Single live emit; one wg dump; no cache; valid JSON with no connect_apply_* keys.
 : > "$TMP_DIR/cmds"
-printf '%s\n' 'pending' > "$GUARD"
 rm -f "$RUN_DIR/status.json"
 rc=0
 PATH="$BIN:$PATH" \
 	NORDVPN_EASY_LIB_DIR="$LIB_DIR" \
 	NORDVPN_EASY_LOCK_DIR="$TMP_DIR/lock" \
 	NORDVPN_EASY_RUN_DIR="$RUN_DIR" \
-	NORDVPN_EASY_CONNECT_APPLY_GUARD="$GUARD" \
 	sh "$CORE" status_json --config "$TMP_DIR/setup-no-token.conf" > "$TMP_DIR/status-out" 2>/dev/null || rc=$?
 rm -rf "$TMP_DIR/lock"
-[ "$rc" -eq 0 ] || fail 'guarded status_json should succeed (rc=0)'
-jq -er '.interface == "wg_test_dispatch" and .connect_apply_pending == true' "$TMP_DIR/status-out" >/dev/null \
-	|| fail 'guarded status_json must emit valid JSON with the interface and connect_apply_pending'
+[ "$rc" -eq 0 ] || fail 'status_json should succeed (rc=0)'
+jq -er '.interface == "wg_test_dispatch"' "$TMP_DIR/status-out" >/dev/null \
+	|| fail 'status_json must emit valid JSON with the interface'
+jq -er 'has("connect_apply_pending") | not' "$TMP_DIR/status-out" >/dev/null \
+	|| fail 'status_json must NOT emit any connect_apply_* keys (removed in S9)'
 dumps="$(grep -c '^wg show wg_test_dispatch dump$' "$TMP_DIR/cmds" || true)"
-[ "$dumps" = '1' ] || fail "guarded status_json must collect the WireGuard dump once, got $dumps"
-[ ! -e "$RUN_DIR/status.json" ] || fail 'guarded status_json poll must NOT write the status cache'
-
-# Unguarded poll: single live emit; one wg dump; no cache.
-: > "$TMP_DIR/cmds"
-rm -f "$GUARD" "$RUN_DIR/status.json"
-rc=0
-PATH="$BIN:$PATH" \
-	NORDVPN_EASY_LIB_DIR="$LIB_DIR" \
-	NORDVPN_EASY_LOCK_DIR="$TMP_DIR/lock" \
-	NORDVPN_EASY_RUN_DIR="$RUN_DIR" \
-	NORDVPN_EASY_CONNECT_APPLY_GUARD="$GUARD" \
-	sh "$CORE" status_json --config "$TMP_DIR/setup-no-token.conf" > "$TMP_DIR/status-out2" 2>/dev/null || rc=$?
-rm -rf "$TMP_DIR/lock"
-[ "$rc" -eq 0 ] || fail 'unguarded status_json should succeed (rc=0)'
-jq -er '.interface == "wg_test_dispatch"' "$TMP_DIR/status-out2" >/dev/null \
-	|| fail 'unguarded status_json must emit valid JSON with the interface'
-dumps="$(grep -c '^wg show wg_test_dispatch dump$' "$TMP_DIR/cmds" || true)"
-[ "$dumps" = '1' ] || fail "unguarded status_json must collect the WireGuard dump once, got $dumps"
-[ ! -e "$RUN_DIR/status.json" ] || fail 'unguarded status_json poll must NOT write the status cache'
+[ "$dumps" = '1' ] || fail "status_json must collect the WireGuard dump once, got $dumps"
+[ ! -e "$RUN_DIR/status.json" ] || fail 'status_json poll must NOT write the status cache'
+# Status honesty: an idle status_json carries the additive journal_sub_phase key as
+# an empty string (a supervised apply is the only path that populates it), locking in
+# the operation!=busy:supervise gate.
+jq -er '.journal_sub_phase == ""' "$TMP_DIR/status-out" >/dev/null \
+	|| fail 'idle status_json must carry journal_sub_phase as an empty string'
 
 printf '%s\n' 'test-core-dispatch.sh: ok'

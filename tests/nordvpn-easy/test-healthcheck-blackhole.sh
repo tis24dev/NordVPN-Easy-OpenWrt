@@ -20,6 +20,10 @@ ACTIONS_LIB="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-e
 # shellcheck disable=SC1090
 . "$ACTIONS_LIB"
 
+# try_clear_routing_blackhole's ifdown is now behind the S7a owner fence; this
+# unit test drives it without taking the execution lock, so bypass the fence.
+nordvpn_easy_owner_assert() { return 0; }
+
 assert_eq() {
 	expected="$1"
 	actual="$2"

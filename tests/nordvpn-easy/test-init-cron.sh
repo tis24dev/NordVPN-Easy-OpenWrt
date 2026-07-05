@@ -4,6 +4,9 @@ set -eu
 
 ROOT_DIR="$(CDPATH='' cd -- "$(dirname "$0")/../.." && pwd)"
 INIT_SCRIPT="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/etc/init.d/nordvpn-easy"
+# The cron/hotplug installers were extracted to a shared library (S7 inc 5c); the
+# cron helpers this test exercises now live there, not in the init script.
+HOOKS_LIB="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/hooks.sh"
 
 assert_eq() {
 	expected="$1"
@@ -23,12 +26,12 @@ extract_function() {
 		$0 ~ ("^" fn "\\(\\)") { capture = 1 }
 		capture { print }
 		capture && /^}/ { exit }
-	' "$INIT_SCRIPT"
+	' "${2:-$INIT_SCRIPT}"
 }
 
-eval "$(extract_function validate_cron_schedule)"
-eval "$(extract_function normalize_cron_minute_field)"
-eval "$(extract_function normalize_cron_schedule)"
+eval "$(extract_function validate_cron_schedule "$HOOKS_LIB")"
+eval "$(extract_function normalize_cron_minute_field "$HOOKS_LIB")"
+eval "$(extract_function normalize_cron_schedule "$HOOKS_LIB")"
 
 CRON_VALIDATION_ERROR=''
 validate_cron_schedule '* * * * *'
@@ -106,12 +109,11 @@ case "$CRON_VALIDATION_ERROR" in
 		;;
 esac
 
-# The generated cron command must skip when a connect-apply transaction is in
-# progress (so cron 'check' cannot interleave the client-driven Save & Apply
-# window) and stay busy-tolerant otherwise.
-eval "$(extract_function write_desired_cron_hook_to)"
+# S9: the generated cron command no longer has the connect-apply-guard skip prefix
+# (the guard is removed; the held runtime transaction lock suppresses interleaving).
+# It stays busy-tolerant.
+eval "$(extract_function write_desired_cron_hook_to "$HOOKS_LIB")"
 SERVICE_NAME='nordvpn-easy'
-CONNECT_APPLY_GUARD='/tmp/run/nordvpn-easy/connect-apply-guard'
 cfg_enabled=1
 cfg_check_cron_schedule='*/10 * * * *'
 CRON_OUT="$(mktemp)"
@@ -119,10 +121,14 @@ write_desired_cron_hook_to "$CRON_OUT" 1
 CRON_LINE="$(cat "$CRON_OUT")"
 rm -f "$CRON_OUT"
 case "$CRON_LINE" in
-	*"[ -f $CONNECT_APPLY_GUARD ] ||"*"NORDVPN_EASY_BUSY_IS_OK=1 /etc/init.d/$SERVICE_NAME check"*)
+	*'connect-apply-guard'*)
+		printf '%s\n' "FAIL: cron command must not reference the removed connect-apply guard: $CRON_LINE" >&2
+		exit 1
+		;;
+	*"NORDVPN_EASY_BUSY_IS_OK=1 /etc/init.d/$SERVICE_NAME check"*)
 		;;
 	*)
-		printf '%s\n' "FAIL: cron command should skip on the connect-apply guard and stay busy-tolerant: $CRON_LINE" >&2
+		printf '%s\n' "FAIL: cron command should run the busy-tolerant check: $CRON_LINE" >&2
 		exit 1
 		;;
 esac

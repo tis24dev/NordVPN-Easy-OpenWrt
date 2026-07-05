@@ -14,6 +14,10 @@ trap cleanup EXIT HUP INT TERM
 # shellcheck disable=SC1090
 . "$LIB_DIR/wireguard.sh"
 
+# This unit test exercises ensure_vpn_firewall directly without taking the
+# execution lock, so bypass the S7a owner fence (fenced_* wrappers) here.
+nordvpn_easy_owner_assert() { return 0; }
+
 log() { :; }
 
 FW_STORE="$TMP_DIR/fw"
@@ -137,6 +141,42 @@ nordvpn_easy_teardown_vpn_firewall || teardown_rc=$?
 [ "$UCI_REVERT_COUNT" -eq 1 ] || { echo 'FAIL: teardown should revert firewall on commit failure' >&2; exit 1; }
 [ "$(fwget firewall.nordvpn_vpn)" = 'zone' ] || { echo 'FAIL: failed teardown should leave prior vpn zone restored' >&2; exit 1; }
 UCI_COMMIT_FAIL=0
+UCI_REVERT_COUNT=0
+rm -f "$FW_SNAPSHOT"
+
+# --- ensure_vpn_firewall reverts its staged rules when the fenced commit fails -
+# A reaped/superseded writer whose firewall commit the fence refuses must discard
+# the staged zone/forwarding/kill-switch edits, so a later unfenced firewall
+# commit cannot flush a half-built ruleset.
+seed_firewall
+UCI_REVERT_COUNT=0
+UCI_COMMIT_FAIL=1
+ensure_fail_rc=0
+run_ensure 1 || ensure_fail_rc=$?
+[ "$ensure_fail_rc" -eq 1 ] || { echo 'FAIL: ensure_vpn_firewall should fail when the fenced firewall commit fails' >&2; exit 1; }
+[ "$UCI_REVERT_COUNT" -eq 1 ] || { echo 'FAIL: a fence-refused ensure_vpn_firewall must revert the staged firewall delta' >&2; exit 1; }
+UCI_COMMIT_FAIL=0
+UCI_REVERT_COUNT=0
+
+# --- a SUPERSEDED (reaped) disconnect must NOT strip the kill-switch (no leak) -
+# teardown_vpn_firewall is dual-use: reached under the transaction lock
+# (disconnect/reconcile) AND lock-free (boot-disable / the disable_runtime verb).
+# When this process holds a token that no longer matches the lock (reaped), the
+# fence refuses the firewall commit and the revert keeps the new owner's kill-switch
+# committed -- so a thawed reaped disconnect cannot open a WAN leak.
+seed_firewall
+run_ensure 1
+cp "$FW_STORE" "$FW_SNAPSHOT"
+UCI_REVERT_COUNT=0
+NORDVPN_EASY_OWNER_TOKEN='stale-token'
+nordvpn_easy_owner_assert() { return 1; }
+superseded_fw_rc=0
+nordvpn_easy_teardown_vpn_firewall || superseded_fw_rc=$?
+[ "$superseded_fw_rc" -eq 1 ] || { echo 'FAIL: a superseded firewall teardown must abort' >&2; exit 1; }
+[ "$UCI_REVERT_COUNT" -eq 1 ] || { echo 'FAIL: a superseded firewall teardown must revert its staged deletes' >&2; exit 1; }
+[ "$(fwget firewall.nordvpn_vpn)" = 'zone' ] || { echo 'FAIL: a superseded teardown must leave the kill-switch zone intact (no leak)' >&2; exit 1; }
+nordvpn_easy_owner_assert() { return 0; }
+NORDVPN_EASY_OWNER_TOKEN=''
 UCI_REVERT_COUNT=0
 rm -f "$FW_SNAPSHOT"
 

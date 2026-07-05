@@ -18,6 +18,11 @@ trap cleanup EXIT HUP INT TERM
 # shellcheck disable=SC1090
 . "$WIREGUARD_LIB"
 
+# This unit test exercises teardown/bring-up/firewall directly without taking the
+# execution lock, so bypass the S7a owner fence (fenced_* wrappers) here -- the
+# fence itself is covered by test-common-lock.sh.
+nordvpn_easy_owner_assert() { return 0; }
+
 assert_eq() {
 	expected="$1"
 	actual="$2"
@@ -179,24 +184,35 @@ if ! nordvpn_easy_vpn_is_configured; then
 	exit 1
 fi
 
-printf '%s\n' '100' > "$FAKE_NOW_FILE"
-SLEEP_CALLS=''
-PING_ATTEMPTS=0
-SUCCESS_ON_ATTEMPT=2
-nordvpn_easy_wait_for_vpn_connectivity "$VPN_IF" "$POST_RESTART_DELAY" 'unit-test'
+# These two cases exercise the ping PROBE LOOP (sleep/retry accounting). On a real
+# router `wg` exists and the live tunnel has a fresh handshake, so the real
+# wait_for_vpn_handshake would short-circuit and the probe loop would never run
+# the way these cases assume; on a host without `wg` it returns 1 and it does.
+# Pin the handshake path to "not connected" so the accounting is bench-independent.
+# (Subshell so the stub does not leak into the later real-handshake tests; set -e
+# still propagates an inner assertion failure.)
+(
+	nordvpn_easy_wait_for_vpn_handshake() { return 1; }
 
-assert_eq '2' "$PING_ATTEMPTS" 'wait helper exits as soon as connectivity is restored'
-assert_eq '1,' "$SLEEP_CALLS" 'wait helper sleeps only until the next successful probe'
+	printf '%s\n' '100' > "$FAKE_NOW_FILE"
+	SLEEP_CALLS=''
+	PING_ATTEMPTS=0
+	SUCCESS_ON_ATTEMPT=2
+	nordvpn_easy_wait_for_vpn_connectivity "$VPN_IF" "$POST_RESTART_DELAY" 'unit-test'
 
-printf '%s\n' '200' > "$FAKE_NOW_FILE"
-SLEEP_CALLS=''
-PING_ATTEMPTS=0
-SUCCESS_ON_ATTEMPT=0
-WAIT_RC=0
-nordvpn_easy_wait_for_vpn_connectivity "$VPN_IF" '3' 'timeout-test' || WAIT_RC=$?
+	assert_eq '2' "$PING_ATTEMPTS" 'wait helper exits as soon as connectivity is restored'
+	assert_eq '1,' "$SLEEP_CALLS" 'wait helper sleeps only until the next successful probe'
 
-assert_eq '1' "$WAIT_RC" 'wait helper fails when connectivity never returns'
-assert_eq '1,1,' "$SLEEP_CALLS" 'wait helper retries until the timeout window is exhausted'
+	printf '%s\n' '200' > "$FAKE_NOW_FILE"
+	SLEEP_CALLS=''
+	PING_ATTEMPTS=0
+	SUCCESS_ON_ATTEMPT=0
+	WAIT_RC=0
+	nordvpn_easy_wait_for_vpn_connectivity "$VPN_IF" '3' 'timeout-test' || WAIT_RC=$?
+
+	assert_eq '1' "$WAIT_RC" 'wait helper fails when connectivity never returns'
+	assert_eq '1,1,' "$SLEEP_CALLS" 'wait helper retries until the timeout window is exhausted'
+)
 
 # A fresh handshake must not short-circuit readiness on its own: connectivity is
 # still confirmed with a ping through the interface before the tunnel is ready.
@@ -264,6 +280,7 @@ assert_eq '' "$UCI_MTU" 'transport repair removes MTU when automatic is selected
 
 IFDOWN_COUNT=0
 UCI_DELETE_COUNT=0
+UCI_REVERT_COUNT=0
 NETWORK_RELOAD_COUNT=0
 ifdown() { IFDOWN_COUNT=$((IFDOWN_COUNT + 1)); }
 nordvpn_easy_vpn_link_is_present() { return 0; }
@@ -284,6 +301,10 @@ uci() {
 					return 0
 					;;
 				commit)
+					return 0
+					;;
+				revert)
+					UCI_REVERT_COUNT=$((UCI_REVERT_COUNT + 1))
 					return 0
 					;;
 				get)
@@ -318,6 +339,20 @@ nordvpn_easy_teardown_vpn
 assert_eq '1' "$IFDOWN_COUNT" 'teardown runs ifdown when the VPN link is present'
 assert_eq '4' "$UCI_DELETE_COUNT" 'teardown removes the interface and all wireguard peer sections'
 assert_eq '1' "$(cat "$NETWORK_RELOAD_COUNT_FILE")" 'teardown reloads network after UCI cleanup'
+
+# When the fence refuses the network commit (a reaped/superseded writer, i.e. this
+# process HOLDS a token that no longer matches the on-disk lock), teardown discards
+# the staged deletes so a later unfenced network commit cannot flush them.
+UCI_REVERT_COUNT=0
+INTERFACE_RESTART_DELAY=0
+NORDVPN_EASY_OWNER_TOKEN='stale-token'
+nordvpn_easy_owner_assert() { return 1; }
+superseded_teardown_rc=0
+nordvpn_easy_teardown_vpn >/dev/null 2>&1 || superseded_teardown_rc=$?
+assert_eq '1' "$superseded_teardown_rc" 'teardown aborts when the fence refuses the network commit'
+assert_eq '1' "$UCI_REVERT_COUNT" 'a fence-refused teardown reverts the staged network delta'
+nordvpn_easy_owner_assert() { return 0; }
+NORDVPN_EASY_OWNER_TOKEN=''
 
 wg() {
 	case "$1 $2 $3" in
@@ -374,6 +409,33 @@ IFUP_COUNT=0
 ifup() { IFUP_COUNT=$((IFUP_COUNT + 1)); return 1; }
 nordvpn_easy_bring_up_vpn_interface wg0 || true
 assert_eq '1' "$(cat "$TMP_DIR/network-restart-count")" 'bring-up falls back to network restart when ifup fails'
+
+# PR #81 review: a fence-DENIED bring-up (superseded/reaped owner) must NOT escalate to an
+# unfenced network restart -- it must bail (return 1) so a revoked worker cannot reload or
+# restart the new owner's network stack. Distinct from the genuine ifup failure above.
+printf '%s\n' '0' > "$TMP_DIR/network-restart-count"
+printf '%s\n' '0' > "$NETWORK_RELOAD_COUNT_FILE"
+nordvpn_easy_owner_fence_denied() { return 0; }
+denied_brc=0
+nordvpn_easy_bring_up_vpn_interface wg0 || denied_brc=$?
+assert_eq '1' "$denied_brc" 'a fence-denied bring-up bails (return 1)'
+assert_eq '0' "$(cat "$TMP_DIR/network-restart-count")" 'a fence-denied bring-up does NOT restart the network'
+assert_eq '0' "$(cat "$NETWORK_RELOAD_COUNT_FILE")" 'a fence-denied bring-up bails before the unfenced network reload too'
+nordvpn_easy_owner_fence_denied() { return 1; }
+
+# Second guard (mid-flight revocation): NOT denied at the top, but denied AFTER the reload
+# (e.g. the TTL reaper revoked us during bring-up so the fenced ifup is refused). The
+# post-ifup guard must then bail instead of restarting. Stateful stub: denied only once
+# the reload has run.
+printf '%s\n' '0' > "$TMP_DIR/network-restart-count"
+printf '%s\n' '0' > "$NETWORK_RELOAD_COUNT_FILE"
+nordvpn_easy_owner_fence_denied() { [ "$(cat "$NETWORK_RELOAD_COUNT_FILE" 2>/dev/null)" != '0' ]; }
+midflight_brc=0
+nordvpn_easy_bring_up_vpn_interface wg0 || midflight_brc=$?
+assert_eq '1' "$midflight_brc" 'a mid-flight fence revocation makes bring-up bail (return 1)'
+assert_eq '1' "$(cat "$NETWORK_RELOAD_COUNT_FILE")" 'the reload ran (top guard passed) before the mid-flight revocation'
+assert_eq '0' "$(cat "$TMP_DIR/network-restart-count")" 'a mid-flight-revoked bring-up does NOT restart the network'
+nordvpn_easy_owner_fence_denied() { return 1; }
 
 printf '%s\n' '300' > "$FAKE_NOW_FILE"
 HANDSHAKE_EPOCH='295'

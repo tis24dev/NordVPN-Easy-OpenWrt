@@ -15,24 +15,32 @@ RUNTIME_CONFIG='/var/etc/nordvpn-easy.conf'
 CORE_SCRIPT='/usr/libexec/nordvpn-easy/core.sh'
 PUBLIC_IP_POLL_SCRIPT='/usr/libexec/nordvpn-easy/public-ip-poll.sh'
 CONFIG_CONTEXT_LIB='/usr/libexec/nordvpn-easy/lib/config-context.sh'
+HOOKS_LIB='/usr/libexec/nordvpn-easy/lib/hooks.sh'
 CRON_PATH='/etc/cron.d/nordvpn-easy'
+# BusyBox crond reads /etc/crontabs/<user>, never /etc/cron.d, so the recovery
+# hook must live in the shared root crontab as a delimited managed block we own.
+CRONTAB_PATH='/etc/crontabs/root'
+CRON_BLOCK_BEGIN='# BEGIN nordvpn-easy'
+CRON_BLOCK_END='# END nordvpn-easy'
 HOTPLUG_PATH='/etc/hotplug.d/iface/95-nordvpn-easy'
+
+# Recovery-hook installers (cron + hotplug) live in a shared library so the
+# supervisor can reuse them; sourced eagerly here since remove_hooks and
+# install_hooks call them without first loading the config-context library.
+# shellcheck disable=SC1090
+. "$HOOKS_LIB"
 RUN_STATE_DIR='/tmp/run/nordvpn-easy'
 CONNECT_SETUP_CONFIG_CACHE="${RUN_STATE_DIR}/connect-setup.conf"
-CONNECT_APPLY_GUARD="${RUN_STATE_DIR}/connect-apply-guard"
-CONNECT_APPLY_RESULT="${RUN_STATE_DIR}/connect-apply-result"
 RUNTIME_LOCK_DIR='/tmp/nordvpn-easy.lock'
 SERVICE_BACKEND_PAYLOAD_SIGNATURE='render-contract-v3'
 NORDVPN_EASY_RC_BUSY="${NORDVPN_EASY_RC_BUSY:-75}"
 # OpenWrt rc.common consumes the command/help metadata.
 # shellcheck disable=SC2034
-EXTRA_COMMANDS='connect disconnect stop_vpn begin_connect_apply abort_connect_apply reconnect reconcile setup check rotate refresh_countries refresh_countries_force server_catalog public_ip operation_status vpn_status status_json diagnostics_log diagnostics_summary install_hooks remove_hooks disable_runtime render_runtime_config'
+EXTRA_COMMANDS='connect disconnect stop_vpn reconnect reconcile setup check rotate refresh_countries refresh_countries_force server_catalog public_ip operation_status vpn_status status_json diagnostics_log diagnostics_summary install_hooks remove_hooks disable_runtime render_runtime_config supervise apply'
 # shellcheck disable=SC2034
 EXTRA_HELP='  connect               Enable, run setup, then install hooks transactionally
   disconnect            Disable runtime and remove hooks
-  stop_vpn              Stop VPN interface (connect-apply teardown when apply guard is active)
-  begin_connect_apply   Mark connect apply pending before stop_vpn during Save & Apply
-  abort_connect_apply   Finish a failed connect apply and clear the apply guard
+  stop_vpn              Stop VPN interface
   reconnect             Compatibility alias for stop_vpn then connect
   reconcile             Synchronize runtime state with the saved UCI config
   setup                 Run setup immediately
@@ -122,7 +130,13 @@ run_core_action() {
 	}
 
 	case "$action" in
-		stop_vpn)
+		stop_vpn|status_json|operation_status|vpn_status|diagnostics_log|diagnostics_summary)
+			# Read-only status/diagnostics polls load the UCI runtime context DIRECTLY and
+			# must NOT render a temporary config: rendering resolves the VPN server and can
+			# fetch the recommendations catalog over the WAN (seconds to a minute), which is
+			# pure overhead for a poll that only reports the live wg + UCI state. Rendering
+			# on every LuCI status poll made polls take 10-60s and pile up (the UI showed
+			# "unknown"). These actions need no fresh server resolution.
 			direct_uci_config=1
 			;;
 	esac
@@ -182,16 +196,12 @@ run_core_action() {
 			log_service_info "apply: rendered temporary config for '$action' at $action_config (written_options=$written_options, $(nordvpn_easy_runtime_file_debug_summary "$action_config"), $(nordvpn_easy_runtime_config_validation_summary), $(nordvpn_easy_service_backend_payload_summary))"
 		fi
 	fi
-	if [ -f "$CONNECT_APPLY_GUARD" ] && { [ "$action" = 'setup' ] || [ "$action" = 'stop_vpn' ]; }; then
-		export NORDVPN_EASY_CONNECT_APPLY=1
-	fi
 	if [ "$direct_uci_config" -eq 1 ]; then
 		"$CORE_SCRIPT" "$action" "$@"
 	else
 		"$CORE_SCRIPT" "$action" --config "$action_config" "$@"
 	fi
 	rc=$?
-	unset NORDVPN_EASY_CONNECT_APPLY 2>/dev/null || true
 	[ -z "$action_temp_dir" ] || rm -rf -- "$action_temp_dir"
 	action_finished_at="$(date +%s 2>/dev/null || printf '%s' '0')"
 	case "$action_started_at" in
@@ -267,8 +277,8 @@ acquire_runtime_transaction_lock() {
 	# reject the connect with RC_BUSY and leave the VPN torn down. These run async
 	# (no LuCI rpc client timeout on the call), so let them wait briefly for a
 	# transient holder to finish instead of aborting. Background/auto verbs
-	# (reconcile, disconnect, begin_connect_apply) keep fail-fast semantics so they
-	# yield to a foreground apply instead of queueing behind it.
+	# (reconcile, disconnect) keep fail-fast semantics so they yield to a
+	# foreground apply instead of queueing behind it.
 	case "$action_label" in
 		connect|reconnect)
 			lock_wait_seconds="${NORDVPN_EASY_APPLY_LOCK_WAIT_SECONDS:-90}"
@@ -283,6 +293,11 @@ acquire_runtime_transaction_lock() {
 	NORDVPN_EASY_LOCK_WAIT_SECONDS="$lock_wait_seconds" nordvpn_easy_acquire_lock || rc=$?
 	if [ "$rc" -eq 0 ]; then
 		RUNTIME_TRANSACTION_LOCK_HELD=1
+		# Export ONLY the inherited flag, never NORDVPN_EASY_OWNER_TOKEN: child
+		# core.sh runs must adopt the parent's lock token by reading it off disk
+		# (the adopt path), not inherit it via env. If the token ever leaked into a
+		# child's env and that child set LOCK_ACQUIRED=1, its release_lock could
+		# delete the live parent lock (B-2 in reverse).
 		export NORDVPN_EASY_LOCK_INHERITED=1
 		return 0
 	fi
@@ -294,34 +309,6 @@ acquire_runtime_transaction_lock() {
 	holder_action="$(cat "${RUNTIME_LOCK_DIR}/action" 2>/dev/null || true)"
 	log_service_info "apply: $action_label deferred because another runtime operation is running (holder_action=${holder_action:-unknown}, holder_pid=${holder_pid:-unknown})"
 	return "$NORDVPN_EASY_RC_BUSY"
-}
-
-connect_apply_guard_begin() {
-	mkdir -p "$RUN_STATE_DIR" 2>/dev/null || true
-	: > "$CONNECT_APPLY_GUARD" 2>/dev/null || true
-	# The guard suppresses the cron recovery check while a connect-apply is in
-	# flight; connect_apply_guard_end removes it on every normal path. Register it
-	# for the lock's exit trap so a TERM/INT/HUP or crash before guard_end cannot
-	# leave it behind and silently suppress cron/hotplug recovery forever. The
-	# result file is intentionally NOT registered: it must persist for the LuCI
-	# frontend to read the apply outcome. The lock is already held here, so the
-	# trap is installed.
-	nordvpn_easy_register_temp_path "$CONNECT_APPLY_GUARD" 2>/dev/null || true
-	nordvpn_easy_connect_apply_result_begin "$CONNECT_APPLY_RESULT" 2>/dev/null || true
-}
-
-connect_apply_guard_end() {
-	rm -f "$CONNECT_APPLY_GUARD" 2>/dev/null || true
-}
-
-connect_apply_result_finish() {
-	local rc="${1:-1}"
-
-	load_service_config || return 1
-	nordvpn_easy_connect_apply_result_finish "$CONNECT_APPLY_RESULT" "$rc" "$cfg_vpn_country" 2>/dev/null || true
-	if [ "$rc" -eq 0 ]; then
-		nordvpn_easy_clear_stale_runtime_lock "$RUNTIME_LOCK_DIR" 2>/dev/null || true
-	fi
 }
 
 prepare_connect_setup_config_cache() {
@@ -338,29 +325,6 @@ prepare_connect_setup_config_cache() {
 		return 1
 	}
 	log_service_info "apply: cached setup config at $CONNECT_SETUP_CONFIG_CACHE (written_options=$written_options, vpn_country=${cfg_vpn_country:-automatic}, $(nordvpn_easy_runtime_file_debug_summary "$CONNECT_SETUP_CONFIG_CACHE"), $(nordvpn_easy_runtime_config_validation_summary), $(nordvpn_easy_service_backend_payload_summary))"
-}
-
-write_desired_cron_hook_to() {
-	local target="$1"
-	local effective_cron_schedule=''
-	local config_ready="${2:-0}"
-
-	if [ "$config_ready" != '1' ]; then
-		load_service_config || return 1
-	fi
-
-	if [ "${cfg_enabled:-0}" -eq 1 ] && [ -n "$cfg_check_cron_schedule" ]; then
-		if ! validate_cron_schedule "$cfg_check_cron_schedule"; then
-			return 1
-		fi
-
-		effective_cron_schedule="$(normalize_cron_schedule "$cfg_check_cron_schedule")"
-		cat > "$target" <<EOF
-$effective_cron_schedule [ -f $CONNECT_APPLY_GUARD ] || NORDVPN_EASY_BUSY_IS_OK=1 /etc/init.d/$SERVICE_NAME check 2>&1 | logger -t $SERVICE_NAME-cron
-EOF
-	else
-		: > "$target"
-	fi
 }
 
 log_service_error() {
@@ -392,304 +356,6 @@ log_service_info() {
 	logger -t "$SERVICE_NAME" "$message"
 }
 
-validate_cron_schedule() {
-	local schedule="$1"
-	local validation_output=''
-
-	if validation_output="$(
-		printf '%s' "$schedule" | awk '
-		BEGIN {
-			valid = 1
-			error = ""
-			split("59 23 31 12 7", maxv, " ")
-			split("0 0 1 1 0", minv, " ")
-			split("minute hour day-of-month month day-of-week", field_name, " ")
-		}
-		function fail(msg) {
-			if (valid) {
-				valid = 0
-				error = msg
-			}
-		}
-		NR > 1 { fail("schedule must be a single line"); exit }
-		{
-			if (NF != 5) { fail("expected exactly 5 cron fields"); exit }
-			for (i = 1; i <= NF; i++) {
-				f = $i
-				n = split(f, parts, ",")
-				for (j = 1; j <= n; j++) {
-					p = parts[j]
-					if (p == "") {
-						fail(sprintf("field %s contains an empty token", field_name[i]))
-						continue
-					}
-					base = p
-					if (p ~ /\//) {
-						si = index(p, "/")
-						stepstr = substr(p, si + 1)
-						base = substr(p, 1, si - 1)
-						if (stepstr !~ /^[0-9]+$/ || stepstr + 0 < 1 || stepstr + 0 > maxv[i] + 0) {
-							fail(sprintf("field %s has invalid step \"%s\"", field_name[i], p))
-							continue
-						}
-					}
-					if (base == "*") {
-						continue
-					} else if (base ~ /^[0-9]+-[0-9]+$/) {
-						split(base, rng, "-")
-						if (rng[1]+0 < minv[i]+0 || rng[1]+0 > maxv[i]+0)
-							fail(sprintf("field %s has out-of-range token \"%s\"", field_name[i], p))
-						if (rng[2]+0 < minv[i]+0 || rng[2]+0 > maxv[i]+0)
-							fail(sprintf("field %s has out-of-range token \"%s\"", field_name[i], p))
-						if (rng[1]+0 > rng[2]+0)
-							fail(sprintf("field %s has inverted range \"%s\"", field_name[i], p))
-					} else if (base ~ /^[0-9]+$/) {
-						if (base+0 < minv[i]+0 || base+0 > maxv[i]+0)
-							fail(sprintf("field %s has out-of-range token \"%s\"", field_name[i], p))
-					} else {
-						fail(sprintf("field %s has invalid token \"%s\"", field_name[i], p))
-					}
-				}
-			}
-		}
-		END {
-			if (!valid)
-				printf "%s", error
-			exit(valid ? 0 : 1)
-		}
-	'
-	)"; then
-		CRON_VALIDATION_ERROR=''
-		return 0
-	fi
-
-	CRON_VALIDATION_ERROR="$validation_output"
-	return 1
-}
-
-normalize_cron_minute_field() {
-	# Echo the minute field unchanged, unless it fires more often than every 5
-	# minutes somewhere (smallest gap between fired minutes < 5, wrap included),
-	# in which case echo '*/5'. This throttles dense lists/ranges (e.g. 0-4 or
-	# 0,1,2,3,4), not just the */1..4 forms.
-	printf '%s' "$1" | awk '
-	{
-		field = $0
-		cnt = 0
-		n = split(field, toks, ",")
-		for (t = 1; t <= n; t++) {
-			tok = toks[t]
-			step = 1
-			if (tok ~ /\//) {
-				si = index(tok, "/")
-				step = substr(tok, si + 1) + 0
-				tok = substr(tok, 1, si - 1)
-				if (step < 1) step = 1
-			}
-			if (tok == "*") { lo = 0; hi = 59 }
-			else if (tok ~ /^[0-9]+-[0-9]+$/) { split(tok, r, "-"); lo = r[1] + 0; hi = r[2] + 0 }
-			else if (tok ~ /^[0-9]+$/) { lo = tok + 0; hi = lo }
-			else { print field; exit }
-			if (lo > hi || lo < 0 || hi > 59) { print field; exit }
-			for (m = lo; m <= hi; m += step) {
-				if (!(m in seen)) { seen[m] = 1; mins[cnt++] = m }
-			}
-		}
-		if (cnt <= 1) { print field; exit }
-		for (a = 1; a < cnt; a++) {
-			key = mins[a]; b = a - 1
-			while (b >= 0 && mins[b] > key) { mins[b + 1] = mins[b]; b-- }
-			mins[b + 1] = key
-		}
-		mingap = 60
-		for (a = 0; a < cnt; a++) {
-			nxt = (a + 1 < cnt) ? mins[a + 1] : mins[0] + 60
-			gap = nxt - mins[a]
-			if (gap < mingap) mingap = gap
-		}
-		if (mingap < 5) print "*/5"
-		else print field
-	}'
-}
-
-normalize_cron_schedule() {
-	local schedule="$1"
-	local minute hour dom month dow
-
-	set -f
-	# shellcheck disable=SC2086 # Cron validation guarantees exactly five fields.
-	set -- $schedule
-	set +f
-	minute="${1:-}"
-	hour="${2:-}"
-	dom="${3:-}"
-	month="${4:-}"
-	dow="${5:-}"
-
-	minute="$(normalize_cron_minute_field "$minute")"
-	printf '%s %s %s %s %s\n' "$minute" "$hour" "$dom" "$month" "$dow"
-}
-
-install_cron_hook() {
-	local config_ready="${1:-0}"
-	local tmp_cron=''
-	local effective_cron_schedule=''
-
-	if [ "$config_ready" != '1' ]; then
-		load_service_config || return 1
-	fi
-	mkdir -p /etc/cron.d
-
-	tmp_cron="$(mktemp /tmp/nordvpn-easy.cron.XXXXXX 2>/dev/null)" || {
-		log_service_error 'failed to create temporary cron hook file'
-		return 1
-	}
-
-	if ! write_desired_cron_hook_to "$tmp_cron" "$config_ready"; then
-		rm -f "$CRON_PATH"
-		rm -f -- "$tmp_cron"
-		log_service_error "invalid cron schedule '$cfg_check_cron_schedule' (${CRON_VALIDATION_ERROR:-unknown error}); refusing to write $CRON_PATH"
-		return 1
-	fi
-
-	if [ -f "$CRON_PATH" ] && cmp -s "$tmp_cron" "$CRON_PATH" 2>/dev/null; then
-		rm -f -- "$tmp_cron"
-		log_service_info "cron hook unchanged at $CRON_PATH"
-		return 0
-	fi
-
-	if [ -s "$tmp_cron" ]; then
-		effective_cron_schedule="$(normalize_cron_schedule "$cfg_check_cron_schedule")"
-		if [ "$effective_cron_schedule" != "$cfg_check_cron_schedule" ]; then
-			log_service_info "cron schedule '$cfg_check_cron_schedule' is faster than the 5-minute minimum; using '$effective_cron_schedule'"
-		fi
-		mv "$tmp_cron" "$CRON_PATH" || {
-			rm -f -- "$tmp_cron"
-			return 1
-		}
-		log_service_info "installed cron hook at $CRON_PATH with schedule '$effective_cron_schedule'"
-		restart_cron_service
-	else
-		rm -f -- "$tmp_cron"
-		if [ -f "$CRON_PATH" ]; then
-			rm -f "$CRON_PATH"
-			log_service_info "removed cron hook from $CRON_PATH"
-			restart_cron_service
-		else
-			log_service_info "removed cron hook from $CRON_PATH"
-		fi
-	fi
-}
-
-install_hotplug_hook() {
-	local config_ready="${1:-0}"
-	local tmp_hotplug=''
-
-	if [ "$config_ready" != '1' ]; then
-		load_service_config || return 1
-	fi
-	mkdir -p /etc/hotplug.d/iface
-
-	if [ "${cfg_enabled:-0}" -ne 1 ] || [ "${cfg_enable_hotplug:-0}" -ne 1 ]; then
-		if [ -f "$HOTPLUG_PATH" ]; then
-			rm -f "$HOTPLUG_PATH"
-			log_service_info "removed hotplug hook from $HOTPLUG_PATH"
-		else
-			log_service_info "removed hotplug hook from $HOTPLUG_PATH"
-		fi
-		return 0
-	fi
-
-	tmp_hotplug="$(mktemp /tmp/nordvpn-easy.hotplug.XXXXXX 2>/dev/null)" || {
-		log_service_error 'failed to create temporary hotplug hook file'
-		return 1
-	}
-
-	cat > "$tmp_hotplug" <<EOF
-#!/bin/sh
-WAN_IF='$(nordvpn_easy_shell_quote "$cfg_wan_if")'
-VPN_IF='$(nordvpn_easy_shell_quote "$cfg_vpn_if")'
-DEBOUNCE_SECONDS='$(nordvpn_easy_shell_quote "$cfg_hotplug_debounce_seconds")'
-RUN_DIR='/tmp/run/nordvpn-easy'
-LOCK_DIR='/tmp/nordvpn-easy.lock'
-STAMP_FILE="\$RUN_DIR/hotplug.last"
-
-case "\$ACTION" in
-	ifup|ifupdate|ifdown) ;;
-	*) exit 0 ;;
-esac
-
-[ "\$INTERFACE" = "\$WAN_IF" ] || [ "\$INTERFACE" = "\$VPN_IF" ] || exit 0
-
-case "\$DEBOUNCE_SECONDS" in
-	''|*[!0-9]*)
-		DEBOUNCE_SECONDS='30'
-		;;
-esac
-
-mkdir -p "\$RUN_DIR" 2>/dev/null || true
-NOW_TS="\$(date +%s 2>/dev/null || printf '%s' '0')"
-LAST_TS="\$(cat "\$STAMP_FILE" 2>/dev/null || printf '%s' '0')"
-case "\$NOW_TS:\$LAST_TS" in
-	*[!0-9:]*|0:*)
-		LAST_TS='0'
-		;;
-esac
-
-if [ "\$LAST_TS" -gt 0 ] && [ \$((NOW_TS - LAST_TS)) -lt "\$DEBOUNCE_SECONDS" ]; then
-	logger -t $SERVICE_NAME-hotplug "debounced \$ACTION for \$INTERFACE (last=\${LAST_TS}, debounce=\${DEBOUNCE_SECONDS}s)"
-	exit 0
-fi
-
-printf '%s\n' "\$NOW_TS" > "\$STAMP_FILE" 2>/dev/null || true
-
-if [ -f "\$RUN_DIR/connect-apply-guard" ]; then
-	logger -t $SERVICE_NAME-hotplug "skipped \$ACTION for \$INTERFACE during connect apply"
-	exit 0
-fi
-
-if [ -r "\$LOCK_DIR/pid" ]; then
-	LOCK_PID="\$(cat "\$LOCK_DIR/pid" 2>/dev/null || true)"
-	case "\$LOCK_PID" in
-		''|*[!0-9]*)
-			;;
-		*)
-			if kill -0 "\$LOCK_PID" 2>/dev/null; then
-				LOCK_ACTION="\$(cat "\$LOCK_DIR/action" 2>/dev/null || printf '%s' 'unknown')"
-				LOCK_STARTED_AT="\$(cat "\$LOCK_DIR/started_at" 2>/dev/null || printf '%s' '0')"
-				case "\$LOCK_STARTED_AT" in
-					''|*[!0-9]*)
-						LOCK_AGE='0'
-						;;
-					*)
-						LOCK_AGE=\$((NOW_TS - LOCK_STARTED_AT))
-						[ "\$LOCK_AGE" -ge 0 ] || LOCK_AGE='0'
-						;;
-				esac
-				logger -t $SERVICE_NAME-hotplug "skipped \$ACTION for \$INTERFACE because runtime operation is busy (holder_action=\$LOCK_ACTION, holder_pid=\$LOCK_PID, holder_age_seconds=\$LOCK_AGE)"
-				exit 0
-			fi
-			;;
-	esac
-fi
-
-NORDVPN_EASY_BUSY_IS_OK=1 /etc/init.d/$SERVICE_NAME check 2>&1 | logger -t $SERVICE_NAME-hotplug
-EOF
-
-	if [ -f "$HOTPLUG_PATH" ] && cmp -s "$tmp_hotplug" "$HOTPLUG_PATH" 2>/dev/null; then
-		rm -f -- "$tmp_hotplug"
-		log_service_info "hotplug hook unchanged at $HOTPLUG_PATH"
-		return 0
-	fi
-
-	mv "$tmp_hotplug" "$HOTPLUG_PATH" || {
-		rm -f -- "$tmp_hotplug"
-		return 1
-	}
-	chmod 755 "$HOTPLUG_PATH"
-	log_service_info "installed hotplug hook at $HOTPLUG_PATH for wan_if=$cfg_wan_if vpn_if=$cfg_vpn_if"
-}
-
 enable_service_at_boot() {
 	if [ -x /etc/rc.common ]; then
 		/etc/init.d/"$SERVICE_NAME" enable >/dev/null 2>&1 || true
@@ -714,8 +380,9 @@ install_hooks() {
 
 remove_hooks() {
 	log_service_info 'removing runtime hooks'
-	rm -f "$CRON_PATH" "$HOTPLUG_PATH"
-	restart_cron_service
+	apply_crontab_block '' >/dev/null 2>&1 || true
+	rm -f "$HOTPLUG_PATH"
+	enable_and_restart_cron
 	log_service_info 'runtime hooks removed'
 }
 
@@ -735,13 +402,18 @@ disable_vpn_runtime() {
 
 	log_service_info "WireGuard interface $cfg_vpn_if will be marked disabled; the UCI configuration is kept and the interface is not removed"
 	uci set "network.${cfg_vpn_if}.disabled"='1'
-	uci commit network || {
+	# Fenced (S7b): under the transaction lock a superseded/reaped disconnect must
+	# not persist disabled=1 over the new owner's freshly-provisioned interface;
+	# revert the staged flag so a later unfenced network commit cannot flush it. A
+	# tokenless lock-free disable (boot / disable_runtime verb) is allowed through.
+	nordvpn_easy_fenced_uci_commit network || {
+		uci -q revert network 2>/dev/null || true
 		log_service_error "failed to commit network while disabling ${cfg_vpn_if}"
 		return 1
 	}
 	log_service_info "marked network.${cfg_vpn_if}.disabled=1"
 
-	ifdown "$cfg_vpn_if" >/dev/null 2>&1 || true
+	nordvpn_easy_fenced_ifupdown down "$cfg_vpn_if" >/dev/null 2>&1 || true
 	log_service_info "requested ifdown for $cfg_vpn_if"
 
 	/etc/init.d/network reload >/dev/null 2>&1 ||
@@ -813,51 +485,38 @@ connect() {
 	acquire_runtime_transaction_lock connect || return $?
 	log_service_info "connect requested; enabling runtime transactionally; $(nordvpn_easy_service_debug_summary 'cfg_')"
 
-	connect_apply_guard_begin
 	log_service_info "connect: preparing setup cache from UCI vpn_country=${cfg_vpn_country:-automatic}"
 	# Validate the request (render + validate the runtime config) BEFORE recording
 	# desired=enabled. An invalid config must not be persisted as enabled=1, or
 	# every cron retry would fail forever on the same bad config. A transient
 	# failure later (setup) still leaves enabled=1 so the cron check converges the
 	# runtime; only an unachievable request is rejected up front.
-	prepare_connect_setup_config_cache || {
-		connect_apply_result_finish 1
-		connect_apply_guard_end
-		return 1
-	}
+	prepare_connect_setup_config_cache || return 1
 
 	uci set "${UCI_CONFIG}.${UCI_SECTION}.enabled=1" || {
 		log_service_error 'connect failed while setting enabled=1'
-		connect_apply_result_finish 1
-		connect_apply_guard_end
 		return 1
 	}
-	uci commit "$UCI_CONFIG" || {
+	nordvpn_easy_fenced_uci_commit "$UCI_CONFIG" || {
 		log_service_error 'connect failed while committing enabled=1'
-		connect_apply_result_finish 1
-		connect_apply_guard_end
 		return 1
 	}
+
+	# Install the cron/hotplug recovery hooks right after persisting enabled=1
+	# and BEFORE setup. setup brings the tunnel up (fetch/teardown/configure/
+	# bringup); if it fails transiently, the hooks already exist so cron/hotplug
+	# recovery can converge the runtime. Installing hooks only after setup would
+	# leave a persisted enabled=1 with no retry path whenever setup fails. The held
+	# transaction lock suppresses the cron/hotplug recovery check (it sees RC_BUSY)
+	# from re-entering during our own setup ifup/ifdown.
+	install_hooks_if_needed || return 1
 
 	export NORDVPN_EASY_SETUP_CONFIG_CACHE="$CONNECT_SETUP_CONFIG_CACHE"
 	setup || rc=$?
 	unset NORDVPN_EASY_SETUP_CONFIG_CACHE
 	rm -f "$CONNECT_SETUP_CONFIG_CACHE" 2>/dev/null || true
 
-	if [ "$rc" -ne 0 ]; then
-		connect_apply_result_finish "$rc"
-		connect_apply_guard_end
-		return "$rc"
-	fi
-
-	install_hooks_if_needed || {
-		connect_apply_result_finish 1
-		connect_apply_guard_end
-		return 1
-	}
-
-	connect_apply_result_finish 0
-	connect_apply_guard_end
+	return "$rc"
 }
 
 disconnect() {
@@ -868,26 +527,11 @@ disconnect() {
 		log_service_error 'disconnect failed while setting enabled=0'
 		return 1
 	}
-	uci commit "$UCI_CONFIG" || {
+	nordvpn_easy_fenced_uci_commit "$UCI_CONFIG" || {
 		log_service_error 'disconnect failed while committing enabled=0'
 		return 1
 	}
 	disable_vpn_runtime
-}
-
-begin_connect_apply() {
-	acquire_runtime_transaction_lock begin_connect_apply || return $?
-	load_service_config || return 1
-	log_service_info 'begin_connect_apply requested; marking connect apply pending'
-	connect_apply_guard_begin
-}
-
-abort_connect_apply() {
-	acquire_runtime_transaction_lock abort_connect_apply || return $?
-	load_service_config || return 1
-	log_service_info 'abort_connect_apply requested; finishing connect apply as failed'
-	connect_apply_result_finish 1
-	connect_apply_guard_end
 }
 
 stop_vpn() {
@@ -964,6 +608,44 @@ setup() {
 check() {
 	log_service_info 'manual health-check requested'
 	run_core_action check
+}
+
+# The supervised apply verb: the sole apply path. Reached by the `apply` verb's
+# setsid fork and by an explicit `/etc/init.d/nordvpn-easy supervise` invocation.
+# A disable request (cfg_enabled != 1) is handled by the disable/stop path, not
+# the supervisor, so it refuses here.
+supervise() {
+	log_service_info 'supervisor apply requested'
+	load_service_config || return 1
+	if [ "${cfg_enabled:-0}" != '1' ]; then
+		log_service_info 'disable requested; supervisor refuses (disable is handled by the stop path)'
+		return 0
+	fi
+	run_core_action supervise
+}
+
+# Async entry for the supervised apply (the RPC apply method + the CLI both reach
+# the supervisor here). setsid-reparent the SYNCHRONOUS supervise worker into a NEW
+# SESSION with its fds detached (</dev/null >/dev/null 2>&1), so it survives rpcd
+# tearing down the handler's process group and this verb -- and thus the rpc handler
+# -- returns in <1s while the worker runs ~60s detached. The trailing & is
+# load-bearing: BusyBox setsid execs PROG and returns only when PROG exits. setsid is a
+# compile-time BusyBox applet; fall back to a bare backgrounded subshell on an image
+# that lacks it. cfg_enabled/DESIRED gates stay authoritative inside supervise().
+apply() {
+	load_service_config || return 1
+	# Clear the last-error cache SYNCHRONOUSLY, before dispatching the async worker,
+	# so the JS status_json poll that immediately follows this apply RPC cannot read a
+	# STALE error from a prior failed apply and report a false failure. The async
+	# worker would only clear it in its success epilogue (~60s later), racing the first
+	# poll. Mirrors core.sh's cache.
+	rm -f "${RUN_STATE_DIR:-/tmp/run/nordvpn-easy}/last_error" 2>/dev/null || true
+	if command -v setsid >/dev/null 2>&1; then
+		setsid /etc/init.d/"$SERVICE_NAME" supervise </dev/null >/dev/null 2>&1 &
+	else
+		( /etc/init.d/"$SERVICE_NAME" supervise </dev/null >/dev/null 2>&1 ) &
+	fi
+	return 0
 }
 
 rotate() {

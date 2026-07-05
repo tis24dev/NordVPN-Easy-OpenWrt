@@ -1,6 +1,6 @@
 #!/bin/sh
 
-NORDVPN_EASY_SCHEMA_VERSION="${NORDVPN_EASY_SCHEMA_VERSION:-3}"
+NORDVPN_EASY_SCHEMA_VERSION="${NORDVPN_EASY_SCHEMA_VERSION:-4}"
 NORDVPN_EASY_BACKEND_PAYLOAD_SIGNATURE="${NORDVPN_EASY_BACKEND_PAYLOAD_SIGNATURE:-render-contract-v3}"
 
 nordvpn_easy_shell_quote() {
@@ -139,6 +139,14 @@ nordvpn_easy_runtime_env_keys() {
 		'FAILURE_RETRY_DELAY' \
 		'INTERFACE_RESTART_DELAY' \
 		'POST_RESTART_DELAY'
+}
+
+# The RPC contract level the backend advertises in its status. Surfaced for
+# display/diagnostics. Kept an integer so JS can compare it.
+nordvpn_easy_rpc_contract_level() {
+	# 2 = the async supervised `apply` method + its ACL + the JS callApply consumer all
+	# ship; the supervisor is the sole apply path.
+	printf '2'
 }
 
 nordvpn_easy_default() {

@@ -17,7 +17,6 @@ const MAX_DRIFT_RESTART_DEPTH = 1;
 const SAVE_APPLY_TIMEOUT_MS = 240000;
 const RUNTIME_ACTION_RECOVERY_POLL_MS = 3000;
 const APPLY_CONVERGENCE_POLL_MS = 1000;
-const CONNECT_APPLY_DISPATCH_CLOCK_SLACK_MS = 120000;
 const RUNTIME_ACTION_COOLDOWN_MS = SAVE_APPLY_TIMEOUT_MS + 30000;
 const ENABLED_RUNTIME_RECOVERY_COOLDOWN_MS = 15000;
 const POST_APPLY_RECOVERY_GRACE_MS = 120000;
@@ -424,17 +423,66 @@ function applyConvergencePollIntervalMs(state) {
 		RUNTIME_ACTION_RECOVERY_POLL_MS;
 }
 
-function noteConnectApplyServerMarker(state, status) {
-	const runtimeStatus = status || {};
-	const startedAt = Number(runtimeStatus.connect_apply_started_at || 0);
+// S8: the supervised apply reads convergence off the supervisor's OWN journal signal
+// instead of re-deriving it from the live country/station/handshake state. A journal
+// record is TERMINAL when its phase is done or failed.
+function supervisedApplyPhaseIsTerminal(phase) {
+	return phase === 'done' || phase === 'failed';
+}
 
-	if (!state || !state.connectApplyDispatchedAt || startedAt <= 0)
+// Record the journal txn we watch go through a NON-terminal (in-flight) phase. Binding
+// the terminal verdict to a txn we actually saw applying is what makes the poll safe
+// against a STALE leftover done/failed from a PRIOR apply (which we never saw applying,
+// and whose record the async forked worker may briefly still show on the first poll)
+// AND against the open_txn adoption case (an adopted same-target txn is seen applying
+// here, then done, so it is attributed correctly).
+function noteSupervisedApplyProgress(state, status) {
+	if (!state)
 		return;
+	// Baseline the journal txn's start time from the FIRST poll (a fresh live read): a
+	// later 'done' whose started_at exceeds this baseline can only be THIS apply's txn.
+	// This closes the cold-start window where an instant/mocked converge reaches 'done'
+	// before any poll catches a non-terminal phase (so supervisedApplyObservedTxn never
+	// gets set). On real hardware the ~2-5s converge fetch makes the observed arm fire
+	// first; the baseline is the defense-in-depth path only.
+	if (state.supervisedApplyBaselineStartedAt == null)
+		state.supervisedApplyBaselineStartedAt = Number((status && status.journal_started_at) || 0);
+	const txn = String((status && status.journal_txn_id) || '');
+	const phase = String((status && status.journal_phase) || '');
+	if (txn !== '' && !supervisedApplyPhaseIsTerminal(phase))
+		state.supervisedApplyObservedTxn = txn;
+}
 
-	state.connectApplyServerStartedAt = Math.max(
-		Number(state.connectApplyServerStartedAt || 0),
-		startedAt
-	);
+// SUCCESS: journal_phase === 'done' is the authoritative signal the supervisor finished
+// (mark_applied + the fenced finish ran), attributed to THIS apply either because we
+// watched its txn go non-terminal (primary, real hardware) OR because its txn started
+// after the first poll's baseline (freshness gate, for an instant converge). The durable
+// applied_fingerprint is NOT a success arm because it can already equal config_fingerprint
+// before this apply runs (a no-op / re-apply) and would false-fire mid-flight.
+function supervisedApplyConverged(state, status) {
+	if (String((status && status.journal_phase) || '') !== 'done')
+		return false;
+	// Primary: we watched THIS txn go through a non-terminal phase and it is now done.
+	const observed = state && state.supervisedApplyObservedTxn;
+	if (observed && String((status && status.journal_txn_id) || '') === observed)
+		return true;
+	// Freshness gate: accept a 'done' whose txn STARTED AFTER the first poll's baseline --
+	// that can only be this apply's txn. A stale leftover 'done' keeps its older started_at
+	// (== baseline, or baseline is 0 when the journal was empty at the first poll and no
+	// prior record can then appear), so it is never accepted.
+	const startedAt = Number((status && status.journal_started_at) || 0);
+	const baseline = state && state.supervisedApplyBaselineStartedAt;
+	return startedAt > 0 && baseline != null && startedAt > baseline;
+}
+
+// FAILURE: the txn we watched applying is now failed. Fast-fails before the timeout.
+function supervisedApplyFailed(state, status) {
+	const observed = state && state.supervisedApplyObservedTxn;
+	if (!observed)
+		return false;
+	const txn = String((status && status.journal_txn_id) || '');
+	return txn === observed &&
+		String((status && status.journal_phase) || '') === 'failed';
 }
 
 function savedConfigForApplyState(state) {
@@ -531,21 +579,21 @@ function awaitRuntimeConvergenceAfterDispatch(state, savedConfig, applyAttemptId
 
 			const runtimeStatus = status || null;
 
-			if (runtimeStatus)
-				noteConnectApplyServerMarker(state, runtimeStatus);
+			// The supervised apply reads convergence off the supervisor's OWN journal
+			// signal, bound to a txn we watched go in-flight. It never re-derives success
+			// from the live country/station/handshake state (which could mask a supervisor
+			// failure as success): a terminal journal phase 'failed'/'done' is the sole
+			// verdict.
+			noteSupervisedApplyProgress(state, runtimeStatus);
 
-			if (connectApplyJobFailed(state, runtimeStatus)) {
-				throw new Error(_('VPN connect failed.'));
-			}
-
-			if (runtimeActionFailureFromStatus(runtimeStatus)) {
-				const failureMessage = String((runtimeStatus && runtimeStatus.last_error) || '').trim() ||
+			if (supervisedApplyFailed(state, runtimeStatus)) {
+				const supervisedFailureMessage = String((runtimeStatus && runtimeStatus.last_error) || '').trim() ||
 					_('VPN connect failed.');
 
-				throw new Error(failureMessage);
+				throw new Error(supervisedFailureMessage);
 			}
 
-			if (applyRuntimeConvergenceSucceeded(savedConfig, runtimeStatus, state)) {
+			if (supervisedApplyConverged(state, runtimeStatus)) {
 				service.notifyInfo(successMessage);
 				return finishApplyCycle(state, {
 					suppressAutoReconcile: true,
@@ -561,7 +609,7 @@ function awaitRuntimeConvergenceAfterDispatch(state, savedConfig, applyAttemptId
 		});
 	};
 
-	return service.runAction('start_connect').then(function(dispatchResult) {
+	return service.runAction('apply').then(function(dispatchResult) {
 		if (!applyAttemptIsCurrent(state, applyAttemptId))
 			return rejectStaleApplyAttempt();
 
@@ -572,37 +620,10 @@ function awaitRuntimeConvergenceAfterDispatch(state, savedConfig, applyAttemptId
 			throw error;
 		}
 
-		state.connectApplyDispatchedAt = Date.now();
 		return pollForConvergence();
 	});
 }
 
-
-function recoverEnabledRuntimeAfterApplyFailure() {
-	return service.runAction('abort_connect_apply').catch(function() {
-		return { success: true };
-	}).then(function() {
-		return service.runAction('start_connect');
-	});
-}
-
-function runtimeRecoveryRequested(submitted, state) {
-	const submittedEnabled = !!(submitted && submitted.enabled);
-	const status = (state && state.currentLocalStatus) || {};
-
-	return submittedEnabled || !!status.desired_enabled;
-}
-
-
-function shouldRecoverAfterApplyFailure(state, submitted) {
-	if (!runtimeRecoveryRequested(submitted, state))
-		return false;
-
-	if (state && state.connectApplyDispatchedAt)
-		return false;
-
-	return String((state && state.applyPhase) || '') === 'stop_vpn';
-}
 
 function runApplyCycleConfigurationPhase(viewState, state, ev, submitted, skipFormSave, applyAttemptId) {
 	if (!applyAttemptIsCurrent(state, applyAttemptId))
@@ -644,23 +665,6 @@ function runApplyCycleConfigurationPhase(viewState, state, ev, submitted, skipFo
 	});
 }
 
-function runApplyActionSequence(state, applyAttemptId, actions) {
-	return actions.reduce(function(chain, action) {
-		return chain.then(function() {
-			if (!applyAttemptIsCurrent(state, applyAttemptId))
-				return rejectStaleApplyAttempt();
-
-			return service.runAction(action).then(function(result) {
-				if (!applyAttemptIsCurrent(state, applyAttemptId))
-					return rejectStaleApplyAttempt();
-
-				if (!result.success)
-					throw service.resultToError(result);
-			});
-		});
-	}, Promise.resolve());
-}
-
 function runApplyCycleDisabledStop(state, applyAttemptId) {
 	if (!applyAttemptIsCurrent(state, applyAttemptId))
 		return rejectStaleApplyAttempt();
@@ -674,17 +678,6 @@ function runApplyCycleDisabledStop(state, applyAttemptId) {
 		if (!stopResult.success)
 			throw service.resultToError(stopResult);
 	});
-}
-
-function recentConnectApplySucceeded(status, maxAgeMs) {
-	const runtimeStatus = status || {};
-	const finishedAt = Number(runtimeStatus.connect_apply_finished_at || 0) * 1000;
-	const graceMs = Number(maxAgeMs) || POST_APPLY_RECOVERY_GRACE_MS;
-
-	if (!runtimeStatus.connect_apply_finished || !runtimeStatus.connect_apply_success || !finishedAt)
-		return false;
-
-	return (Date.now() - finishedAt) < graceMs;
 }
 
 function postApplyRecoveryGraceActive(state) {
@@ -702,13 +695,11 @@ function runtimeNeedsEnabledRecovery(status, state) {
 	if (state && (state.saveApplyInProgress || managerUI.isDisableRequested(state)))
 		return false;
 
+	// Suppress a spurious auto-reconcile immediately after a good supervised apply.
+	// finishApplyCycle stamps postApplyRecoveryGraceUntil = now + POST_APPLY_RECOVERY_GRACE_MS,
+	// so this grace window covers the post-apply period that the removed legacy
+	// apply-result status probes used to guard.
 	if (postApplyRecoveryGraceActive(state))
-		return false;
-
-	if (recentConnectApplySucceeded(runtimeStatus, POST_APPLY_RECOVERY_GRACE_MS))
-		return false;
-
-	if (runtimeStatus.connect_apply_pending)
 		return false;
 
 	if (runtimeOperationIsBusy(state, runtimeStatus))
@@ -788,36 +779,23 @@ function captureApplySelectionBaseline(state, viewState) {
 	return baseline;
 }
 
-function runtimeSelectionChanged(state, viewState, submitted) {
-	const baseline = captureApplySelectionBaseline(state, viewState);
-	const nextCountry = managerData.normalizeCountryCode((submitted && submitted.country) || '');
-	const nextMode = normalizeSelectionMode((submitted && submitted.mode) || 'auto');
-	const nextStation = String((submitted && submitted.preferredStation) || '');
-
-	return baseline.country !== nextCountry ||
-		baseline.mode !== nextMode ||
-		baseline.preferredStation !== nextStation;
-}
-
-function runApplyCycleStopPhase(viewState, state, submitted, applyAttemptId) {
+// Dispatch the async supervised apply ONCE. awaitRuntimeConvergenceAfterDispatch does
+// the single service.runAction('apply'), checks its result (throwing on failure), and
+// polls status_json for journal convergence. This is the sole apply path.
+function runApplyCycleSupervisedApply(state, savedConfig, applyAttemptId) {
 	if (!applyAttemptIsCurrent(state, applyAttemptId))
 		return rejectStaleApplyAttempt();
 
-	state.applyPhase = 'stop_vpn';
-
-	const selectionChanged = runtimeSelectionChanged(state, viewState, submitted);
-	timingLog('runApplyCycleStopPhase', 'stop_phase', { selectionChanged: selectionChanged });
-
-	// A server/selection change stops FIRST then arms the connect-apply guard, so
-	// the stop runs in server-change mode and clears the stale recommendation
-	// caches; an unchanged selection arms the guard FIRST so the whole stop is
-	// guarded and the reusable recommendation cache is preserved. The two paths
-	// differ only in this ordering.
-	const sequence = selectionChanged
-		? [ 'stop_vpn', 'begin_connect_apply' ]
-		: [ 'begin_connect_apply', 'stop_vpn' ];
-
-	return runApplyActionSequence(state, applyAttemptId, sequence);
+	// S8: start with NO observed txn, so this apply's terminal verdict is bound only to a
+	// txn we watch go through an in-flight phase from here on (never a stale leftover).
+	// supervisedApplyInFlight tells the background poller NOT to finish this apply via the
+	// live-state heuristic (which could mask a supervisor failure as success) -- the
+	// supervised poll below is the sole terminal. Cleared in finishApplyCycle.
+	state.supervisedApplyObservedTxn = '';
+	// Re-baseline the txn-start freshness gate: captured on this apply's first poll.
+	state.supervisedApplyBaselineStartedAt = null;
+	state.supervisedApplyInFlight = true;
+	return awaitRuntimeConvergenceAfterDispatch(state, savedConfig, applyAttemptId, APPLY_CYCLE_SUCCESS_CONNECTED);
 }
 
 function shouldHideDiagnosticsAlerts(state) {
@@ -826,18 +804,6 @@ function shouldHideDiagnosticsAlerts(state) {
 
 	return !!state.saveApplyInProgress ||
 		!!managerData.normalizeCountryCode(state.applyTargetCountryCode || '');
-}
-
-function runApplyCycleConnectPhase(state, savedConfig, applyAttemptId) {
-	const successMessage = APPLY_CYCLE_SUCCESS_CONNECTED;
-
-	if (!applyAttemptIsCurrent(state, applyAttemptId))
-		return rejectStaleApplyAttempt();
-
-	state.applyPhase = 'connect';
-	timingLog('runApplyCycleConnectPhase', 'connect', {});
-
-	return awaitRuntimeConvergenceAfterDispatch(state, savedConfig, applyAttemptId, successMessage);
 }
 
 function runApplyCycle(viewState, state, ev, options) {
@@ -884,9 +850,9 @@ function runApplyCycle(viewState, state, ev, options) {
 			});
 		}
 
-		return runApplyCycleStopPhase(viewState, state, submitted, applyAttemptId).then(function() {
-			return runApplyCycleConnectPhase(state, savedConfig, applyAttemptId);
-		});
+		// Route the enable apply through the async supervised apply: one RPC that
+		// returns fast, then a status_json poll for journal convergence.
+		return runApplyCycleSupervisedApply(state, savedConfig, applyAttemptId);
 	}).then(function(refreshResult) {
 		if (!applyAttemptIsCurrent(state, applyAttemptId))
 			return rejectStaleApplyAttempt();
@@ -1123,6 +1089,19 @@ function effectiveOperationStatus(runtimeStatus, state) {
 
 		operation = phase ? ('busy:' + phase) : 'busy:configuration';
 	}
+
+	// Status honesty: the supervised apply holds the lock as the opaque 'supervise'
+	// for the whole rebuild, so surface the supervisor's own honest sub_phase
+	// (fetching / tearing_down / configuring / connecting / verifying) as the Operation
+	// row verb -> humanizeAction renders 'Applying (tearing down / configuring /
+	// connecting / verifying)...'. journal_sub_phase is '' unless a supervised converge
+	// is in flight, so legacy/non-supervised operations are untouched.
+	const isSupervised = (operation === 'busy:supervise');
+	const subPhase = String(status.journal_sub_phase || '').trim();
+
+	if (isSupervised && subPhase)
+		operation = 'busy:' + subPhase;
+
 	if (state && state.saveApplyInProgress &&
 		operation === 'busy:stop_vpn' &&
 		String(status.vpn_status || '') === 'inactive') {
@@ -1130,10 +1109,25 @@ function effectiveOperationStatus(runtimeStatus, state) {
 	}
 
 	if (state && state.saveApplyInProgress) {
-		const applySaved = savedConfigForApplyState(state);
+		// Gate the live convergence heuristic during a supervised apply so the Operation
+		// row cannot jump to 'Finishing connection...' before the tunnel is genuinely
+		// (re)connecting. Only permit it at sub_phase 'verifying', or 'connecting' with a
+		// fresh handshake (which applyRuntimeConvergenceSucceeded verifies). Skip it for
+		// '', fetching, tearing_down and configuring so a same-country / same-station
+		// re-apply matching the STALE old session cannot show Finishing while the
+		// supervisor is still fetching / tearing down / configuring. Legacy/non-supervised
+		// apply paths are unaffected (isSupervised is false), keeping applyTransitionActive
+		// true through early converge so the 'No VPN' suppression holds.
+		const finishingAllowed = !isSupervised ||
+			subPhase === 'verifying' ||
+			subPhase === 'connecting';
 
-		if (applyRuntimeConvergenceSucceeded(applySaved, status, state))
-			return 'busy:finishing';
+		if (finishingAllowed) {
+			const applySaved = savedConfigForApplyState(state);
+
+			if (applyRuntimeConvergenceSucceeded(applySaved, status, state))
+				return 'busy:finishing';
+		}
 	}
 
 	return operation;
@@ -1192,84 +1186,14 @@ function savedRuntimeManualServerMatches(status, savedConfig) {
 	return savedMode !== 'manual' || !savedStation || runtimeStation === savedStation;
 }
 
-function connectApplyResultBelongsToDispatch(state, status) {
-	const runtimeStatus = status || {};
-	const dispatchedAt = Number((state && state.connectApplyDispatchedAt) || 0);
-	const startedAt = Number(runtimeStatus.connect_apply_started_at || 0);
-	const finishedAt = Number(runtimeStatus.connect_apply_finished_at || 0);
-	const serverStartedAt = Number((state && state.connectApplyServerStartedAt) || 0);
-	const markerSeconds = finishedAt || startedAt;
-
-	if (!dispatchedAt)
-		return false;
-
-	if (serverStartedAt > 0 && finishedAt > 0)
-		return finishedAt >= serverStartedAt;
-
-	if (!markerSeconds)
-		return !!runtimeStatus.connect_apply_finished;
-
-	return (markerSeconds * 1000) >= (dispatchedAt - CONNECT_APPLY_DISPATCH_CLOCK_SLACK_MS);
-}
-
-function connectApplyJobFailed(state, status) {
-	const runtimeStatus = status || {};
-
-	if (!state || !state.connectApplyDispatchedAt)
-		return false;
-
-	if (runtimeStatus.connect_apply_pending)
-		return false;
-
-	if (!runtimeStatus.connect_apply_finished || runtimeStatus.connect_apply_success)
-		return false;
-
-	return connectApplyResultBelongsToDispatch(state, runtimeStatus);
-}
-
-function connectApplyJobSucceeded(state, savedConfig, status) {
-	const runtimeStatus = status || {};
-	const savedCountry = managerData.normalizeCountryCode((savedConfig && savedConfig.country) || '');
-	const resultCountry = managerData.normalizeCountryCode(runtimeStatus.connect_apply_country || '');
-
-	if (!state || !state.connectApplyDispatchedAt)
-		return false;
-
-	if (runtimeStatus.connect_apply_pending)
-		return false;
-
-	if (!runtimeStatus.connect_apply_finished || !runtimeStatus.connect_apply_success)
-		return false;
-
-	if (!state.connectApplyServerStartedAt)
-		return false;
-
-	if (!connectApplyResultBelongsToDispatch(state, runtimeStatus))
-		return false;
-
-	if (savedCountry && resultCountry && resultCountry === savedCountry)
-		return savedRuntimeManualServerMatches(runtimeStatus, savedConfig);
-
-	return savedRuntimeCountryMatches(runtimeStatus, savedConfig) &&
-		savedRuntimeManualServerMatches(runtimeStatus, savedConfig);
-}
-
 function runtimeActionRecoverySucceeded(savedConfig, status, state) {
 	const runtimeStatus = status || {};
 	const savedEnabled = !!(savedConfig && savedConfig.enabled);
 
 	if (state && state.saveApplyInProgress &&
-		connectApplyJobSucceeded(state, savedConfig, runtimeStatus)) {
-		return true;
-	}
-
-	if (state && state.saveApplyInProgress &&
 		applyRuntimeLiveReady(savedConfig, runtimeStatus)) {
 		return true;
 	}
-
-	if (runtimeStatus.connect_apply_pending)
-		return false;
 
 	if ((!state || !state.saveApplyInProgress) && runtimeStatusIndicatesBusy(runtimeStatus))
 		return false;
@@ -1287,10 +1211,6 @@ function runtimeActionRecoverySucceeded(savedConfig, status, state) {
 		!!runtimeStatus.interface_disabled) {
 		return false;
 	}
-
-	if (runtimeStatus.connect_apply_finished && runtimeStatus.connect_apply_success)
-		return savedRuntimeCountryMatches(runtimeStatus, savedConfig) &&
-			savedRuntimeManualServerMatches(runtimeStatus, savedConfig);
 
 	if (!runtimeStatus.connected &&
 		String(runtimeStatus.vpn_status || '') !== 'active' &&
@@ -1569,6 +1489,8 @@ function renderLocalStatusSnapshot(state, status) {
 		managerUI.setVpnStatusIndicator('active', _('Connected'));
 	else if (String(runtimeStatus.vpn_status || '') === 'stopping')
 		managerUI.setVpnStatusIndicator('stopping', _('Stopping'));
+	else if (String(runtimeStatus.vpn_status || '') === 'configuring')
+		managerUI.setVpnStatusIndicator('configuring', _('Configuring'));
 	else if (String(runtimeStatus.vpn_status || '') === 'starting')
 		managerUI.setVpnStatusIndicator('starting', _('Connecting'));
 	else if (String(runtimeStatus.vpn_status || '') === 'error')
@@ -1688,6 +1610,19 @@ function updateDiagnosticsSummary(state) {
 	});
 }
 
+function statusResponseIsOutOfOrder(state, incomingBootId, incomingStatusSeq) {
+	const lastBootId = String((state && state.lastStatusBootId) || '');
+	const lastStatusSeq = Number((state && state.lastStatusSeq) || 0);
+
+	// A different (or first-seen) boot_id is always newer: a reboot drops the
+	// uhttpd socket, so no pre-reboot response can arrive after a post-reboot one.
+	if (!lastBootId || incomingBootId !== lastBootId)
+		return false;
+
+	// Same boot: a strictly lower stamp is a stale, out-of-order response.
+	return incomingStatusSeq < lastStatusSeq;
+}
+
 function updateLocalStatus(state, options) {
 	const opts = options || {};
 
@@ -1699,6 +1634,21 @@ function updateLocalStatus(state, options) {
 				return handleLocalStatusUnavailable(state, statusResponseError(res));
 
 			const status = localStatusSnapshot.status;
+
+			// Discard out-of-order status responses so a slow/stale reply cannot
+			// roll the UI backward or finish an apply cycle on stale data. Order
+			// by (boot_id, status_seq): a different boot_id is always newer; within
+			// a boot a strictly lower seq is stale. When the backend does not stamp
+			// these fields, fall back to the existing wall-clock heuristics.
+			const incomingBootId = String(status.boot_id || '');
+			const incomingStatusSeq = Number(status.status_seq || 0);
+			if (incomingBootId && incomingStatusSeq > 0) {
+				if (statusResponseIsOutOfOrder(state, incomingBootId, incomingStatusSeq))
+					return state.currentLocalStatus || status;
+				state.lastStatusBootId = incomingBootId;
+				state.lastStatusSeq = incomingStatusSeq;
+			}
+
 			const desiredEnabled = !!status.desired_enabled;
 
 			managerStore.clearError(state);
@@ -1723,7 +1673,12 @@ function updateLocalStatus(state, options) {
 
 			renderLocalStatusSnapshot(state, status);
 
+			// S8: do NOT let the background poller finish a SUPERVISED apply via the
+			// live-state heuristic -- a transient country/station/handshake match could
+			// mask a supervisor FAILURE as success. The supervised poll (bound to the
+			// journal terminal) is the sole terminal for it; legacy applies are unaffected.
 			if (state.saveApplyInProgress && state.currentApplyAttempt &&
+				!state.supervisedApplyInFlight &&
 				applyRuntimeConvergenceSucceeded(
 					savedConfigForApplyState(state),
 					status,
@@ -1908,6 +1863,8 @@ function finishApplyCycle(state, options) {
 	state.applyPhase = '';
 	state.saveApplyInProgress = false;
 	state.applyTargetEnabled = null;
+	// S8: this apply is over; the background poller may resume its live-state finish.
+	state.supervisedApplyInFlight = false;
 	// Re-enable the manager controls deterministically when the apply cycle
 	// settles, rather than waiting for the forced status refresh below: if that
 	// refresh fails or hangs, the controls would otherwise stay disabled.
@@ -1962,7 +1919,6 @@ function handleSaveApply(viewState, state, ev) {
 	captureApplySelectionBaseline(state, viewState);
 	state.applyTargetEnabled = !!submittedRuntimeConfig.enabled;
 	state.applyTargetCountryCode = managerData.normalizeCountryCode(submittedRuntimeConfig.country || '');
-	state.connectApplyDispatchedAt = 0;
 	state.pendingOperationLabel = '';
 	state.applyPhase = 'configuration';
 	markRuntimeActionCooldown(state);
@@ -2015,9 +1971,7 @@ function handleSaveApply(viewState, state, ev) {
 
 			const timeoutError = new Error(_('Configuration apply timed out.'));
 			const timeoutApplyAttemptId = applyAttemptId + ':timeout';
-			const recoveryPromise = shouldRecoverAfterApplyFailure(state, submittedRuntimeConfig)
-				? recoverEnabledRuntimeAfterApplyFailure()
-				: Promise.resolve();
+			const recoveryPromise = Promise.resolve();
 
 			managerStore.setError(state, timeoutError);
 			state.currentApplyAttempt = timeoutApplyAttemptId;
@@ -2044,9 +1998,7 @@ function handleSaveApply(viewState, state, ev) {
 			finishResolve();
 		}).catch(function(err) {
 			const message = (err && err.message) ? err.message : String(err);
-			const recoveryPromise = shouldRecoverAfterApplyFailure(state, submittedRuntimeConfig)
-				? recoverEnabledRuntimeAfterApplyFailure()
-				: Promise.resolve();
+			const recoveryPromise = Promise.resolve();
 
 			if (!applyAttemptIsCurrent(state, applyAttemptId))
 				return;
@@ -2070,14 +2022,20 @@ function handleSaveApply(viewState, state, ev) {
 
 return baseclass.extend({
 	runApplyCycle: runApplyCycle,
+	noteSupervisedApplyProgress: noteSupervisedApplyProgress,
+	supervisedApplyConverged: supervisedApplyConverged,
+	supervisedApplyFailed: supervisedApplyFailed,
+	runApplyCycleSupervisedApply: runApplyCycleSupervisedApply,
 	applyRuntimeConvergenceSucceeded: applyRuntimeConvergenceSucceeded,
 	maybeRecoverOrphanedRuntime: maybeRecoverOrphanedRuntime,
 	maybeEnsureEnabledRuntime: maybeEnsureEnabledRuntime,
 	maybeAutoReconcileSelectionDrift: maybeAutoReconcileSelectionDrift,
 	runtimeOperationIsBusy: runtimeOperationIsBusy,
+	effectiveOperationStatus: effectiveOperationStatus,
 	loadServerCatalog: loadServerCatalog,
 	renderLocalStatusSnapshot: renderLocalStatusSnapshot,
 	renderLocalStatusUnavailable: renderLocalStatusUnavailable,
+	statusResponseIsOutOfOrder: statusResponseIsOutOfOrder,
 	renderDiagnosticsSnapshot: renderDiagnosticsSnapshot,
 	updatePublicIp: updatePublicIp,
 	updateLocalStatus: updateLocalStatus,

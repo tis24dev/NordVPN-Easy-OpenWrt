@@ -224,19 +224,33 @@ Promise.resolve().then(async function() {
 	assert.equal(startConnectCall.spec.timeout, 15, 'start_connect uses a short rpc timeout');
 	assert.equal(startConnectCall.rpctimeout, 15, 'start_connect also applies the short LuCI global timeout');
 
-	const beginApplyResult = await loaded.service.execService('begin_connect_apply');
-	const beginApplyCall = loaded.calls[loaded.calls.length - 1];
-	assert.equal(beginApplyResult.code, 0, 'begin_connect_apply returns normalized success result');
-	assert.equal(beginApplyCall.spec.method, 'begin_connect_apply', 'begin_connect_apply uses the dedicated ubus method');
-	assert.equal(beginApplyCall.spec.timeout, 15, 'begin_connect_apply uses a short rpc timeout');
-	assert.equal(beginApplyCall.rpctimeout, 15, 'begin_connect_apply also applies the short LuCI global timeout');
+	const applyResult = await loaded.service.execService('apply');
+	const applyCall = loaded.calls[loaded.calls.length - 1];
+	assert.equal(applyResult.code, 0, 'apply returns normalized success result');
+	assert.equal(applyCall.spec.method, 'apply', 'apply uses the dedicated ubus method');
+	assert.equal(applyCall.spec.timeout, 15, 'apply uses a short rpc timeout (the backend setsid-forks and returns fast)');
+	assert.equal(applyCall.rpctimeout, 15, 'apply also applies the short LuCI global timeout');
 
-	const abortApplyResult = await loaded.service.execService('abort_connect_apply');
-	const abortApplyCall = loaded.calls[loaded.calls.length - 1];
-	assert.equal(abortApplyResult.code, 0, 'abort_connect_apply returns normalized success result');
-	assert.equal(abortApplyCall.spec.method, 'abort_connect_apply', 'abort_connect_apply uses the dedicated ubus method');
-	assert.equal(abortApplyCall.spec.timeout, 15, 'abort_connect_apply uses a short rpc timeout');
-	assert.equal(abortApplyCall.rpctimeout, 15, 'abort_connect_apply also applies the short LuCI global timeout');
+	const stopVpnResult = await loaded.service.execService('stop_vpn');
+	const stopVpnCall = loaded.calls[loaded.calls.length - 1];
+	assert.equal(stopVpnResult.code, 0, 'stop_vpn returns normalized success result');
+	assert.equal(stopVpnCall.spec.method, 'stop_vpn', 'stop_vpn uses the dedicated ubus method');
+	assert.equal(stopVpnCall.spec.timeout, 120, 'stop_vpn uses the runtime rpc timeout');
+	assert.equal(stopVpnCall.rpctimeout, 120, 'stop_vpn applies the runtime LuCI global timeout');
+
+	// S9: the legacy begin/abort connect-apply verbs are removed; the client no longer
+	// exposes them (the supervised apply is the sole apply path).
+	await assert.rejects(
+		loaded.service.execService('begin_connect_apply'),
+		/Unsupported NordVPN Easy action: begin_connect_apply/,
+		'begin_connect_apply is no longer exposed from the LuCI service client'
+	);
+
+	await assert.rejects(
+		loaded.service.execService('abort_connect_apply'),
+		/Unsupported NordVPN Easy action: abort_connect_apply/,
+		'abort_connect_apply is no longer exposed from the LuCI service client'
+	);
 
 	const reconcileResult = await loaded.service.execService('reconcile');
 	const reconcileCall = loaded.calls[loaded.calls.length - 1];

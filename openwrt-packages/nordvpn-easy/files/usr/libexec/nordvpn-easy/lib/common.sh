@@ -154,7 +154,12 @@ nordvpn_easy_teardown_vpn_firewall() {
 	# Tear the app's firewall objects down and reload, restoring plain LAN->WAN so
 	# a disabled VPN does not leave the kill switch blocking the user's internet.
 	nordvpn_easy_remove_app_firewall_sections
-	uci commit firewall 2>/dev/null || {
+	# Fenced: reached both under the transaction lock (disconnect/reconcile) and
+	# lock-free (boot-disable / the disable_runtime verb). A superseded/reaped
+	# disconnect must NOT strip the new owner's kill-switch (that would leak); the
+	# revert restores the staged section deletes so the kill-switch stays. A
+	# tokenless (lock-free) caller is allowed through and commits normally.
+	nordvpn_easy_fenced_uci_commit firewall 2>/dev/null || {
 		uci revert firewall >/dev/null 2>&1 || true
 		return 1
 	}
@@ -238,8 +243,28 @@ nordvpn_easy_curl_error_summary() {
 		nordvpn_easy_sanitize_diagnostics_stream
 }
 
+# Single newline / carriage-return sentinels for the json-escape fast path,
+# computed once (command substitution strips the trailing 'x', not the control
+# character before it).
+NORDVPN_EASY_JSON_NL="$(printf '\nx')"; NORDVPN_EASY_JSON_NL="${NORDVPN_EASY_JSON_NL%x}"
+NORDVPN_EASY_JSON_CR="$(printf '\rx')"; NORDVPN_EASY_JSON_CR="${NORDVPN_EASY_JSON_CR%x}"
+
 nordvpn_easy_json_escape() {
-	printf '%s' "$1" | sed ':a;N;$!ba;s/\\/\\\\/g;s/"/\\"/g;s/\n/\\n/g;s/\r/\\r/g'
+	# Fast path: a value with no backslash, double quote, newline or CR needs no
+	# escaping and no subprocess. This is the common case on the status hot path
+	# (json_escape is called ~30x per status emit), so it must not fork.
+	case "$1" in
+		*\\*|*\"*|*"$NORDVPN_EASY_JSON_NL"*|*"$NORDVPN_EASY_JSON_CR"*|*[[:cntrl:]]*) ;;
+		*) printf '%s' "$1"; return 0 ;;
+	esac
+	# Slow path: escape backslash/quote/CR/TAB PER LINE first, then strip any other C0
+	# control byte (0x00-0x1F except NL/CR/TAB which are handled), then join lines with
+	# \n. JSON forbids raw control chars in strings, so an unescaped TAB or a stray byte
+	# from an API/curl-derived last_error would break JSON.parse of the whole status
+	# document. A single slurp-then-substitute sed leaves a single-line value UNescaped
+	# (at EOF `N` auto-prints the pattern space before the s/// commands run), so the
+	# per-line pass runs first, then the join.
+	printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\r/\\r/g' -e 's/\t/\\t/g' | tr -d '\000-\010\013\014\016-\037' | sed ':a;N;$!ba;s/\n/\\n/g'
 }
 
 nordvpn_easy_lock_contention_is_nonfatal() {
@@ -292,6 +317,60 @@ nordvpn_easy_lock_age_seconds() {
 	esac
 
 	age=$((now_ts - lock_ts))
+	[ "$age" -lt 0 ] && age=0
+	printf '%s\n' "$age"
+}
+
+# Seconds since boot from /proc/uptime -- a MONOTONIC clock, immune to the NTP
+# step that jumps the wall clock forward minutes after an OpenWrt router boots.
+# The lock records this at acquire so the reaper measures a true elapsed age
+# instead of a clock-jump artifact. Zero-fork (read is a builtin); fails to 0.
+nordvpn_easy_uptime_seconds() {
+	local up
+
+	read -r up < /proc/uptime 2>/dev/null || up=''
+	up="${up%%.*}"
+	case "$up" in
+		''|*[!0-9]*) printf '0' ;;
+		*) printf '%s' "$up" ;;
+	esac
+}
+
+# The TTL (seconds) after which a still-LIVE lock holder is treated as wedged and
+# reaped. Generously above any legitimate hold (a full provision + bringup, well
+# past the rpcd ceiling); an override is normalized so a garbage
+# NORDVPN_EASY_LOCK_TTL cannot make every holder look expired.
+nordvpn_easy_lock_ttl_seconds() {
+	local ttl="${NORDVPN_EASY_LOCK_TTL:-300}"
+
+	case "$ttl" in
+		''|*[!0-9]*) printf '300' ;;
+		*) printf '%s' "$ttl" ;;
+	esac
+}
+
+# The reaper's age for a live holder: prefer the MONOTONIC anchor (started_mono)
+# so an NTP step cannot inflate it into a false reap; fall back to the wall-clock
+# age only for a lock written by a pre-reaper build mid-upgrade (no started_mono).
+# If uptime is unreadable the age clamps to 0 (fail-safe: never reap when we
+# cannot measure elapsed time).
+nordvpn_easy_lock_wedge_age_seconds() {
+	local lock_path="$1"
+	local started_at="${2:-}"
+	local started_mono now_mono age
+
+	started_mono="$(cat "${lock_path}/started_mono" 2>/dev/null)" || started_mono=''
+	case "$started_mono" in
+		''|*[!0-9]*)
+			nordvpn_easy_lock_age_seconds "$lock_path" "$started_at"
+			return 0
+			;;
+	esac
+	now_mono="$(nordvpn_easy_uptime_seconds)"
+	case "$now_mono" in
+		''|*[!0-9]*) now_mono=0 ;;
+	esac
+	age=$((now_mono - started_mono))
 	[ "$age" -lt 0 ] && age=0
 	printf '%s\n' "$age"
 }
@@ -355,9 +434,155 @@ nordvpn_easy_server_cache_ttl_value() {
 	esac
 }
 
+# Field 22 of /proc/PID/stat (process start time, jiffies since boot) -- the
+# PID-reuse discriminator in the owner token. The comm (field 2) is wrapped in
+# parens and may contain spaces, parens or newlines, so strip through the LAST
+# ") " (the true comm close) before counting fields; a naive `awk '{print $22}'`
+# misparses a spaced comm. Fail CLOSED with a NOSTAT sentinel that never silently
+# matches a healthy holder.
+nordvpn_easy_proc_starttime() {
+	local pid="${1:-$$}"
+	local stat rest tok i=1
+
+	stat="$(cat "/proc/${pid}/stat" 2>/dev/null)" || { printf '%s' 'NOSTAT'; return 1; }
+	rest="${stat##*) }"
+	[ "$rest" = "$stat" ] && { printf '%s' 'NOSTAT'; return 1; }
+	# shellcheck disable=SC2086
+	set -- $rest
+	[ "$#" -lt 20 ] && { printf '%s' 'NOSTAT'; return 1; }
+	for tok in "$@"; do
+		if [ "$i" -eq 20 ]; then
+			case "$tok" in
+				''|*[!0-9]*) printf '%s' 'NOSTAT'; return 1 ;;
+				*) printf '%s' "$tok"; return 0 ;;
+			esac
+		fi
+		i=$((i + 1))
+	done
+	printf '%s' 'NOSTAT'
+	return 1
+}
+
+# A per-transaction owner identity: claim_id:pid:starttime. claim_id is a random
+# uuid (the primary uniqueness guarantor: even PID reuse yields a distinct token);
+# pid+starttime make the token PID-reuse-proof. Self-contained (reads the uuid
+# directly) so any caller that sources only common.sh still mints a unique id.
+nordvpn_easy_new_owner_token() {
+	local claim_id
+
+	# `|| true` so an unreadable uuid (failed redirect) never aborts a set -e
+	# caller; a failed read just yields an empty claim_id and the fallback below
+	# takes over.
+	claim_id="$(tr -d '\n' < /proc/sys/kernel/random/uuid 2>/dev/null || true)"
+	[ -n "$claim_id" ] || claim_id="fallback-$$-$(date +%s 2>/dev/null || printf '0')"
+	printf '%s:%s:%s' "$claim_id" "$$" "$(nordvpn_easy_proc_starttime "$$")"
+}
+
+# Fail-closed ownership check: true only when the on-disk lock token equals this
+# process's minted token. Consulted ONLY by release_lock and the fenced_* helpers
+# -- never on the acquire/recover path -- so it can never block reclamation of a
+# foreign, tokenless or half-written dir (preserves the no-deadlock invariant).
+nordvpn_easy_owner_assert() {
+	local on_disk
+
+	[ -n "${NORDVPN_EASY_OWNER_TOKEN:-}" ] || return 1
+	[ -n "${LOCK_DIR:-}" ] || return 1
+	on_disk="$(cat "${LOCK_DIR}/token" 2>/dev/null)" || return 1
+	[ -n "$on_disk" ] || return 1
+	[ "$on_disk" = "$NORDVPN_EASY_OWNER_TOKEN" ]
+}
+
+# Deny a fenced mutation ONLY when this process holds an owner token that no longer
+# matches the on-disk lock -- i.e. it acquired the execution lock and was then
+# superseded/reaped. A process holding NO token is not a lock owner at all (the
+# boot-disable path and the disable_runtime rpcd verb legitimately run OUTSIDE any
+# lock), so it is allowed through. This "fence only what you claimed" rule is what
+# lets the dual-use teardown effects (reached both under the transaction lock AND
+# lock-free) be fenced without breaking their tokenless callers. For the provision
+# effects, which always run with a token, it is identical to a bare owner_assert.
+nordvpn_easy_owner_fence_denied() {
+	[ -n "${NORDVPN_EASY_OWNER_TOKEN:-}" ] || return 1
+	nordvpn_easy_owner_assert && return 1
+	return 0
+}
+
+# Owner-fenced mutation wrappers: refuse (no side effect) when a superseded/reaped
+# owner would otherwise mutate the new owner's runtime. fenced_uci_commit,
+# fenced_ifupdown and fenced_ip_link_del are wired (S7a/S7b) into the
+# runtime-mutating sites (provision interface/firewall commits, ifup/ifdown, wg
+# device deletion, and the dual-use disable-runtime firewall/network commits), so
+# once the S7b TTL reaper can revoke a live holder's token a superseded writer's
+# effects refuse instead of corrupting the new owner's runtime. Callers that abort
+# on a fenced uci-commit refusal `uci -q revert <pkg>` first (S7b), so a refused
+# staged delta cannot be flushed by a later unfenced same-package commit (cf.
+# service-config.sh). fenced_journal_set stays defined-but-unwired for the S7
+# supervisor.
+nordvpn_easy_fenced_journal_set() {
+	# Fences a FULL-DOCUMENT write (journal_write_full = fresh txn / supersede open);
+	# for an identity-preserving per-phase update use fenced_journal_merge below.
+	nordvpn_easy_owner_fence_denied && { nordvpn_easy_log_phase 'runtime' 'refusing journal write: superseded execution-lock owner'; return 1; }
+	nordvpn_easy_journal_write_full "$@"
+}
+
+# The owner-fenced identity-preserving MERGE (journal_set): a superseded/reaped owner
+# REFUSES; a legit owner -- or a tokenless caller (if-claimed) -- merges the given
+# fields, preserving the transaction identity (txn_id/started_at). The supervisor's
+# per-phase boundary uses this so a reaped worker cannot advance the new owner's
+# journal, and a thaw cannot fork the txn_id (correction 4).
+nordvpn_easy_fenced_journal_merge() {
+	nordvpn_easy_owner_fence_denied && { nordvpn_easy_log_phase 'runtime' 'refusing journal merge: superseded execution-lock owner'; return 1; }
+	nordvpn_easy_journal_set "$@"
+}
+
+# The owner-fenced TERMINAL finish (journal_finish): a superseded/reaped owner REFUSES
+# (return 1, swallowed by the caller's `|| true`), so a reaped-then-thawed worker cannot
+# stamp done/failed over the new owner's terminal record (the S7 inc 5c note). A legit
+# owner -- or a tokenless caller (if-claimed) -- finishes normally. Like fenced_journal_set
+# this rides journal_finish's FULL-document write, so the terminal record carries only
+# journal_finish's fields; reap_stale and open_txn both short-circuit on a terminal phase
+# before reading the schema-2 fields, so dropping them is control-flow-harmless. The bare
+# nordvpn_easy_journal_finish in journal.sh stays available for direct (unfenced) callers.
+nordvpn_easy_fenced_journal_finish() {
+	nordvpn_easy_owner_fence_denied && { nordvpn_easy_log_phase 'runtime' 'refusing journal finish: superseded execution-lock owner'; return 1; }
+	nordvpn_easy_journal_finish "$@"
+}
+
+nordvpn_easy_fenced_uci_commit() {
+	nordvpn_easy_owner_fence_denied && { nordvpn_easy_log_blocker 'runtime' 'refusing uci commit: superseded execution-lock owner'; return 1; }
+	uci commit "$@"
+}
+
+nordvpn_easy_fenced_ifupdown() {
+	nordvpn_easy_owner_fence_denied && { nordvpn_easy_log_blocker 'runtime' 'refusing ifup/ifdown: superseded execution-lock owner'; return 1; }
+	case "${1:-}" in
+		up) ifup "${2:-}" ;;
+		down) ifdown "${2:-}" ;;
+		*) return 2 ;;
+	esac
+}
+
+# Deleting the kernel wireguard device is a runtime mutation just like ifdown, but
+# it sits behind a non-aborting `|| true` at its call sites, so a fence-refused
+# ifdown does not stop it. Fence it too: a reaped-then-thawed holder must not delete
+# the new owner's freshly-created $VPN_IF device (a split-brain teardown of a live
+# tunnel). No-op for the legitimate owner (fence_denied is false).
+nordvpn_easy_fenced_ip_link_del() {
+	nordvpn_easy_owner_fence_denied && { nordvpn_easy_log_blocker 'runtime' 'refusing ip link del: superseded execution-lock owner'; return 1; }
+	ip link del dev "${1:-}"
+}
+
 nordvpn_easy_release_lock() {
 	[ "${LOCK_ACQUIRED:-0}" -eq 1 ] || return 0
 	[ -n "${LOCK_DIR:-}" ] || return 0
+	# B-2 LOAD-BEARING GATE: only delete the dir when its on-disk token is still
+	# ours. A thawed/superseded/PID-reused ex-holder whose LOCK_ACQUIRED is still 1
+	# in its own memory finds a different token on disk and must NOT delete the
+	# live owner's lock.
+	if ! nordvpn_easy_owner_assert; then
+		LOCK_ACQUIRED=0
+		nordvpn_easy_log_phase 'runtime' "execution lock at $LOCK_DIR is no longer owned by this process; not releasing (superseded)"
+		return 0
+	fi
 	rm -rf "${LOCK_DIR:-}"
 	LOCK_ACQUIRED=0
 	nordvpn_easy_log_phase 'runtime' "execution lock released at $LOCK_DIR"
@@ -391,125 +616,27 @@ nordvpn_easy_clear_stale_runtime_lock() {
 	return 0
 }
 
-_nordvpn_easy_connect_apply_result_get() {
-	local target="$1"
-	local key="$2"
-
-	[ -r "$target" ] || return 1
-	sed -n "s/^${key}=//p" "$target" 2>/dev/null | head -n1
-}
-
-nordvpn_easy_connect_apply_result_begin() {
-	local target="${1:-/tmp/run/nordvpn-easy/connect-apply-result}"
-	local target_dir tmp now_ts started_at existing_state existing_started_at
-
-	target_dir="$(dirname "$target")"
-	mkdir -p "$target_dir" 2>/dev/null || return 1
-	tmp="$(mktemp "${target_dir}/.connect-apply-result.XXXXXX" 2>/dev/null)" || return 1
-	now_ts="$(date +%s 2>/dev/null || printf '%s' '0')"
-
-	# Idempotent re-begin: the connect-apply lifecycle is begun by several owners
-	# (rpcd start_connect, init connect, core stop_vpn). If an apply is already
-	# pending, keep its original started_at so a second begin does not move the
-	# start time backwards/forwards and skew the client's convergence window.
-	started_at="$now_ts"
-	existing_state="$(_nordvpn_easy_connect_apply_result_get "$target" state 2>/dev/null || true)"
-	if [ "$existing_state" = 'pending' ]; then
-		existing_started_at="$(_nordvpn_easy_connect_apply_result_get "$target" started_at 2>/dev/null || true)"
-		case "$existing_started_at" in
-			''|*[!0-9]*) ;;
-			*) started_at="$existing_started_at" ;;
-		esac
-	fi
-
-	if ! cat > "$tmp" <<EOF
-state=pending
-rc=
-finished_at=
-country=
-started_at=$started_at
-EOF
-	then
-		rm -f "$tmp" 2>/dev/null || true
-		return 1
-	fi
-
-	mv "$tmp" "$target" || {
-		rm -f "$tmp" 2>/dev/null || true
-		return 1
-	}
-}
-
-nordvpn_easy_connect_apply_result_finish() {
-	local target="${1:-/tmp/run/nordvpn-easy/connect-apply-result}"
-	local rc="${2:-1}"
-	local country="${3:-}"
-	local target_dir tmp
-	local finished_at=''
-	local previous_started_at=''
-	local state='failed'
-
-	finished_at="$(date +%s 2>/dev/null || printf '%s' '0')"
-	[ "$rc" -eq 0 ] && state='success'
-	previous_started_at="$(_nordvpn_easy_connect_apply_result_get "$target" started_at 2>/dev/null)"
-
-	target_dir="$(dirname "$target")"
-	mkdir -p "$target_dir" 2>/dev/null || return 1
-	tmp="$(mktemp "${target_dir}/.connect-apply-result.XXXXXX" 2>/dev/null)" || return 1
-	if ! cat > "$tmp" <<EOF
-state=$state
-rc=$rc
-finished_at=$finished_at
-country=$(printf '%s' "$country" | tr 'a-z' 'A-Z')
-started_at=${previous_started_at:-$finished_at}
-EOF
-	then
-		rm -f "$tmp" 2>/dev/null || true
-		return 1
-	fi
-
-	mv "$tmp" "$target" || {
-		rm -f "$tmp" 2>/dev/null || true
-		return 1
-	}
-
-	if command -v nordvpn_easy_write_status_cache >/dev/null 2>&1; then
-		nordvpn_easy_write_status_cache >/dev/null 2>&1 || true
-	fi
-}
-
-# Sets: CONNECT_APPLY_STATE CONNECT_APPLY_RC CONNECT_APPLY_FINISHED_AT CONNECT_APPLY_COUNTRY CONNECT_APPLY_STARTED_AT
-nordvpn_easy_connect_apply_result_read() {
-	local target="${1:-/tmp/run/nordvpn-easy/connect-apply-result}"
-
-	CONNECT_APPLY_STATE=''
-	CONNECT_APPLY_RC=''
-	CONNECT_APPLY_FINISHED_AT=''
-	CONNECT_APPLY_COUNTRY=''
-	CONNECT_APPLY_STARTED_AT=''
-
-	[ -r "$target" ] || return 1
-
-	CONNECT_APPLY_STATE="$(_nordvpn_easy_connect_apply_result_get "$target" state)"
-	CONNECT_APPLY_RC="$(_nordvpn_easy_connect_apply_result_get "$target" rc)"
-	CONNECT_APPLY_FINISHED_AT="$(_nordvpn_easy_connect_apply_result_get "$target" finished_at)"
-	CONNECT_APPLY_COUNTRY="$(_nordvpn_easy_connect_apply_result_get "$target" country)"
-	CONNECT_APPLY_STARTED_AT="$(_nordvpn_easy_connect_apply_result_get "$target" started_at)"
-	[ -n "$CONNECT_APPLY_STATE" ] || return 1
-	return 0
-}
-
 nordvpn_easy_write_lock_metadata() {
 	local lock_dir="$1"
 	local lock_pid="$2"
 	local lock_action="$3"
 	local lock_started_at="$4"
 	local lock_state="$5"
+	local lock_token="${6:-}"
 
 	printf '%s\n' "$lock_pid" > "${lock_dir}/pid" || return 1
 	printf '%s\n' "$lock_action" > "${lock_dir}/action" || return 1
 	printf '%s\n' "$lock_started_at" > "${lock_dir}/started_at" || return 1
 	printf '%s\n' "$lock_state" > "${lock_dir}/state" || return 1
+	# Monotonic acquire time for the reaper's NTP-immune age check, written BEFORE
+	# the token so the B-3 token-last invariant below still holds.
+	printf '%s\n' "$(nordvpn_easy_uptime_seconds)" > "${lock_dir}/started_mono" || return 1
+	# B-3 invariant: the token is the STRICTLY LAST write, after pid. A dir seen
+	# without a token is therefore pre-pid (pidless-grace) or post-pid-pre-token
+	# (live-busy/dead-recover) -- always reclaimable by the existing pid/age paths.
+	if [ -n "$lock_token" ]; then
+		printf '%s\n' "$lock_token" > "${lock_dir}/token" || return 1
+	fi
 }
 
 _nordvpn_easy_try_acquire_lock() {
@@ -520,8 +647,10 @@ _nordvpn_easy_try_acquire_lock() {
 	local lock_action=''
 	local lock_started_at=''
 	local lock_age='0'
+	local lock_ttl='300'
 	local now_ts=0
 	local stale_reason='unknown'
+	local owner_token=''
 
 	# Adopt a lock a parent transaction already holds. The init service's
 	# acquire_runtime_transaction_lock takes the runtime lock once for the whole
@@ -539,6 +668,13 @@ _nordvpn_easy_try_acquire_lock() {
 			*)
 				if kill -0 "$lock_pid" 2>/dev/null; then
 					LOCK_ACQUIRED=0
+					# Adopt the parent transaction's identity from disk so this
+					# child's S7 owner-fenced writes count as the same transaction.
+					# LOCK_ACQUIRED=0 (not the token) is what stops the child from
+					# ever releasing the parent's lock: release_lock short-circuits
+					# on it BEFORE owner_assert is consulted. The parent keeps the
+					# token UNEXPORTED, so it reaches the child only via this read.
+					NORDVPN_EASY_OWNER_TOKEN="$(cat "${LOCK_DIR}/token" 2>/dev/null || printf '')"
 					nordvpn_easy_install_exit_trap
 					nordvpn_easy_log_phase 'runtime' "adopting inherited execution lock at $LOCK_DIR (holder pid=$lock_pid)"
 					return 0
@@ -552,11 +688,13 @@ _nordvpn_easy_try_acquire_lock() {
 
 	now_ts="$(date +%s 2>/dev/null || printf '0')"
 	if mkdir "$LOCK_DIR" 2>/dev/null; then
-		if ! nordvpn_easy_write_lock_metadata "$LOCK_DIR" "$$" "${ACTION:-unknown}" "$now_ts" 'held'; then
+		owner_token="$(nordvpn_easy_new_owner_token)"
+		if ! nordvpn_easy_write_lock_metadata "$LOCK_DIR" "$$" "${ACTION:-unknown}" "$now_ts" 'held' "$owner_token"; then
 			rm -rf "$LOCK_DIR" 2>/dev/null
 			nordvpn_easy_log_blocker 'runtime' "could not write execution lock metadata into $LOCK_DIR"
 			return 1
 		fi
+		NORDVPN_EASY_OWNER_TOKEN="$owner_token"
 		LOCK_ACQUIRED=1
 		nordvpn_easy_install_exit_trap
 		nordvpn_easy_log_phase 'runtime' "execution lock acquired at $LOCK_DIR"
@@ -596,11 +734,31 @@ _nordvpn_easy_try_acquire_lock() {
 				if kill -0 "$lock_pid" 2>/dev/null; then
 					lock_action="$(cat "$lock_action_file" 2>/dev/null)"
 					lock_started_at="$(cat "$lock_started_at_file" 2>/dev/null)"
-					lock_age="$(nordvpn_easy_lock_age_seconds "$LOCK_DIR" "$lock_started_at")"
-					nordvpn_easy_log_blocker 'runtime' "execution lock is already held by PID $lock_pid (action=${lock_action:-unknown}, age=${lock_age}s)"
-					return 2
+					lock_age="$(nordvpn_easy_lock_wedge_age_seconds "$LOCK_DIR" "$lock_started_at")"
+					case "$lock_age" in
+						''|*[!0-9]*) lock_age=0 ;;
+					esac
+					lock_ttl="$(nordvpn_easy_lock_ttl_seconds)"
+					# TTL REAPER: a live holder WITHIN the TTL is a legitimately
+					# in-flight operation -> report contention. A live holder aged
+					# PAST a generous TTL (well above any real apply) is WEDGED (a
+					# D-state syscall, a hung child) and would otherwise block every
+					# future operation forever, so fall through to the mv-aside
+					# recovery, which mints a NEW token. This is safe because the S7a
+					# effect fence neutralizes the wedged holder: on thaw its
+					# owner_assert fails against the new token, so it can neither
+					# release the lock nor commit/ifupdown the runtime. The recovery's
+					# live-different-pid restore still protects a DIFFERENT holder that
+					# legitimately re-acquired in the window (moved_pid != lock_pid),
+					# so only this exact wedged holder is reaped.
+					if [ "$lock_age" -le "$lock_ttl" ]; then
+						nordvpn_easy_log_blocker 'runtime' "execution lock is already held by PID $lock_pid (action=${lock_action:-unknown}, age=${lock_age}s)"
+						return 2
+					fi
+					stale_reason="owner PID $lock_pid alive but wedged (age=${lock_age}s > TTL ${lock_ttl}s); reclaiming"
+				else
+					stale_reason="owner PID $lock_pid is no longer alive"
 				fi
-				stale_reason="owner PID $lock_pid is no longer alive"
 				;;
 		esac
 	fi
@@ -635,7 +793,8 @@ _nordvpn_easy_try_acquire_lock() {
 		nordvpn_easy_log_blocker 'runtime' "could not recreate execution lock directory at $LOCK_DIR"
 		return 1
 	fi
-	if ! nordvpn_easy_write_lock_metadata "$LOCK_DIR" "$$" "${ACTION:-unknown}" "$now_ts" 'stale_recovered'; then
+	owner_token="$(nordvpn_easy_new_owner_token)"
+	if ! nordvpn_easy_write_lock_metadata "$LOCK_DIR" "$$" "${ACTION:-unknown}" "$now_ts" 'stale_recovered' "$owner_token"; then
 		rm -rf "$LOCK_DIR" 2>/dev/null
 		nordvpn_easy_log_blocker 'runtime' "could not write execution lock metadata into $LOCK_DIR"
 		return 1
@@ -649,6 +808,7 @@ _nordvpn_easy_try_acquire_lock() {
 		return 2
 	fi
 
+	NORDVPN_EASY_OWNER_TOKEN="$owner_token"
 	LOCK_ACQUIRED=1
 	nordvpn_easy_install_exit_trap
 	nordvpn_easy_log_phase 'runtime' "recovered and acquired execution lock at $LOCK_DIR (reason: ${stale_reason})"

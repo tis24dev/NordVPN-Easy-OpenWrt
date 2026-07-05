@@ -327,12 +327,19 @@ chmod 755 "$STATUS_INIT"
 
 STATUS_STDERR="$TMP_DIR/status-stderr"
 : > "$STATUS_WG_CAPTURE"
+# Crontab fixtures so recovery_cron_installed is asserted on the real detection
+# logic (both branches), not merely on its JSON shape.
+STATUS_CRONTAB_ABSENT="$TMP_DIR/crontab-no-marker"
+STATUS_CRONTAB_PRESENT="$TMP_DIR/crontab-with-marker"
+: > "$STATUS_CRONTAB_ABSENT"
+printf '%s\n' '# BEGIN nordvpn-easy' '*/15 * * * * /etc/init.d/nordvpn-easy check' '# END nordvpn-easy' > "$STATUS_CRONTAB_PRESENT"
 STATUS_JSON="$(
 	printf '{}' |
 		PATH="$STATUS_BIN_DIR:$PATH" \
 		NORDVPN_EASY_LIB_DIR="$LIB_DIR" \
 		NORDVPN_EASY_INIT_SCRIPT="$STATUS_INIT" \
 		NORDVPN_EASY_RUN_DIR="$STATUS_RUN_DIR" \
+		NORDVPN_EASY_CRONTAB_PATH="$STATUS_CRONTAB_ABSENT" \
 		sh "$RPCD_SCRIPT" call status 2>"$STATUS_STDERR"
 )"
 # Regression: the rpcd status path must load every library the status emit needs.
@@ -345,7 +352,11 @@ if grep -qi 'not found' "$STATUS_STDERR"; then
 fi
 printf '%s' "$STATUS_JSON" | jq -er '
 	.selected_country == "BO" and
-	.current_server_country == "AU"
+	.current_server_country == "AU" and
+	(.status_seq | type == "number") and
+	(.status_seq > 0) and
+	(.boot_id | type == "string" and length > 0) and
+	(.recovery_cron_installed == false)
 ' >/dev/null
 [ ! -s "$STATUS_CAPTURE" ] || {
 	printf '%s\n' 'FAIL: rpc status must not run runtime actions for saved-country drift' >&2
@@ -362,6 +373,22 @@ status_dumps="$(grep -c 'dump$' "$STATUS_WG_CAPTURE" 2>/dev/null || true)"
 }
 [ ! -e "$STATUS_RUN_DIR/status.json" ] || {
 	printf '%s\n' 'FAIL: rpc status poll must NOT write the status cache' >&2
+	exit 1
+}
+
+# recovery_cron_installed must flip to true when our managed cron block is present
+# (the false branch is asserted on the first status emit above).
+STATUS_CRON_JSON="$(
+	printf '{}' |
+		PATH="$STATUS_BIN_DIR:$PATH" \
+		NORDVPN_EASY_LIB_DIR="$LIB_DIR" \
+		NORDVPN_EASY_INIT_SCRIPT="$STATUS_INIT" \
+		NORDVPN_EASY_RUN_DIR="$STATUS_RUN_DIR" \
+		NORDVPN_EASY_CRONTAB_PATH="$STATUS_CRONTAB_PRESENT" \
+		sh "$RPCD_SCRIPT" call status 2>/dev/null
+)"
+printf '%s' "$STATUS_CRON_JSON" | jq -er '.recovery_cron_installed == true' >/dev/null || {
+	printf '%s\n' 'FAIL: recovery_cron_installed must be true when the managed cron block is present' >&2
 	exit 1
 }
 

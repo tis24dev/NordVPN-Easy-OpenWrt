@@ -69,7 +69,7 @@ const managerData = loadManagerDataModule();
 		'{"updated_at":1,"state":"failed","desired_enabled":false,"enabled":false,"runtime_disabled":true,"interface_disabled":true,"runtime_configured":false,"connected":false,"vpn_status":"error","operation_status":"idle","last_error":"failed to load runtime context from UCI"}'
 	);
 	assert.equal(fallback.connected, false, 'rpcd fail-safe stub parses as disconnected');
-	assert.equal(fallback.connect_apply_pending, false, 'rpcd fail-safe stub defaults connect-apply pending to false');
+	assert.equal(fallback.journal_phase, '', 'rpcd fail-safe stub defaults journal phase to empty (no mid-apply)');
 	assert.equal(fallback.public_verification_status, 'unknown', 'rpcd fail-safe stub defaults public verification to unknown');
 }
 
@@ -214,6 +214,80 @@ const healthyRuntime = {
 assert.equal(typeof managerActions.runApplyCycle, 'function', 'runApplyCycle is exported');
 assert.equal(typeof managerActions.renderLocalStatusSnapshot, 'function', 'renderLocalStatusSnapshot is exported');
 
+// S9: the supervised apply is the SOLE apply path -- there is no capability gate and no
+// legacy fallback. The apply cycle always dispatches the async `apply` verb and reads
+// convergence off the supervisor's journal (see the supervisedApply* unit tests below).
+
+// S8: the supervised poll reads convergence off the supervisor's journal, bound to a
+// txn we watched go IN-FLIGHT. This binding is what makes it stale-safe.
+assert.equal(typeof managerActions.supervisedApplyConverged, 'function', 'supervisedApplyConverged exported');
+assert.equal(typeof managerActions.supervisedApplyFailed, 'function', 'supervisedApplyFailed exported');
+assert.equal(typeof managerActions.noteSupervisedApplyProgress, 'function', 'noteSupervisedApplyProgress exported');
+
+// HOLE A (stale leftover): a terminal record from a PRIOR apply -- which we never saw
+// applying (the forked worker may briefly still show it on the first poll) -- must NOT
+// be accepted as this apply's result.
+(function() {
+	const s = {};
+	managerActions.noteSupervisedApplyProgress(s, { journal_txn_id: 't1', journal_phase: 'done' });
+	assert.equal(s.supervisedApplyObservedTxn, undefined, 'a terminal (done) record is not recorded as observed');
+	assert.equal(managerActions.supervisedApplyConverged(s, { journal_txn_id: 't1', journal_phase: 'done' }), false, 'a leftover done on an unobserved txn is NOT converged (stale-safe)');
+	assert.equal(managerActions.supervisedApplyFailed(s, { journal_txn_id: 't1', journal_phase: 'failed' }), false, 'a leftover failed on an unobserved txn is NOT this apply');
+})();
+
+// A fresh txn watched applying -> done IS converged (and only for that txn). This also
+// covers HOLE B: an ADOPTED same-target txn is seen applying here, then done, so it is
+// attributed correctly rather than timing out.
+(function() {
+	const s = {};
+	managerActions.noteSupervisedApplyProgress(s, { journal_txn_id: 't2', journal_phase: 'converge' });
+	assert.equal(s.supervisedApplyObservedTxn, 't2', 'a non-terminal (converge) phase is recorded as observed');
+	assert.equal(managerActions.supervisedApplyConverged(s, { journal_txn_id: 't2', journal_phase: 'converge' }), false, 'the observed txn still in-flight is not yet converged');
+	assert.equal(managerActions.supervisedApplyConverged(s, { journal_txn_id: 't2', journal_phase: 'done' }), true, 'the observed txn going done is converged');
+	assert.equal(managerActions.supervisedApplyConverged(s, { journal_txn_id: 't3', journal_phase: 'done' }), false, 'a DIFFERENT txn going done is not this apply');
+	assert.equal(managerActions.supervisedApplyFailed(s, { journal_txn_id: 't2', journal_phase: 'failed' }), true, 'the observed txn going failed is a failure');
+})();
+
+// No-op / re-apply: applied_fingerprint already equals config_fingerprint at start must
+// NOT report an instant false success -- success needs the observed txn to reach done.
+(function() {
+	const s = {};
+	assert.equal(managerActions.supervisedApplyConverged(s, { journal_txn_id: 't6', journal_phase: 'applying', config_fingerprint: 'x', applied_fingerprint: 'x' }), false, 'applied==config while applying is NOT converged (no false instant success)');
+	managerActions.noteSupervisedApplyProgress(s, { journal_txn_id: 't6', journal_phase: 'applying' });
+	assert.equal(managerActions.supervisedApplyConverged(s, { journal_txn_id: 't6', journal_phase: 'done' }), true, 'the observed txn going done converges');
+})();
+
+// PR #81 (Greptile): txn-start freshness gate closes the cold-start window -- an instant
+// converge reaches 'done' before any poll caught a non-terminal phase (observedTxn never
+// set). A 'done' whose started_at exceeds the first poll's baseline is THIS apply's txn.
+(function() {
+	// First poll baselines started_at=100 off a leftover 'done' (never observed applying).
+	const s = {};
+	managerActions.noteSupervisedApplyProgress(s, { journal_txn_id: 'old', journal_phase: 'done', journal_started_at: 100 });
+	assert.equal(s.supervisedApplyBaselineStartedAt, 100, 'the first poll baselines journal_started_at');
+	// The SAME stale leftover (started_at == baseline) is NOT accepted.
+	assert.equal(managerActions.supervisedApplyConverged(s, { journal_txn_id: 'old', journal_phase: 'done', journal_started_at: 100 }), false, 'a leftover done at the baseline start time is NOT converged (stale-safe)');
+	// An older leftover (started_at < baseline) is NOT accepted.
+	assert.equal(managerActions.supervisedApplyConverged(s, { journal_txn_id: 'older', journal_phase: 'done', journal_started_at: 50 }), false, 'an older done is NOT converged');
+	// OUR apply's done: a NEWER started_at -- accepted even though we never observed a
+	// non-terminal phase for it (the cold-start window).
+	assert.equal(managerActions.supervisedApplyConverged(s, { journal_txn_id: 'new', journal_phase: 'done', journal_started_at: 200 }), true, 'a done whose txn started after the baseline converges (cold-start closed)');
+	// A newer txn still in-flight is not yet done.
+	assert.equal(managerActions.supervisedApplyConverged(s, { journal_txn_id: 'new', journal_phase: 'converge', journal_started_at: 200 }), false, 'a fresh txn still in-flight is not converged');
+})();
+(function() {
+	// Empty journal at the first poll (baseline 0): any subsequent done (>0) is ours, and
+	// no prior record can appear after an empty first read.
+	const s = {};
+	managerActions.noteSupervisedApplyProgress(s, { journal_txn_id: '', journal_phase: '', journal_started_at: 0 });
+	assert.equal(s.supervisedApplyBaselineStartedAt, 0, 'an empty first poll baselines started_at to 0');
+	assert.equal(managerActions.supervisedApplyConverged(s, { journal_txn_id: 'n', journal_phase: 'done', journal_started_at: 500 }), true, 'from an empty baseline any done>0 converges');
+	// A done with started_at 0 (missing) never satisfies the freshness gate.
+	const s2 = {};
+	managerActions.noteSupervisedApplyProgress(s2, { journal_txn_id: '', journal_phase: '', journal_started_at: 0 });
+	assert.equal(managerActions.supervisedApplyConverged(s2, { journal_txn_id: 'n', journal_phase: 'done', journal_started_at: 0 }), false, 'a done with no started_at (0) does not satisfy the freshness gate');
+})();
+
 assert.equal(managerData.parseEnabledFlag(undefined), false, 'missing enabled option is treated as disabled');
 assert.equal(managerData.parseEnabledFlag('0'), false, 'explicit disabled value is treated as disabled');
 assert.equal(managerData.parseEnabledFlag('1'), true, 'explicit enabled value is treated as enabled');
@@ -321,6 +395,64 @@ async function testUpdateLocalStatusMarksSnapshotsStaleOnRejectedExec() {
 	assert.deepEqual(normalizeValue(status), normalizeValue(buildUpdateLocalStatusState().currentLocalStatus), 'rejected status_json keeps the last known runtime status for display');
 	assert.equal(state.currentLocalStatusFresh, false, 'rejected status_json marks runtime status as stale');
 	assert.equal(state.currentLocalStatusLastUpdated, 0, 'rejected status_json clears the freshness timestamp');
+}
+
+function testStatusResponseIsOutOfOrderOrdering() {
+	const state = { lastStatusBootId: 'boot-a', lastStatusSeq: 2000 };
+
+	assert.equal(managerActions.statusResponseIsOutOfOrder(state, 'boot-a', 1000), true, 'a lower seq in the same boot is out of order');
+	assert.equal(managerActions.statusResponseIsOutOfOrder(state, 'boot-a', 2000), false, 'an equal seq is not out of order');
+	assert.equal(managerActions.statusResponseIsOutOfOrder(state, 'boot-a', 3000), false, 'a higher seq is in order');
+	assert.equal(managerActions.statusResponseIsOutOfOrder(state, 'boot-b', 5), false, 'a different boot_id is always newer');
+	assert.equal(managerActions.statusResponseIsOutOfOrder({}, 'boot-a', 1), false, 'with no recorded baseline nothing is out of order');
+}
+
+async function testUpdateLocalStatusDiscardsOutOfOrderResponses() {
+	function statusRes(extra) {
+		return {
+			code: 0,
+			stdout: JSON.stringify(Object.assign({}, healthyRuntime, {
+				desired_enabled: false,
+				operation_status: 'idle'
+			}, extra)),
+			stderr: ''
+		};
+	}
+
+	const responses = [
+		statusRes({ selected_country: 'IT', boot_id: 'boot-a', status_seq: 2000 }),
+		statusRes({ selected_country: 'DE', boot_id: 'boot-a', status_seq: 1000 }),
+		statusRes({ selected_country: 'FR', boot_id: 'boot-a', status_seq: 3000 }),
+		statusRes({ selected_country: 'ES', boot_id: 'boot-b', status_seq: 5 })
+	];
+	let i = 0;
+	const actions = buildUpdateLocalStatusHarness({
+		execService(action) {
+			if (action === 'status_json')
+				return Promise.resolve(responses[i++]);
+
+			return Promise.resolve({ code: 0, stdout: '{}', stderr: '' });
+		}
+	});
+	const state = buildUpdateLocalStatusState();
+
+	const s1 = await actions.updateLocalStatus(state);
+	assert.equal(String(s1.selected_country || ''), 'IT', 'the first response is applied');
+	assert.equal(state.lastStatusBootId, 'boot-a', 'the ordering baseline boot_id is recorded');
+	assert.equal(state.lastStatusSeq, 2000, 'the ordering baseline status_seq is recorded');
+
+	const s2 = await actions.updateLocalStatus(state);
+	assert.equal(String(s2.selected_country || ''), 'IT', 'a stale lower-seq response returns the last known status, not the stale one');
+	assert.equal(String((state.currentLocalStatus || {}).selected_country || ''), 'IT', 'a stale response does not overwrite currentLocalStatus');
+	assert.equal(state.lastStatusSeq, 2000, 'a stale response does not advance the baseline');
+
+	const s3 = await actions.updateLocalStatus(state);
+	assert.equal(String(s3.selected_country || ''), 'FR', 'a newer-seq response is applied');
+	assert.equal(state.lastStatusSeq, 3000, 'the baseline advances on a newer response');
+
+	const s4 = await actions.updateLocalStatus(state);
+	assert.equal(String(s4.selected_country || ''), 'ES', 'a different boot_id is treated as newer and applied');
+	assert.equal(state.lastStatusBootId, 'boot-b', 'the baseline boot_id updates on a new boot');
 }
 
 function testRenderLocalStatusSnapshotClearsDisabledPlaceholders() {
@@ -492,6 +624,12 @@ function testRenderLocalStatusSnapshotHonestDuringApply() {
 	actions.renderLocalStatusSnapshot(state, Object.assign({}, status, { vpn_status: 'stopping', connected: false }));
 	assert.deepEqual(indicators.vpn, { state: 'stopping', label: 'Stopping' },
 		'Connection follows vpn_status to Stopping during the teardown');
+
+	// The interface is then (re)configured before bring-up: Connection reads
+	// Configuring (amber), distinct from both teardown and connecting.
+	actions.renderLocalStatusSnapshot(state, Object.assign({}, status, { vpn_status: 'configuring', connected: false }));
+	assert.deepEqual(indicators.vpn, { state: 'configuring', label: 'Configuring' },
+		'Connection follows vpn_status to Configuring while the interface is (re)configured');
 
 	// Then the new tunnel comes up as starting -> Connecting.
 	actions.renderLocalStatusSnapshot(state, Object.assign({}, status, { vpn_status: 'starting', connected: false }));
@@ -1089,6 +1227,13 @@ function buildHandleSaveApplyHarness(options) {
 	const controlsDisabledCalls = [];
 	const debugNotifications = [];
 	let runtimeStatusPayload = null;
+	// S9: the supervised apply dispatches a single `apply` verb, then the JS polls
+	// status_json for journal convergence. The harness starts the journal in a
+	// non-terminal phase on dispatch (so the first poll observes it in-flight) and
+	// transitions it to a terminal phase (done / failed) on a later poll.
+	const SUPERVISED_APPLY_TXN = 'txn-supervised-apply';
+	let supervisedApplyDispatched = false;
+	let supervisedApplyPollCount = 0;
 	const calls = {
 		handleSave: 0,
 		apply: 0,
@@ -1132,10 +1277,15 @@ function buildHandleSaveApplyHarness(options) {
 		return Object.assign({}, defaultStatusPayload(), opts.statusPayload || {}, runtimeStatusPayload || {});
 	}
 
-	function markConnectConverged() {
-		if (opts.connectConvergence === false)
-			return;
+	function markSupervisedApplyInFlight() {
+		runtimeStatusPayload = Object.assign({}, currentStatusPayload(), {
+			journal_txn_id: SUPERVISED_APPLY_TXN,
+			journal_phase: 'applying',
+			last_error: ''
+		});
+	}
 
+	function markSupervisedApplyConverged() {
 		const targetCountry = String(
 			opts.convergedCountry ||
 			opts.currentCountry ||
@@ -1157,8 +1307,35 @@ function buildHandleSaveApplyHarness(options) {
 			vpn_status: 'active',
 			state: 'connected',
 			handshake_age_seconds: 5,
+			journal_txn_id: SUPERVISED_APPLY_TXN,
+			journal_phase: 'done',
 			last_error: ''
 		});
+	}
+
+	function markSupervisedApplyFailed() {
+		runtimeStatusPayload = Object.assign({}, currentStatusPayload(), {
+			journal_txn_id: SUPERVISED_APPLY_TXN,
+			journal_phase: 'failed',
+			last_error: opts.applyFailureError || 'VPN connect failed.'
+		});
+	}
+
+	// Drive the supervised-apply journal transition on each status_json poll: the
+	// first poll leaves it in-flight (so noteSupervisedApplyProgress records the
+	// observed txn), a later poll stamps the terminal phase.
+	function advanceSupervisedApplyJournal() {
+		if (!supervisedApplyDispatched || opts.applyConvergence === false)
+			return;
+
+		supervisedApplyPollCount++;
+		if (supervisedApplyPollCount < 2)
+			return;
+
+		if (opts.applyFailure)
+			markSupervisedApplyFailed();
+		else
+			markSupervisedApplyConverged();
 	}
 
 	const actions = loadManagerActionsModule({
@@ -1289,6 +1466,7 @@ function buildHandleSaveApplyHarness(options) {
 				serviceCalls.push(action);
 
 				if (action === 'status_json') {
+					advanceSupervisedApplyJournal();
 					return Promise.resolve({
 						code: 0,
 						stdout: JSON.stringify(currentStatusPayload()),
@@ -1304,17 +1482,19 @@ function buildHandleSaveApplyHarness(options) {
 			runAction(action) {
 				runtimeActions.push([ action ]);
 
-				if (opts.startConnectActionReject && action === 'start_connect')
-					return Promise.reject(opts.startConnectActionReject);
+				if (opts.applyActionReject && action === 'apply')
+					return Promise.reject(opts.applyActionReject);
 
-				if (opts.startConnectActionResult && action === 'start_connect')
-					return Promise.resolve(opts.startConnectActionResult);
+				if (opts.applyActionResult && action === 'apply')
+					return Promise.resolve(opts.applyActionResult);
 
-				if (action === 'start_connect')
-					markConnectConverged();
-
-				if (opts.connectActionReject && action === 'connect')
-					return Promise.reject(opts.connectActionReject);
+				if (action === 'apply') {
+					// The supervised apply verb returns fast; the JS then polls status_json
+					// for journal convergence. Arm the in-flight journal for this apply.
+					supervisedApplyDispatched = true;
+					supervisedApplyPollCount = 0;
+					markSupervisedApplyInFlight();
+				}
 
 				return Promise.resolve({
 					action: action,
@@ -1427,7 +1607,13 @@ function buildHandleSaveApplyHarness(options) {
 			? function(callback) {
 				return setTimeout(callback, opts.timeoutMs);
 			}
-			: setTimeout
+			: function(callback, delay) {
+				// Fire short convergence-poll intervals immediately so the supervised
+				// apply does not add real seconds per test; leave the long Save & Apply
+				// timeout watchdog on its real (dormant) timer so it never fires mid-test.
+				const requested = Number(delay) || 0;
+				return setTimeout(callback, requested >= 100000 ? requested : 0);
+			}
 	}).managerActions;
 	const state = Object.assign({
 		pollingSuspended: false,
@@ -1569,7 +1755,7 @@ async function testHandleSaveApplyFallsBackToAutomaticWhenManualSelectionIncompl
 		[{ option: 'server_selection_mode', value: 'auto' }],
 		'incomplete manual selection stores automatic server selection mode'
 	);
-	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn' ], [ 'begin_connect_apply' ], [ 'start_connect' ] ], 'incomplete manual selection still runs the unified apply cycle');
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'apply' ] ], 'incomplete manual selection still runs the supervised apply cycle');
 }
 
 async function testHandleSaveApplyStopsAfterStopWhenDisabled() {
@@ -1721,7 +1907,7 @@ async function testHandleSaveApplyAutoModeClearsManualSelectionAndReconnects() {
 	assert.equal(harness.calls.apply, 0, 'manual-to-auto changes do not use the legacy LuCI apply path');
 	assert.equal(harness.calls.applyEndpoint, 0, 'manual-to-auto changes do not call the global LuCI apply endpoint');
 	assert.equal(harness.calls.commit, 1, 'manual-to-auto changes commit nordvpn_easy directly');
-	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn' ], [ 'begin_connect_apply' ], [ 'start_connect' ] ], 'manual-to-auto changes clear caches before connect apply');
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'apply' ] ], 'manual-to-auto changes run the supervised apply');
 	assert.equal(harness.viewState.initialMode, 'auto', 'view state tracks saved automatic mode');
 	assert.equal(harness.viewState.initialPreferredStation, '', 'view state clears saved preferred station');
 	assert.equal(harness.state.pendingOperationLabel, '', 'runtime action completion clears pending operation label');
@@ -1754,7 +1940,7 @@ async function testHandleSaveApplyReconcilesDisabledRuntimeAfterSave() {
 	await Promise.resolve();
 	await Promise.resolve();
 
-	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'begin_connect_apply' ], [ 'stop_vpn' ], [ 'start_connect' ] ], 'unchanged enabled config runs stop then connect after Save & Apply');
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'apply' ] ], 'unchanged enabled config runs the supervised apply after Save & Apply');
 	assert.equal(harness.state.pendingOperationLabel, '', 'apply cycle completion clears pending operation label');
 	assert.ok(harness.serviceCalls.indexOf('status_json') !== -1, 'apply cycle refreshes status after runtime actions');
 }
@@ -1786,53 +1972,31 @@ async function testHandleSaveApplyQueuesReconnectWhenSavedCountryDriftsFromPeer(
 
 	assert.deepEqual(
 		normalizeValue(harness.runtimeActions),
-		[ [ 'begin_connect_apply' ], [ 'stop_vpn' ], [ 'start_connect' ] ],
-		'Save & Apply runs a single stop/start_connect cycle; post-apply drift is left to background reconcile'
+		[ [ 'apply' ] ],
+		'Save & Apply runs a single supervised apply; post-apply drift is left to background reconcile'
 	);
 }
 
-async function testHandleSaveApplyConvergesWhenConnectApplyResultReportsSuccess() {
+async function testHandleSaveApplyConvergesViaJournalDoneSignal() {
 	const harness = buildHandleSaveApplyHarness({
 		previousEnabled: true,
 		previousCountry: 'BG',
 		currentEnabled: true,
 		currentMode: 'auto',
 		currentCountry: 'RO',
-		savedCountry: 'RO',
-		connectConvergence: false,
-		statusPayload: {
-			desired_enabled: true,
-			runtime_disabled: false,
-			interface_disabled: false,
-			runtime_configured: true,
-			operation_status: 'idle',
-			operation_lock_state: 'none',
-			selected_country: 'RO',
-			current_server_country: 'RO',
-			connected: true,
-			vpn_status: 'active',
-			state: 'connected',
-			handshake_age_seconds: 12,
-			connect_apply_pending: false,
-			connect_apply_finished: true,
-			connect_apply_success: true,
-			connect_apply_rc: 0,
-			connect_apply_country: 'RO',
-			connect_apply_started_at: Math.floor(Date.now() / 1000),
-			connect_apply_finished_at: Math.floor(Date.now() / 1000)
-		}
+		savedCountry: 'RO'
 	});
 
 	await harness.actions.handleSaveApply(harness.viewState, harness.state, {});
 	await Promise.resolve();
 	await Promise.resolve();
 
-	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn' ], [ 'begin_connect_apply' ], [ 'start_connect' ] ],
-		'country change clears server caches before connect apply');
-	assert.equal(harness.state.saveApplyInProgress, false, 'apply ends only after the live tunnel is ready');
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'apply' ] ],
+		'country change runs a single supervised apply');
+	assert.equal(harness.state.saveApplyInProgress, false, 'apply ends only after the supervisor journal reaches done');
 	assert.ok(harness.notifications.some(function(entry) {
 		return entry.type === 'info' && /applied your configuration and connected/.test(entry.message);
-	}), 'live tunnel readiness reports unified success');
+	}), 'journal convergence reports unified success');
 }
 
 async function testHandleSaveApplyConvergesViaStartConnectAndStatusPolling() {
@@ -1865,8 +2029,8 @@ async function testHandleSaveApplyConvergesViaStartConnectAndStatusPolling() {
 	await Promise.resolve();
 	await Promise.resolve();
 
-	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn' ], [ 'begin_connect_apply' ], [ 'start_connect' ] ],
-		'Save & Apply dispatches start_connect then polls status');
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'apply' ] ],
+		'Save & Apply dispatches the supervised apply then polls status');
 	assert.equal(harness.state.pendingOperationLabel, '', 'status convergence clears pending operation label');
 	assert.equal(harness.state.applyTargetEnabled, null, 'status convergence clears the pending enabled target');
 	assert.equal(harness.notifications.filter(function(entry) {
@@ -1880,10 +2044,10 @@ async function testHandleSaveApplyConvergesViaStartConnectAndStatusPolling() {
 	}).length, 1, 'status convergence reports the apply success exactly once (idempotent finish)');
 	assert.ok(harness.serviceCalls.filter(function(action) {
 		return action === 'status_json';
-	}).length >= 2, 'status convergence polls status after start_connect dispatch');
+	}).length >= 2, 'status convergence polls status after the supervised apply dispatch');
 }
 
-async function testHandleSaveApplyStartConnectBusyFailsImmediately() {
+async function testHandleSaveApplyApplyBusyFailsImmediately() {
 	const harness = buildHandleSaveApplyHarness({
 		previousEnabled: true,
 		previousCountry: 'AT',
@@ -1891,8 +2055,8 @@ async function testHandleSaveApplyStartConnectBusyFailsImmediately() {
 		currentMode: 'auto',
 		currentCountry: 'UY',
 		savedCountry: 'UY',
-		startConnectActionResult: {
-			action: 'start_connect',
+		applyActionResult: {
+			action: 'apply',
 			code: 75,
 			success: false,
 			busy: true,
@@ -1910,13 +2074,13 @@ async function testHandleSaveApplyStartConnectBusyFailsImmediately() {
 	await Promise.resolve();
 	await Promise.resolve();
 
-	assert.ok(rejected, 'busy start_connect rejects apply');
-	assert.match(String(rejected.message), /already running|busy|setup/i, 'busy start_connect reports holder context');
-	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn' ], [ 'begin_connect_apply' ], [ 'start_connect' ] ],
-		'busy start_connect is attempted after stop_vpn');
+	assert.ok(rejected, 'busy apply rejects');
+	assert.match(String(rejected.message), /already running|busy|setup/i, 'busy apply reports holder context');
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'apply' ] ],
+		'a busy apply dispatch is a single supervised apply attempt');
 }
 
-async function testHandleSaveApplyStartConnectRuntimeErrorFromStatus() {
+async function testHandleSaveApplyFailsWhenSupervisorJournalReportsFailure() {
 	const harness = buildHandleSaveApplyHarness({
 		previousEnabled: true,
 		previousCountry: 'AT',
@@ -1924,21 +2088,8 @@ async function testHandleSaveApplyStartConnectRuntimeErrorFromStatus() {
 		currentMode: 'auto',
 		currentCountry: 'UY',
 		savedCountry: 'UY',
-		connectConvergence: false,
-		statusPayload: {
-			desired_enabled: true,
-			runtime_disabled: false,
-			interface_disabled: false,
-			runtime_configured: true,
-			operation_status: 'idle',
-			operation_lock_state: 'none',
-			selected_country: 'UY',
-			server_selection_mode: 'auto',
-			current_server_country: 'UY',
-			vpn_status: 'error',
-			last_error: 'backend failed',
-			connected: false
-		}
+		applyFailure: true,
+		applyFailureError: 'backend failed'
 	});
 	let rejected = null;
 
@@ -1948,13 +2099,13 @@ async function testHandleSaveApplyStartConnectRuntimeErrorFromStatus() {
 	await Promise.resolve();
 	await Promise.resolve();
 
-	assert.ok(rejected, 'runtime error status rejects apply');
-	assert.match(String(rejected.message), /backend failed/, 'runtime error status surfaces backend message');
-	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn' ], [ 'begin_connect_apply' ], [ 'start_connect' ] ],
-		'runtime error still attempted stop then start_connect');
+	assert.ok(rejected, 'a supervisor journal failure rejects the apply');
+	assert.match(String(rejected.message), /backend failed/, 'the failure surfaces the supervisor last_error');
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'apply' ] ],
+		'a failing supervised apply is a single apply dispatch');
 	assert.ok(harness.notifications.some(function(entry) {
 		return entry.type === 'error' && /backend failed/.test(entry.message);
-	}), 'runtime error reports an error notification');
+	}), 'a supervisor failure reports an error notification');
 }
 
 async function testHandleSaveApplyRecoversAbortedRuntimeActionWhenStatusConverges() {
@@ -1985,8 +2136,8 @@ async function testHandleSaveApplyRecoversAbortedRuntimeActionWhenStatusConverge
 	await Promise.resolve();
 	await Promise.resolve();
 
-	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn' ], [ 'begin_connect_apply' ], [ 'start_connect' ] ],
-		'legacy recovery test name kept for start_connect apply cycle');
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'apply' ] ],
+		'the supervised apply converges via a single apply dispatch and status polling');
 	assert.equal(harness.state.pendingOperationLabel, '', 'aborted runtime recovery clears pending operation label');
 	assert.equal(harness.notifications.filter(function(entry) {
 		return entry.type === 'error';
@@ -2007,8 +2158,8 @@ async function testHandleSaveApplyDoesNotRecoverNonAbortRuntimeActionFailure() {
 		currentMode: 'auto',
 		currentCountry: 'UY',
 		savedCountry: 'UY',
-		startConnectActionResult: {
-			action: 'start_connect',
+		applyActionResult: {
+			action: 'apply',
 			code: 1,
 			success: false,
 			busy: false,
@@ -2036,13 +2187,13 @@ async function testHandleSaveApplyDoesNotRecoverNonAbortRuntimeActionFailure() {
 	await Promise.resolve();
 	await Promise.resolve();
 
-	assert.ok(rejected, 'non-success start_connect rejects apply');
-	assert.match(String(rejected.message), /backend failed/, 'non-success start_connect reports backend failure');
-	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'stop_vpn' ], [ 'begin_connect_apply' ], [ 'start_connect' ] ],
-		'non-success start_connect still attempted stop then start_connect');
+	assert.ok(rejected, 'a non-success apply dispatch rejects');
+	assert.match(String(rejected.message), /backend failed/, 'a non-success apply dispatch reports backend failure');
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'apply' ] ],
+		'a non-success apply dispatch is a single supervised apply attempt');
 	assert.ok(harness.notifications.some(function(entry) {
 		return entry.type === 'error' && /backend failed/.test(entry.message);
-	}), 'non-success start_connect still reports an error notification');
+	}), 'a non-success apply dispatch still reports an error notification');
 }
 
 async function testAutoReconcileRunsForCountryDrift() {
@@ -2080,10 +2231,7 @@ async function testAutoReconcileRunsForCountryDrift() {
 
 	await harness.actions.maybeAutoReconcileSelectionDrift(harness.state, harness.state.currentLocalStatus);
 
-	assert.ok(harness.runtimeActions.length >= 3, 'country drift runs at least stop_vpn, begin_connect_apply then start_connect');
-	assert.equal(harness.runtimeActions[0][0], 'stop_vpn', 'country drift clears stale server caches before connect apply');
-	assert.equal(harness.runtimeActions[1][0], 'begin_connect_apply', 'country drift marks connect apply pending after cache clear');
-	assert.equal(harness.runtimeActions[2][0], 'start_connect', 'country drift follows with start_connect');
+	assert.deepEqual(normalizeValue(harness.runtimeActions), [ [ 'apply' ] ], 'country drift runs a single supervised apply');
 	assert.equal(harness.state.pendingOperationLabel, '', 'auto reconcile clears the pending label after completion');
 	assert.ok(harness.serviceCalls.indexOf('status_json') !== -1, 'auto reconcile refreshes status after completion');
 }
@@ -2170,9 +2318,9 @@ async function testAutoReconcileThrottlesSuccessfulNoChange() {
 	await harness.actions.maybeAutoReconcileSelectionDrift(harness.state, driftStatus);
 	await harness.actions.maybeAutoReconcileSelectionDrift(harness.state, harness.state.currentLocalStatus);
 
-	assert.ok(harness.runtimeActions.length >= 3, 'drift reconcile runs begin_connect_apply, stop_vpn, then start_connect once');
+	assert.ok(harness.runtimeActions.length >= 1, 'drift reconcile runs the supervised apply once');
 	assert.equal(harness.state.lastAutoReconcileFailureKey, '', 'status convergence clears the drift failure key');
-	assert.equal(harness.runtimeActions.length, 3, 'second auto reconcile is skipped once drift is cleared');
+	assert.equal(harness.runtimeActions.length, 1, 'second auto reconcile is skipped once drift is cleared');
 }
 
 async function testAutoReconcileSkipsNonDriftCases() {
@@ -2269,8 +2417,8 @@ async function testAutoReconcileThrottlesRepeatedFailures() {
 	const harness = buildHandleSaveApplyHarness({
 		previousEnabled: true,
 		savedCountry: 'AU',
-		startConnectActionResult: {
-			action: 'start_connect',
+		applyActionResult: {
+			action: 'apply',
 			code: 1,
 			success: false,
 			message: 'connect exploded'
@@ -2307,7 +2455,7 @@ async function testAutoReconcileThrottlesRepeatedFailures() {
 	await harness.actions.maybeAutoReconcileSelectionDrift(harness.state, driftStatus);
 	await harness.actions.maybeAutoReconcileSelectionDrift(harness.state, driftStatus);
 
-	assert.ok(harness.runtimeActions.length >= 2, 'failed auto apply cycle still runs once');
+	assert.ok(harness.runtimeActions.length >= 1, 'failed auto apply cycle still runs once');
 	assert.match(harness.notifications[harness.notifications.length - 1].message, /Automatic runtime sync failed: connect exploded/, 'auto apply cycle failure is reported once');
 	assert.equal(harness.notifications.length, 1, 'throttled auto reconcile does not repeat notifications');
 	assert.equal(harness.state.lastAutoReconcileFailureKey, 'auto:AU:BM', 'throttle records the drift key');
@@ -2482,12 +2630,176 @@ function testCountryMatchTimingLogIsLabOptIn() {
 	assert.equal(posts[0].payload.event, 'country_match', 'Country Match timing log keeps the diagnostics event marker');
 }
 
+function testEffectiveOperationStatusHonestSubPhase() {
+	const actions = loadManagerActionsModule({}).managerActions;
+
+	// A supervised apply keeps the opaque 'supervise' lock action for the whole
+	// rebuild; the Operation row is driven by the honest journal_sub_phase. The
+	// status below is a SAME-country/station STALE old session (fresh handshake) --
+	// exactly the trap where the busy:finishing live-heuristic would otherwise match
+	// and jump the row to Finishing during teardown/configure.
+	function supStatus(subPhase, handshakeAge) {
+		return {
+			operation_status: 'busy:supervise',
+			operation_lock_state: 'held',
+			operation_lock_action: 'supervise',
+			journal_sub_phase: subPhase,
+			vpn_status: 'active',
+			connected: true,
+			state: 'connected',
+			handshake_age_seconds: (handshakeAge == null ? 30 : handshakeAge),
+			current_server_country: 'IT',
+			current_server_station: 'it123',
+			selected_country: 'IT'
+		};
+	}
+	// Saved config matches the CURRENT (stale) session -> a same-country/station re-apply.
+	const state = {
+		saveApplyInProgress: true,
+		appliedEnabled: true,
+		appliedCountryCode: 'IT',
+		appliedMode: 'manual',
+		appliedPreferredStation: 'it123'
+	};
+
+	// remap busy:supervise -> busy:<sub_phase>, and the busy:finishing heuristic is
+	// SKIPPED while the sub_phase has not reached connecting/verifying.
+	assert.equal(actions.effectiveOperationStatus(supStatus('fetching'), state), 'busy:fetching',
+		'busy:supervise + fetching remaps to busy:fetching (finishing suppressed during fetch)');
+	assert.equal(actions.effectiveOperationStatus(supStatus('tearing_down'), state), 'busy:tearing_down',
+		'busy:supervise + tearing_down remaps to busy:tearing_down (finishing suppressed during teardown)');
+	assert.equal(actions.effectiveOperationStatus(supStatus('configuring'), state), 'busy:configuring',
+		'busy:supervise + configuring remaps to busy:configuring (finishing suppressed during configure)');
+	assert.equal(actions.effectiveOperationStatus(supStatus(''), state), 'busy:supervise',
+		'busy:supervise + empty sub_phase stays busy:supervise (finishing suppressed pre-converge)');
+
+	// Once the tunnel is genuinely (re)connecting with a fresh handshake, OR verifying,
+	// the finishing heuristic is allowed to promote the row.
+	assert.equal(actions.effectiveOperationStatus(supStatus('connecting', 30), state), 'busy:finishing',
+		'busy:supervise + connecting WITH a fresh handshake allows busy:finishing');
+	assert.equal(actions.effectiveOperationStatus(supStatus('verifying', 30), state), 'busy:finishing',
+		'busy:supervise + verifying allows busy:finishing');
+	// connecting but the (old) handshake is NOT fresh -> convergence has not succeeded,
+	// so the row stays busy:connecting (no premature Finishing).
+	assert.equal(actions.effectiveOperationStatus(supStatus('connecting', 9999), state), 'busy:connecting',
+		'busy:supervise + connecting with a STALE handshake stays busy:connecting (no premature finishing)');
+
+	// Legacy/non-supervised apply paths are UNAFFECTED: the busy:finishing heuristic
+	// fires exactly as before once convergence has succeeded (the gate is scoped to
+	// operation === busy:supervise).
+	const legacyStatus = {
+		operation_status: 'idle',
+		operation_lock_state: 'none',
+		operation_lock_action: '',
+		journal_sub_phase: '',
+		vpn_status: 'active',
+		connected: true,
+		state: 'connected',
+		handshake_age_seconds: 30,
+		current_server_country: 'IT',
+		current_server_station: 'it123',
+		selected_country: 'IT'
+	};
+	const legacyState = Object.assign({}, state, { applyPhase: 'setup' });
+	assert.equal(actions.effectiveOperationStatus(legacyStatus, legacyState), 'busy:finishing',
+		'a legacy (non-supervised) apply still shows busy:finishing once convergence succeeds (gate scoped to busy:supervise)');
+}
+
+function testSupervisedApplyOperationRowHonesty() {
+	const indicators = {};
+	const fields = {};
+	const actions = loadManagerActionsModule({
+		managerData: {
+			normalizeCountryCode(value) { return String(value || '').trim().toUpperCase(); },
+			parseLocalStatus(raw) { return JSON.parse(raw || '{}'); }
+		},
+		// Mirror the real humanizeAction (underscore -> space) so the Operation row text
+		// matches what LuCI renders.
+		managerFormat: {
+			humanizeAction(action) { return String(action || '').replace(/_/g, ' '); }
+		},
+		managerStore: {
+			PHASES: { RUNTIME_BUSY: 'runtime_busy', SAVING: 'saving' },
+			syncPhase(state) { state.phase = 'synced'; },
+			setPhase(state, phase) { state.phase = phase; }
+		},
+		managerUI: {
+			ids: {
+				CURRENT_SERVER_STATUS_ID: 'current', PREFERRED_SERVER_STATUS_ID: 'preferred',
+				ENDPOINT_STATUS_ID: 'endpoint', HANDSHAKE_STATUS_ID: 'handshake',
+				TRANSFER_STATUS_ID: 'transfer', OPERATION_STATUS_ID: 'operation',
+				LAST_ERROR_STATUS_ID: 'last_error', PUBLIC_IP_STATUS_ID: 'public_ip',
+				PUBLIC_COUNTRY_STATUS_ID: 'public_country'
+			},
+			replaceStatusText(id, value) { fields[id] = value; },
+			setManagerControlsDisabled() {},
+			setVpnStatusIndicator(state, label) { indicators.vpn = { state: state, label: String(label) }; },
+			updateCountryMatchStatus() {},
+			updateServerSelectionState() {},
+			currentServerSummaryFromStatus() { return 'srv'; },
+			preferredServerSummaryFromStatus() { return 'auto'; },
+			isDisableRequested() { return false; }
+		}
+	}).managerActions;
+
+	// A same-country + same-station re-apply: the STALE old session stays up and fresh
+	// throughout teardown/configure, so without the gate the live convergence heuristic
+	// would jump the Operation row to 'Finishing connection...' before reconnecting.
+	function supStatus(subPhase, vpnStatus, handshakeAge) {
+		return {
+			desired_enabled: true, runtime_disabled: false, interface_disabled: false,
+			runtime_configured: true,
+			operation_status: 'busy:supervise', operation_lock_state: 'held',
+			operation_lock_action: 'supervise', journal_sub_phase: subPhase,
+			vpn_status: vpnStatus, connected: true, state: 'connected',
+			handshake_age_seconds: (handshakeAge == null ? 30 : handshakeAge),
+			current_server_country: 'IT', current_server_station: 'it123', selected_country: 'IT',
+			endpoint: 'it123.nordvpn.com:51820', latest_handshake: '5 seconds ago',
+			transfer_rx: '1 B', transfer_tx: '1 B', public_ip_cached: '', public_country_cached: '', last_error: ''
+		};
+	}
+	const state = {
+		appliedEnabled: true, appliedCountryCode: 'IT', appliedMode: 'manual', appliedPreferredStation: 'it123',
+		saveApplyInProgress: true, applyPhase: 'supervise', applyTransitionActive: false,
+		currentLocalStatus: {}, currentOperationStatus: 'idle', pendingOperationLabel: '',
+		currentPublicIp: '', currentPublicCountry: ''
+	};
+
+	// Walk the honest pre-converge sub_phase sequence: the Operation row is honest and
+	// NEVER reads 'Finishing connection...' before sub_phase reaches connecting/verifying.
+	const preConverge = [
+		['', 'active', 'Applying (supervise)...'],
+		['fetching', 'active', 'Applying (fetching)...'],
+		['tearing_down', 'stopping', 'Applying (tearing down)...'],
+		['configuring', 'configuring', 'Applying (configuring)...']
+	];
+	preConverge.forEach(function(step) {
+		actions.renderLocalStatusSnapshot(state, supStatus(step[0], step[1]));
+		assert.equal(fields.operation, step[2],
+			'Operation row is honest ("' + step[2] + '") at sub_phase "' + step[0] + '"');
+		assert.notEqual(fields.operation, 'Finishing connection...',
+			'Operation row does NOT read Finishing before sub_phase connecting/verifying (sub_phase "' + step[0] + '")');
+		assert.equal(state.applyTransitionActive, true,
+			'applyTransitionActive stays true during the pre-converge sub_phase "' + step[0] + '" (No-VPN suppression holds)');
+	});
+
+	// Once connecting with a fresh handshake, the convergence heuristic is allowed to
+	// promote the row to Finishing (the honest end of the apply).
+	actions.renderLocalStatusSnapshot(state, supStatus('connecting', 'active', 30));
+	assert.equal(fields.operation, 'Finishing connection...',
+		'Operation row may read Finishing once sub_phase connecting has a fresh handshake');
+}
+
 Promise.resolve().then(async function() {
+	testEffectiveOperationStatusHonestSubPhase();
+	testSupervisedApplyOperationRowHonesty();
 	testCountryMatchTimingLogIsLabOptIn();
 	testManualApplyConvergenceRequiresStation();
 	testForcedCatalogRefreshUsesADistinctSlot();
 	await testUpdateLocalStatusPreservesSnapshotOnFailedResponse();
 	await testUpdateLocalStatusMarksSnapshotsStaleOnRejectedExec();
+	testStatusResponseIsOutOfOrderOrdering();
+	await testUpdateLocalStatusDiscardsOutOfOrderResponses();
 	testRenderLocalStatusSnapshotClearsDisabledPlaceholders();
 	testRenderLocalStatusSnapshotHonestDuringApply();
 	await testPublicLookupsReturnEarlyWhenRuntimeDisabled();
@@ -2507,10 +2819,10 @@ Promise.resolve().then(async function() {
 	await testHandleSaveApplyAutoModeClearsManualSelectionAndReconnects();
 	await testHandleSaveApplyReconcilesDisabledRuntimeAfterSave();
 	await testHandleSaveApplyQueuesReconnectWhenSavedCountryDriftsFromPeer();
-	await testHandleSaveApplyConvergesWhenConnectApplyResultReportsSuccess();
+	await testHandleSaveApplyConvergesViaJournalDoneSignal();
 	await testHandleSaveApplyConvergesViaStartConnectAndStatusPolling();
-	await testHandleSaveApplyStartConnectBusyFailsImmediately();
-	await testHandleSaveApplyStartConnectRuntimeErrorFromStatus();
+	await testHandleSaveApplyApplyBusyFailsImmediately();
+	await testHandleSaveApplyFailsWhenSupervisorJournalReportsFailure();
 	await testHandleSaveApplyRecoversAbortedRuntimeActionWhenStatusConverges();
 	await testHandleSaveApplyDoesNotRecoverNonAbortRuntimeActionFailure();
 	await testAutoReconcileRunsForCountryDrift();

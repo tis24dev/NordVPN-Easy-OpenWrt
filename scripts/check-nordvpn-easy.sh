@@ -38,6 +38,10 @@ SH_FILES=(
 	"$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/schema.sh"
 	"$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/config-context.sh"
 	"$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/common.sh"
+	"$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/generation.sh"
+	"$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/journal.sh"
+	"$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/supervise.sh"
+	"$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/hooks.sh"
 	"$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/catalog.sh"
 	"$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/runtime.sh"
 	"$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/wireguard.sh"
@@ -50,6 +54,11 @@ SH_FILES=(
 	"$ROOT_DIR/tests/nordvpn-easy/test-credentials-errors.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-catalog-fixtures.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-common-lock.sh"
+	"$ROOT_DIR/tests/nordvpn-easy/test-run-phase.sh"
+	"$ROOT_DIR/tests/nordvpn-easy/test-supervise.sh"
+	"$ROOT_DIR/tests/nordvpn-easy/test-supervise-check-reap.sh"
+	"$ROOT_DIR/tests/nordvpn-easy/test-hotplug-self-ifevent.sh"
+	"$ROOT_DIR/tests/nordvpn-easy/test-supervise-reaper.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-common-temp.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-init-cron.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-init-run-core.sh"
@@ -67,6 +76,7 @@ SH_FILES=(
 	"$ROOT_DIR/tests/nordvpn-easy/test-vpn-firewall.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-service-config.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-actions.sh"
+	"$ROOT_DIR/tests/nordvpn-easy/test-configure-split.sh"
 )
 
 printf '%s\n' 'Checking LuCI JavaScript syntax'
@@ -104,18 +114,29 @@ node "$ROOT_DIR/tests/nordvpn-easy/test-advanced.js"
 SHELL_TESTS=(
 	test-config-context.sh
 	test-schema.sh
+	test-generation.sh
+	test-journal.sh
+	test-run-phase.sh
+	test-supervise.sh
+	test-supervise-check-reap.sh
+	test-hotplug-self-ifevent.sh
+	test-supervise-reaper.sh
+	test-json-escape.sh
 	test-credentials-errors.sh
 	test-catalog-fixtures.sh
 	test-common-lock.sh
 	test-common-temp.sh
 	test-diagnostics.sh
 	test-healthcheck-blackhole.sh
+	test-healthcheck-config-drift.sh
 	test-degraded-state-log.sh
 	test-init-cron.sh
 	test-init-run-core.sh
 	test-init-transaction-lock.sh
 	test-timing-log-cgi.sh
 	test-init-start-soft-fail.sh
+	test-init-connect-hooks-order.sh
+	test-init-crontab-block.sh
 	test-rpcd.sh
 	test-core-dispatch.sh
 	test-uci-defaults-timeout.sh
@@ -127,6 +148,7 @@ SHELL_TESTS=(
 	test-vpn-firewall.sh
 	test-service-config.sh
 	test-actions.sh
+	test-configure-split.sh
 	test-provision.sh
 )
 for t in "${SHELL_TESTS[@]}"; do
