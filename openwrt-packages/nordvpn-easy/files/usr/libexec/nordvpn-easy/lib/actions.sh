@@ -240,7 +240,8 @@ nordvpn_easy_get_servers_list() {
 nordvpn_easy_set_first_server_from_list() {
 	local exclude="${NORDVPN_EASY_ROTATE_EXCLUDE_STATION:-}"
 
-	FIRST_SERVER=$(jq -r --arg exclude "$exclude" --arg want "${RESOLVED_COUNTRY_CODE:-}" '
+	FIRST_SERVER=$(jq -r --arg exclude "$exclude" --arg want "${RESOLVED_COUNTRY_CODE:-}" \
+		"$NORDVPN_EASY_WG_ONLINE_JQ_DEF"'
 		[.[] |
 			select(($exclude == "") or ((.station // "") != $exclude)) |
 			select(($want == "") or ((.locations[0].country.code // "") == $want)) |
@@ -250,8 +251,7 @@ nordvpn_easy_set_first_server_from_list() {
 			select((.status // "") != "offline") |
 			. as $srv |
 			([$srv.technologies[]?
-				| select((.identifier == "wireguard_udp") or ((.name | strings | ascii_downcase) == "wireguard"))
-				| select((.pivot.status? // "online") == "online")
+				| wg_online
 				| .metadata[]?
 				| select(.name == "public_key")
 				| (.value // "")

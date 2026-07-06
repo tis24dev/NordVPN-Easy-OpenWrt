@@ -3,6 +3,7 @@
 set -eu
 
 ROOT_DIR="$(CDPATH='' cd -- "$(dirname "$0")/../.." && pwd)"
+COMMON_LIB="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/common.sh"
 CATALOG_LIB="$ROOT_DIR/openwrt-packages/nordvpn-easy/files/usr/libexec/nordvpn-easy/lib/catalog.sh"
 FIXTURE="$ROOT_DIR/tests/nordvpn-easy/fixtures/nordvpn-api-servers.json"
 TMP_DIR="$(mktemp -d)"
@@ -15,6 +16,8 @@ cleanup() {
 
 trap cleanup EXIT HUP INT TERM
 
+# shellcheck disable=SC1090
+. "$COMMON_LIB"
 # shellcheck disable=SC1090
 . "$CATALOG_LIB"
 

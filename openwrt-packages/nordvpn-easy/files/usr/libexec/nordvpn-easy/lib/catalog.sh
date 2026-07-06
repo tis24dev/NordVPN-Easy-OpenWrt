@@ -8,7 +8,8 @@ nordvpn_easy_build_server_catalog_json() {
 	jq -ce \
 		--argjson country_id "$country_id" \
 		--arg country_code "$country_code" \
-		--arg country_name "$country_name" '
+		--arg country_name "$country_name" \
+		"$NORDVPN_EASY_WG_ONLINE_JQ_DEF"'
 			{
 				country_id: $country_id,
 				country_code: $country_code,
@@ -21,7 +22,7 @@ nordvpn_easy_build_server_catalog_json() {
 						city: (.locations[0].country.city.name // ""),
 						country_code: (.locations[0].country.code // $country_code),
 						country_name: (.locations[0].country.name // $country_name),
-						public_key: ([.technologies[]? | select((.identifier == "wireguard_udp") or ((.name | strings | ascii_downcase) == "wireguard")) | select((.pivot.status? // "online") == "online") | .metadata[]? | select(.name == "public_key") | .value][0] // ""),
+						public_key: ([.technologies[]? | wg_online | .metadata[]? | select(.name == "public_key") | .value][0] // ""),
 						status: (.status // "")
 					} | select(
 						(.hostname != "") and
@@ -50,14 +51,13 @@ nordvpn_easy_server_catalog_candidates_tsv() {
 }
 
 nordvpn_easy_recommendation_candidates_tsv() {
-	jq -r '.[]
+	jq -r "$NORDVPN_EASY_WG_ONLINE_JQ_DEF"'.[]
 		| select((.status // "") != "offline")
 		| [
 		.hostname,
 		.station,
 		([.technologies[]?
-			| select((.identifier == "wireguard_udp") or ((.name | strings | ascii_downcase) == "wireguard"))
-			| select((.pivot.status? // "online") == "online")
+			| wg_online
 			| .metadata[]?
 			| select(.name == "public_key")
 			| (.value // "")
