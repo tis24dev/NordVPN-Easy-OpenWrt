@@ -1,5 +1,13 @@
 reviews:
   tools:
+    # Biome cannot parse LuCI view modules: LuCI loads them wrapped in a
+    # function (CommonJS-style), so their top-level `return view.extend({...})`
+    # is valid (node --check and the LuCI runtime accept it), but Biome reads
+    # the files as plain scripts and false-positives with "Illegal return
+    # statement outside of a function" on every view. The repo does not use
+    # Biome (it lints JS with `node --check`), so disable it here.
+    biome:
+      enabled: false
     github-checks:
       enabled: true
       timeout_ms: 900000
