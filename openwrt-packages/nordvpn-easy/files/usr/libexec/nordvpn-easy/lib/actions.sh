@@ -117,7 +117,14 @@ nordvpn_easy_build_server_recommendations_url() {
 			SERVER_RECOMMENDATIONS_URL="${SERVER_RECOMMENDATIONS_URL}&filters[country_id]=$RESOLVED_COUNTRY_ID"
 			log "Building recommendations URL for country filter $RESOLVED_COUNTRY_NAME ($RESOLVED_COUNTRY_CODE)"
 		else
-			log "Building recommendations URL without country_id filter; will select servers matching $RESOLVED_COUNTRY_CODE from the response"
+			# The country is not in the NordVPN id cache, so there is no numeric
+			# country_id to filter by. The recommendations endpoint also accepts a
+			# country_code query param (verified in the decompiled app), so filter
+			# server-side by code instead of downloading the geo-default list and
+			# relying only on the client-side jq filter. The jq filter in
+			# nordvpn_easy_set_first_server_from_list is kept as a safety net.
+			SERVER_RECOMMENDATIONS_URL="${SERVER_RECOMMENDATIONS_URL}&country_code=$RESOLVED_COUNTRY_CODE"
+			log "Building recommendations URL filtered server-side by country_code $RESOLVED_COUNTRY_CODE (country not in the NordVPN id cache); the response is also narrowed client-side"
 		fi
 	else
 		log 'Building recommendations URL with automatic country selection'
@@ -233,13 +240,18 @@ nordvpn_easy_get_servers_list() {
 nordvpn_easy_set_first_server_from_list() {
 	local exclude="${NORDVPN_EASY_ROTATE_EXCLUDE_STATION:-}"
 
-	FIRST_SERVER=$(jq -r --arg exclude "$exclude" --arg want "${RESOLVED_COUNTRY_CODE:-}" '
+	FIRST_SERVER=$(jq -r --arg exclude "$exclude" --arg want "${RESOLVED_COUNTRY_CODE:-}" \
+		"$NORDVPN_EASY_WG_ONLINE_JQ_DEF"'
 		[.[] |
 			select(($exclude == "") or ((.station // "") != $exclude)) |
 			select(($want == "") or ((.locations[0].country.code // "") == $want)) |
+			# Skip a server the API marks offline. The recommendations endpoint now
+			# carries the pivot-status=online filter, but a stale on-disk cache reused
+			# after a failed fetch can still hold a since-downed server.
+			select((.status // "") != "offline") |
 			. as $srv |
 			([$srv.technologies[]?
-				| select(.identifier == "wireguard_udp")
+				| wg_online
 				| .metadata[]?
 				| select(.name == "public_key")
 				| (.value // "")
@@ -365,6 +377,25 @@ nordvpn_easy_fetch_provision_prerequisites() {
 # Everything up to (but NOT including) the interface bring-up: fetch-if-needed,
 # firewall, the network UCI + peer sections, the fenced network commit and the perm
 # hardening. Split out (S7 increment 5a) so the supervisor state machine can run the
+# Resolve the DNS pair pushed into the tunnel from DNS_MODE. NordVPN's Threat
+# Protection is not an API toggle: it is purely a choice of resolver IPs (verified
+# against the decompiled app, DNSConfigurationStore / gr.C6330b). The standard and
+# threat-protection pairs are those literal resolvers; 'custom' keeps the user's
+# vpn_dns1/vpn_dns2. Sets NORDVPN_EASY_DNS1/NORDVPN_EASY_DNS2 (busybox sh has no
+# multi-value return).
+nordvpn_easy_resolve_dns_pair() {
+	case "${DNS_MODE:-custom}" in
+		standard)
+			NORDVPN_EASY_DNS1='103.86.96.100'; NORDVPN_EASY_DNS2='103.86.99.100' ;;
+		threat_protection)
+			NORDVPN_EASY_DNS1='103.86.99.108'; NORDVPN_EASY_DNS2='103.86.96.108' ;;
+		threat_protection_family)
+			NORDVPN_EASY_DNS1='103.86.96.111'; NORDVPN_EASY_DNS2='103.86.99.111' ;;
+		*)
+			NORDVPN_EASY_DNS1="${VPN_DNS1:-}"; NORDVPN_EASY_DNS2="${VPN_DNS2:-}" ;;
+	esac
+}
+
 # CONFIGURE phase separately from BRINGUP while the legacy connect() path stays
 # byte-identical -- the wrapper below re-composes the exact legacy sequence
 # (configure -> bring up -> success log -> post-bring-up state snapshot), including
@@ -392,10 +423,11 @@ nordvpn_easy_configure_vpn_interface_no_bringup() {
 	uci set "network.${VPN_IF}.private_key"="$PRIVATE_KEY"
 
 	uci -q delete "network.${VPN_IF}.dns" >/dev/null 2>&1 || true
-	if [ -n "$VPN_DNS1" ] || [ -n "$VPN_DNS2" ]; then
+	nordvpn_easy_resolve_dns_pair
+	if [ -n "$NORDVPN_EASY_DNS1" ] || [ -n "$NORDVPN_EASY_DNS2" ]; then
 		uci set "network.${VPN_IF}.peerdns"='0'
-		[ -n "$VPN_DNS1" ] && uci add_list "network.${VPN_IF}.dns"="$VPN_DNS1"
-		[ -n "$VPN_DNS2" ] && uci add_list "network.${VPN_IF}.dns"="$VPN_DNS2"
+		[ -n "$NORDVPN_EASY_DNS1" ] && uci add_list "network.${VPN_IF}.dns"="$NORDVPN_EASY_DNS1"
+		[ -n "$NORDVPN_EASY_DNS2" ] && uci add_list "network.${VPN_IF}.dns"="$NORDVPN_EASY_DNS2"
 	else
 		uci set "network.${VPN_IF}.peerdns"='1'
 	fi
@@ -474,6 +506,11 @@ nordvpn_easy_provision_vpn_connect_fresh() {
 		return 1
 	fi
 
+	# Tunnel is up and routing: reset the forwarded flows still pinned to the old
+	# exit so they re-establish through it instead of hanging with a stale NAT
+	# binding (the public-IP check below always does its own fresh detection).
+	nordvpn_easy_reset_forwarded_conntrack
+
 	verify_public_country_selection ||
 		log 'apply: public IP/country verification did not pass; leaving the tunnel up (status reflects the result)'
 	log 'apply: VPN provisioning completed'
@@ -535,6 +572,10 @@ nordvpn_easy_provision_vpn() {
 			log 'apply: VPN connection is not OK after provisioning'
 			return 1
 		fi
+
+		# Same tunnel-up reset as connect_fresh, for the rotate/reconcile/recovery
+		# path that reaches provisioning through this branch.
+		nordvpn_easy_reset_forwarded_conntrack
 
 		verify_public_country_selection ||
 			log 'apply: public IP/country verification did not pass; leaving the tunnel up (status reflects the result)'

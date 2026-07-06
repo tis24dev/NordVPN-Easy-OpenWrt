@@ -188,6 +188,8 @@ assert_file_has_line "	option enabled '0'" "$FAKE_UCI_CONFIG_FILE" 'first instal
 assert_file_has_line "	option vpn_if 'wg0'" "$FAKE_UCI_CONFIG_FILE" 'first install writes default VPN interface'
 assert_file_has_line "	option config_schema_version '$NORDVPN_EASY_SCHEMA_VERSION'" "$FAKE_UCI_CONFIG_FILE" 'first install writes current schema version'
 assert_file_has_line "	option check_cron_schedule '*/15 * * * *'" "$FAKE_UCI_CONFIG_FILE" 'first install seeds the recovery cron floor'
+assert_file_has_line "	option dns_mode 'custom'" "$FAKE_UCI_CONFIG_FILE" 'first install defaults dns_mode to custom (Threat Protection is opt-in)'
+assert_file_has_line "	option wireguard_mtu '1280'" "$FAKE_UCI_CONFIG_FILE" 'first install seeds the NordVPN default MTU 1280'
 
 reset_fake_uci
 cat > "$FAKE_UCI_CONFIG_FILE" <<'EOF'
@@ -204,6 +206,8 @@ config nordvpn_easy 'main'
 	option wireguard_mtu '1420'
 	option kill_switch_enabled 'on'
 	option post_restart_delay '60'
+	option vpn_dns1 '1.1.1.1'
+	option vpn_dns2 '9.9.9.9'
 EOF
 set_store_value '__section__' 'nordvpn_easy'
 set_store_value 'enabled' 'yes'
@@ -218,6 +222,8 @@ set_store_value 'server_cache_ttl' 'not-a-number'
 set_store_value 'wireguard_mtu' '1420'
 set_store_value 'kill_switch_enabled' 'on'
 set_store_value 'post_restart_delay' '60'
+set_store_value 'vpn_dns1' '1.1.1.1'
+set_store_value 'vpn_dns2' '9.9.9.9'
 printf '%s\n' 'stale legacy conffile' > "$FAKE_LEGACY_CONFIG_FILE"
 
 run_migrator
@@ -231,6 +237,9 @@ assert_file_has_line "	option preferred_server_station 'at12'" "$FAKE_UCI_CONFIG
 assert_file_has_line "	option wan_if 'wan6'" "$FAKE_UCI_CONFIG_FILE" 'upgrade preserves WAN interface'
 assert_file_has_line "	option server_cache_ttl '86400'" "$FAKE_UCI_CONFIG_FILE" 'upgrade normalizes invalid numeric values'
 assert_file_has_line "	option wireguard_mtu '1420'" "$FAKE_UCI_CONFIG_FILE" 'upgrade preserves valid WireGuard MTU'
+assert_file_has_line "	option dns_mode 'custom'" "$FAKE_UCI_CONFIG_FILE" 'upgrade without dns_mode stays custom so saved DNS is honored'
+assert_file_has_line "	option vpn_dns1 '1.1.1.1'" "$FAKE_UCI_CONFIG_FILE" 'upgrade preserves a user custom DNS server'
+assert_file_has_line "	option vpn_dns2 '9.9.9.9'" "$FAKE_UCI_CONFIG_FILE" 'upgrade preserves the second custom DNS server'
 assert_file_has_line "	option kill_switch_enabled '1'" "$FAKE_UCI_CONFIG_FILE" 'upgrade normalizes kill switch flag'
 assert_file_has_line "	option post_restart_delay '30'" "$FAKE_UCI_CONFIG_FILE" 'upgrade migrates legacy post restart delay from 60 to 30'
 assert_file_has_line "	option fallback_server_station ''" "$FAKE_UCI_CONFIG_FILE" 'upgrade adds new fallback option from template/schema'
@@ -408,6 +417,51 @@ run_migrator
 TEST_RECOVERY_FLOOR_SCHEMA=4
 
 assert_file_has_line "	option check_cron_schedule ''" "$FAKE_UCI_CONFIG_FILE" 'a later schema bump does not re-seed a deliberately cleared schedule'
+
+# An existing install with no MTU set keeps automatic on upgrade: the fresh-install
+# 1280 seed must never cap an install that predates it. The live config file is
+# present, so the migrator treats this as an upgrade, not a fresh install.
+reset_fake_uci
+rm -f "$FAKE_LEGACY_CONFIG_FILE"
+cat > "$FAKE_UCI_CONFIG_FILE" <<'EOF'
+config nordvpn_easy 'main'
+	option enabled '1'
+	option wireguard_mtu ''
+	option config_schema_version '3'
+EOF
+set_store_value '__section__' 'nordvpn_easy'
+set_store_value 'enabled' '1'
+set_store_value 'wireguard_mtu' ''
+set_store_value 'config_schema_version' '3'
+
+run_migrator
+
+assert_file_has_line "	option wireguard_mtu ''" "$FAKE_UCI_CONFIG_FILE" 'upgrade with an empty MTU keeps automatic (the 1280 seed never caps an existing install)'
+
+# An explicit DNS pair is never rewritten by the aligned default, even when it is
+# exactly the legacy 103.86.99.99/103.86.96.96 pair: a user-typed value cannot be
+# told apart from a historical default, so any explicit value is preserved verbatim.
+reset_fake_uci
+rm -f "$FAKE_LEGACY_CONFIG_FILE"
+cat > "$FAKE_UCI_CONFIG_FILE" <<'EOF'
+config nordvpn_easy 'main'
+	option enabled '1'
+	option dns_mode 'custom'
+	option vpn_dns1 '103.86.99.99'
+	option vpn_dns2 '103.86.96.96'
+	option config_schema_version '3'
+EOF
+set_store_value '__section__' 'nordvpn_easy'
+set_store_value 'enabled' '1'
+set_store_value 'dns_mode' 'custom'
+set_store_value 'vpn_dns1' '103.86.99.99'
+set_store_value 'vpn_dns2' '103.86.96.96'
+set_store_value 'config_schema_version' '3'
+
+run_migrator
+
+assert_file_has_line "	option vpn_dns1 '103.86.99.99'" "$FAKE_UCI_CONFIG_FILE" 'upgrade never rewrites an explicit DNS pair, even one equal to the old legacy default'
+assert_file_has_line "	option vpn_dns2 '103.86.96.96'" "$FAKE_UCI_CONFIG_FILE" 'upgrade preserves the explicit second DNS server'
 
 # Atomic-swap durability: a failure during the build (here a commit failure)
 # must leave the ORIGINAL config byte-for-byte intact - never a template-only

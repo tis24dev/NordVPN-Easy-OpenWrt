@@ -3,6 +3,16 @@
 NORDVPN_EASY_TEMP_PATHS="${NORDVPN_EASY_TEMP_PATHS:-}"
 NORDVPN_EASY_EXIT_TRAP_INSTALLED="${NORDVPN_EASY_EXIT_TRAP_INSTALLED:-0}"
 
+# Shared jq helper prepended to every jq program that extracts a server's
+# WireGuard public key. Given a stream of technology objects it keeps only the
+# WireGuard technologies whose pivot status is online, so the client-side match
+# rule lives in exactly one place (the server-side twin is the
+# filters[servers_technologies][pivot][status]=online query in core.sh's
+# SERVER_*_URL_BASE). Interpolate it as `"$NORDVPN_EASY_WG_ONLINE_JQ_DEF"'...'`
+# and call `wg_online` inside the program.
+# shellcheck disable=SC2034
+NORDVPN_EASY_WG_ONLINE_JQ_DEF='def wg_online: select((.identifier == "wireguard_udp") or ((.name | strings | ascii_downcase) == "wireguard")) | select((.pivot.status? // "online") == "online");'
+
 nordvpn_easy_log() {
 	[ -t 2 ] && printf '*** %s ***\n' "$*" >&2
 	if command -v logger >/dev/null 2>&1; then

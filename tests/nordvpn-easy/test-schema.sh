@@ -37,6 +37,12 @@ assert_eq '1' "$(nordvpn_easy_normalize_value kill_switch_enabled true)" 'kill s
 assert_eq '1' "$(nordvpn_easy_normalize_value firewall_mtu_fix true)" 'firewall MTU fix boolean normalization'
 assert_eq 'manual' "$(nordvpn_easy_normalize_value server_selection_mode manual)" 'manual mode normalization'
 assert_eq 'auto' "$(nordvpn_easy_normalize_value server_selection_mode broken)" 'invalid mode normalization'
+# dns_mode defaults to custom (backward compatible: keep saved vpn_dns on upgrade)
+assert_eq 'custom' "$(nordvpn_easy_default dns_mode)" 'default dns_mode keeps custom for existing configs'
+assert_eq 'standard' "$(nordvpn_easy_normalize_value dns_mode standard)" 'standard dns_mode preserved'
+assert_eq 'threat_protection' "$(nordvpn_easy_normalize_value dns_mode threat_protection)" 'threat_protection dns_mode preserved'
+assert_eq 'threat_protection_family' "$(nordvpn_easy_normalize_value dns_mode threat_protection_family)" 'threat_protection_family dns_mode preserved'
+assert_eq 'custom' "$(nordvpn_easy_normalize_value dns_mode nonsense)" 'invalid dns_mode falls back to custom'
 assert_eq '86400' "$(nordvpn_easy_normalize_value server_cache_ttl not-a-number)" 'invalid ttl normalization'
 assert_eq '15' "$(nordvpn_easy_normalize_value wireguard_persistent_keepalive not-a-number)" 'invalid keepalive normalization'
 assert_eq '0' "$(nordvpn_easy_normalize_value wireguard_persistent_keepalive 0)" 'zero keepalive disables keepalive'
@@ -68,8 +74,12 @@ assert_eq '10.5.0.2/32' "$(nordvpn_easy_normalize_value vpn_addr 10.8.0.1)" 'bar
 assert_eq '10.5.0.2/32' "$(nordvpn_easy_normalize_value vpn_addr not-an-ip)" 'invalid vpn_addr normalizes to default'
 assert_eq '10.5.0.2/32' "$(nordvpn_easy_normalize_value vpn_addr '')" 'empty vpn_addr normalizes to default'
 assert_eq '1.1.1.1' "$(nordvpn_easy_normalize_value vpn_dns1 1.1.1.1)" 'valid dns accepted'
-assert_eq '103.86.99.99' "$(nordvpn_easy_normalize_value vpn_dns1 999.1.1.1)" 'invalid dns normalizes to default'
+assert_eq '103.86.96.100' "$(nordvpn_easy_normalize_value vpn_dns1 999.1.1.1)" 'invalid dns normalizes to the aligned NordVPN default'
 assert_eq '' "$(nordvpn_easy_normalize_value vpn_dns2 '')" 'empty dns stays empty'
+# The DNS defaults are aligned with the NordVPN standard resolvers (verified in
+# the app binary) and match the 'standard' branch of nordvpn_easy_resolve_dns_pair.
+assert_eq '103.86.96.100' "$(nordvpn_easy_default vpn_dns1)" 'default DNS1 is the NordVPN standard resolver'
+assert_eq '103.86.99.100' "$(nordvpn_easy_default vpn_dns2)" 'default DNS2 is the NordVPN standard resolver'
 assert_eq 'US' "$(nordvpn_easy_normalize_value vpn_country us)" 'country code uppercased'
 assert_eq '' "$(nordvpn_easy_normalize_value vpn_country usa)" 'invalid country normalizes to default (auto)'
 assert_eq 'IT' "$(nordvpn_easy_normalize_value vpn_country IT)" 'valid country accepted'
@@ -101,14 +111,22 @@ unset NORDVPN_TOKEN
 unset CHECK_CRON_SCHEDULE
 SERVER_CACHE_TTL=''
 WIREGUARD_PERSISTENT_KEEPALIVE=''
+VPN_DNS1=''
+VPN_DNS2=''
 export SERVER_CACHE_TTL
 export WIREGUARD_PERSISTENT_KEEPALIVE
+export VPN_DNS1
+export VPN_DNS2
 nordvpn_easy_apply_env_defaults
 
 assert_eq '' "${NORDVPN_TOKEN:-}" 'empty token default'
 assert_eq '' "$CHECK_CRON_SCHEDULE" 'cron default disabled'
 assert_eq '86400' "$SERVER_CACHE_TTL" 'environment ttl default'
 assert_eq '15' "$WIREGUARD_PERSISTENT_KEEPALIVE" 'environment keepalive default'
+# An install that never set a custom DNS (empty env) backfills the aligned
+# NordVPN standard pair, not the legacy 103.86.99.99/103.86.96.96 resolvers.
+assert_eq '103.86.96.100' "$VPN_DNS1" 'environment DNS1 default is the aligned NordVPN standard resolver'
+assert_eq '103.86.99.100' "$VPN_DNS2" 'environment DNS2 default is the aligned NordVPN standard resolver'
 
 # S9: the orchestrator flag is removed. The supervisor is the sole apply path, so there
 # is no orchestrator mode reader and the defaults template no longer seeds the flag.

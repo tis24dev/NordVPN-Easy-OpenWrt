@@ -145,6 +145,7 @@ nordvpn_easy_teardown_vpn() { printf 'teardown\n' >> "$CALL_LOG"; : > "$SENTINEL
 nordvpn_easy_configure_vpn_interface_no_bringup() { printf 'configure\n' >> "$CALL_LOG"; return "${CONFIGURE_RC:-0}"; }
 nordvpn_easy_bring_up_vpn_interface() { printf 'bringup\n' >> "$CALL_LOG"; return "${BRINGUP_RC:-0}"; }
 nordvpn_easy_wait_for_vpn_connectivity() { printf 'wait\n' >> "$CALL_LOG"; return "${WAIT_RC:-0}"; }
+nordvpn_easy_reset_forwarded_conntrack() { printf 'reset\n' >> "$CALL_LOG"; }
 nordvpn_easy_log_vpn_interface_state() { :; }
 
 # B1: fetch fails -> teardown NEVER runs, classified network.fetch
@@ -160,7 +161,7 @@ assert_eq 'network.fetch' "$(nordvpn_easy_journal_get last_error)" 'a fetch fail
 reset_journal
 FETCH_RC=0 TEARDOWN_RC=0 CONFIGURE_RC=0 BRINGUP_RC=0 WAIT_RC=0
 _supervise_converge || fail 'converge must succeed when every step succeeds'
-assert_eq 'fetch teardown configure bringup wait' "$(tr '\n' ' ' < "$CALL_LOG" | sed 's/ $//')" 'converge runs the steps in order'
+assert_eq 'fetch teardown configure bringup wait reset' "$(tr '\n' ' ' < "$CALL_LOG" | sed 's/ $//')" 'converge runs the steps in order, resetting forwarded flows once the tunnel is up'
 [ -f "$SENTINEL" ] || fail 'teardown must run on the happy path (fetch_done was set)'
 # inc 7: converge marks the self-ifevent sentinel before bring-up.
 [ -r "$NORDVPN_EASY_RUN_DIR/self-ifevent" ] || fail 'inc7: converge must mark the self-ifevent sentinel'

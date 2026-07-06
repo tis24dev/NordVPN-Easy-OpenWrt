@@ -147,6 +147,7 @@ function createFormHarness() {
 	const form = {
 		Flag: extendOptionClass(BaseOption, {}, 'Flag'),
 		Value: extendOptionClass(BaseOption, {}, 'Value'),
+		ListValue: extendOptionClass(BaseOption, {}, 'ListValue'),
 		DummyValue: extendOptionClass(BaseOption, {}, 'DummyValue'),
 		Button: extendOptionClass(BaseOption, {}, 'Button'),
 		NamedSection: function NamedSection() {},
@@ -430,6 +431,24 @@ async function testWireGuardTransportControlsValidateOperationalRanges() {
 	assert.match(String(mtuOption.validate('main', '1279')), /between 1280 and 1500/, 'low MTU is rejected');
 	assert.match(String(mtuOption.validate('main', '1501')), /between 1280 and 1500/, 'high MTU is rejected');
 	assert.equal(mtuFixOption.default, '1', 'MSS clamping defaults on');
+
+	const dnsModeOption = harness.formHarness.findOption('dns_mode');
+	assert.equal(dnsModeOption.default, 'custom', 'dns_mode defaults to custom so an upgrade keeps the saved DNS');
+	assert.deepEqual(
+		dnsModeOption.values.map(function(v) { return v.value; }),
+		['standard', 'threat_protection', 'threat_protection_family', 'custom'],
+		'dns_mode offers standard, both threat-protection tiers and custom'
+	);
+	const dns1Option = harness.formHarness.findOption('vpn_dns1');
+	assert.ok(
+		dns1Option.dependencies.some(function(d) { return d.option === 'dns_mode' && d.value === 'custom'; }),
+		'DNS 1 is only shown in custom dns_mode'
+	);
+	const dns2Option = harness.formHarness.findOption('vpn_dns2');
+	assert.ok(
+		dns2Option.dependencies.some(function(d) { return d.option === 'dns_mode' && d.value === 'custom'; }),
+		'DNS 2 is only shown in custom dns_mode'
+	);
 
 	const cronOption = harness.formHarness.findOption('check_cron_schedule');
 	assert.equal(cronOption.validate('main', ''), true, 'empty cron schedule disables cron');

@@ -8,3 +8,6 @@ diagnostics/
 # Local diagnostics exports
 nordvpn-easy-diagnostics-*.log
 problem.md
+
+# APK reverse-engineering workspace (non versionare binari/decompilati)
+/apk/

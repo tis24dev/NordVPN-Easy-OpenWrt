@@ -404,6 +404,9 @@ _supervise_converge() {
 		nordvpn_easy_supervise_record_error 'network.connectivity' 'timed out waiting for vpn connectivity'
 		return 1
 	fi
+	# Tunnel is up on this (the primary) apply path: reset the flows still pinned
+	# to the previous exit so they re-establish through it, matching the app.
+	nordvpn_easy_reset_forwarded_conntrack
 	return 0
 }
 

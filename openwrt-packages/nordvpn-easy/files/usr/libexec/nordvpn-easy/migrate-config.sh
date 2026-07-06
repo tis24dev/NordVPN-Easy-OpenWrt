@@ -19,6 +19,20 @@ BUILD_DIR=''
 # default cadence to seed. See seed_recovery_floor_if_needed.
 NORDVPN_EASY_RECOVERY_FLOOR_SCHEMA="${NORDVPN_EASY_RECOVERY_FLOOR_SCHEMA:-4}"
 NORDVPN_EASY_RECOVERY_FLOOR_SCHEDULE="${NORDVPN_EASY_RECOVERY_FLOOR_SCHEDULE:-*/15 * * * *}"
+# Fresh-install MTU seed. The official NordVPN app pins the NordLynx MTU to 1280
+# (TunnelBuilder), which avoids PMTUD blackholes on PPPoE/IPv6/double-NAT paths.
+# See seed_wireguard_mtu_default_if_fresh.
+NORDVPN_EASY_FRESH_INSTALL_MTU="${NORDVPN_EASY_FRESH_INSTALL_MTU:-1280}"
+
+# A brand-new install has neither a live config nor a legacy conffile to recover.
+# Only then do we seed opinionated fresh-install defaults (e.g. the WireGuard MTU)
+# that must never be forced onto an existing install. Captured once, before the
+# build writes the live config, so build_migrated_config creating the file cannot
+# make a later check see the install as non-fresh.
+NORDVPN_EASY_FRESH_INSTALL=0
+if [ ! -r "$CONFIG_FILE" ] && [ ! -r "$LEGACY_CONFIG_FILE" ]; then
+	NORDVPN_EASY_FRESH_INSTALL=1
+fi
 
 cleanup() {
 	[ -n "$BUILD_DIR" ] && rm -rf -- "$BUILD_DIR"
@@ -150,6 +164,19 @@ seed_recovery_floor_if_needed() {
 	snapshot_check_cron_schedule="$(nordvpn_easy_normalize_value check_cron_schedule "$NORDVPN_EASY_RECOVERY_FLOOR_SCHEDULE")"
 }
 
+# One-time fresh-install seed of the WireGuard MTU. The schema default is kept
+# empty (= automatic) so an EXISTING install is never silently capped and the
+# user can always return to automatic by clearing the field; the app's 1280
+# default is therefore delivered here, only for a genuinely fresh install and
+# only when no MTU is carried over from a snapshot (a user/legacy value always
+# wins). build_migrated_config then writes the seeded value verbatim.
+seed_wireguard_mtu_default_if_fresh() {
+	[ "$NORDVPN_EASY_FRESH_INSTALL" = '1' ] || return 0
+	[ -z "${snapshot_wireguard_mtu:-}" ] || return 0
+
+	snapshot_wireguard_mtu="$(nordvpn_easy_normalize_value wireguard_mtu "$NORDVPN_EASY_FRESH_INSTALL_MTU")"
+}
+
 # Build the fully migrated config off to the side and swap it into place with a
 # single atomic rename. The new config is assembled in a sibling workspace on the
 # same filesystem as the live config (so the final mv is an atomic rename, not a
@@ -228,5 +255,6 @@ fi
 
 snapshot_existing_config
 seed_recovery_floor_if_needed
+seed_wireguard_mtu_default_if_fresh
 build_migrated_config || exit 1
 rm -f -- "$LEGACY_CONFIG_FILE"

@@ -206,6 +206,30 @@ nordvpn_easy_set_first_server_from_list
 assert_eq 'it02.nordvpn.com|it002' "$LAST_SET_SERVER" 'auto-selection skips a first server without a WireGuard key'
 assert_eq 'VALID-WG-KEY' "$LAST_SET_PUBLIC_KEY" 'auto-selection uses the first server that has a WireGuard key'
 
+# A first recommendation the API marks offline (whole server, or just its
+# WireGuard technology via pivot.status) must be skipped even though it carries a
+# valid key, so a stale cache never provisions onto a down server.
+jq -n '[
+	{ "hostname": "it03.nordvpn.com", "station": "it003", "load": 5, "status": "offline",
+	  "locations": [{ "country": { "code": "IT", "city": { "name": "Rome" } } }],
+	  "technologies": [{ "identifier": "wireguard_udp", "metadata": [{ "name": "public_key", "value": "OFFLINE-SERVER-KEY" }] }] },
+	{ "hostname": "it04.nordvpn.com", "station": "it004", "load": 10, "status": "online",
+	  "locations": [{ "country": { "code": "IT", "city": { "name": "Milan" } } }],
+	  "technologies": [{ "identifier": "wireguard_udp", "pivot": { "status": "offline" }, "metadata": [{ "name": "public_key", "value": "OFFLINE-TECH-KEY" }] }] },
+	{ "hostname": "it05.nordvpn.com", "station": "it005", "load": 20, "status": "online",
+	  "locations": [{ "country": { "code": "IT", "city": { "name": "Turin" } } }],
+	  "technologies": [{ "identifier": "wireguard_udp", "pivot": { "status": "online" }, "metadata": [{ "name": "public_key", "value": "ONLINE-WG-KEY" }] }] }
+]' > "$TMP_DIR/skip-offline.json"
+SERVER_LIST_FILE="$TMP_DIR/skip-offline.json"
+RESOLVED_COUNTRY_CODE=''
+NORDVPN_EASY_ROTATE_EXCLUDE_STATION=''
+NORDVPN_EASY_PROVISION_MODE=''
+LAST_SET_SERVER=''
+LAST_SET_PUBLIC_KEY=''
+nordvpn_easy_set_first_server_from_list
+assert_eq 'it05.nordvpn.com|it005' "$LAST_SET_SERVER" 'auto-selection skips servers flagged offline (server status and technology pivot status)'
+assert_eq 'ONLINE-WG-KEY' "$LAST_SET_PUBLIC_KEY" 'auto-selection uses the first server whose WireGuard technology is online'
+
 SERVER_LIST_FILE="$TMP_DIR/recommendations.json"
 
 NORDVPN_EASY_ROTATE_EXCLUDE_STATION='it123'
@@ -303,6 +327,56 @@ nordvpn_easy_set_first_server_from_list || {
 	exit 1
 }
 
+# --- Recommendations URL: server-side country filter -------------------------
+# Reuse the REAL resolve_country_filter extracted above (BZ id 22 is the only
+# entry in the restored cache) to exercise the URL builder end to end. A cached
+# country filters by API country id; a valid country absent from the cache now
+# filters server-side by country_code instead of downloading the geo-default
+# list and relying only on the client-side jq filter.
+url_contains() {
+	case "$2" in
+		*"$1"*) return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
+VPN_COUNTRY=''
+RESOLVED_COUNTRY_ID=''
+RESOLVED_COUNTRY_QUERY=''
+REC_URL="$(nordvpn_easy_build_server_recommendations_url)"
+assert_eq "$SERVER_RECOMMENDATIONS_URL_BASE" "$REC_URL" 'automatic selection sends no country filter in the recommendations URL'
+
+VPN_COUNTRY='BZ'
+RESOLVED_COUNTRY_ID=''
+RESOLVED_COUNTRY_QUERY=''
+REC_URL="$(nordvpn_easy_build_server_recommendations_url)"
+url_contains '&filters[country_id]=22' "$REC_URL" || {
+	printf '%s\n' "FAIL: a cached country must filter by API country id (got $REC_URL)" >&2
+	exit 1
+}
+if url_contains 'country_code=' "$REC_URL"; then
+	printf '%s\n' "FAIL: a cached country must not also use the country_code filter (got $REC_URL)" >&2
+	exit 1
+fi
+
+VPN_COUNTRY='EC'
+RESOLVED_COUNTRY_ID=''
+RESOLVED_COUNTRY_QUERY=''
+REC_URL="$(nordvpn_easy_build_server_recommendations_url)"
+url_contains '&country_code=EC' "$REC_URL" || {
+	printf '%s\n' "FAIL: an uncached country must filter server-side by country_code (got $REC_URL)" >&2
+	exit 1
+}
+if url_contains 'filters[country_id]=' "$REC_URL"; then
+	printf '%s\n' "FAIL: an uncached country must not use the country_id filter (got $REC_URL)" >&2
+	exit 1
+fi
+
+VPN_COUNTRY='IT'
+RESOLVED_COUNTRY_ID=''
+RESOLVED_COUNTRY_QUERY=''
+RESOLVED_COUNTRY_CODE=''
+
 PROVISION_COUNT=0
 CHECK_COUNT=0
 refresh_countries_cache() { return 0; }
@@ -323,5 +397,19 @@ nordvpn_easy_runtime_needs_provision() { return 0; }
 nordvpn_easy_check_once
 
 assert_eq '1' "$PROVISION_COUNT" 'health check reprovisions when the runtime is degraded'
+
+# --- DNS mode -> resolver pair (Threat Protection) ---------------------------
+VPN_DNS1='1.1.1.1'; VPN_DNS2='9.9.9.9'
+DNS_MODE='standard' nordvpn_easy_resolve_dns_pair
+assert_eq '103.86.96.100|103.86.99.100' "$NORDVPN_EASY_DNS1|$NORDVPN_EASY_DNS2" 'standard mode uses the NordVPN standard resolvers'
+DNS_MODE='threat_protection' nordvpn_easy_resolve_dns_pair
+assert_eq '103.86.99.108|103.86.96.108' "$NORDVPN_EASY_DNS1|$NORDVPN_EASY_DNS2" 'threat_protection mode uses the anti-malware resolvers'
+DNS_MODE='threat_protection_family' nordvpn_easy_resolve_dns_pair
+assert_eq '103.86.96.111|103.86.99.111' "$NORDVPN_EASY_DNS1|$NORDVPN_EASY_DNS2" 'threat_protection_family mode uses the adult-content-blocking resolvers'
+DNS_MODE='custom' nordvpn_easy_resolve_dns_pair
+assert_eq '1.1.1.1|9.9.9.9' "$NORDVPN_EASY_DNS1|$NORDVPN_EASY_DNS2" 'custom mode keeps the user vpn_dns1/vpn_dns2'
+unset DNS_MODE
+nordvpn_easy_resolve_dns_pair
+assert_eq '1.1.1.1|9.9.9.9' "$NORDVPN_EASY_DNS1|$NORDVPN_EASY_DNS2" 'an absent dns_mode is treated as custom (keeps saved DNS)'
 
 printf '%s\n' 'test-actions.sh: ok'

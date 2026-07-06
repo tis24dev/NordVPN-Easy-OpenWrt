@@ -905,7 +905,12 @@ jobs:
             esac
           done
 
-          git -C "$DEPLOY_DIR" add packages/
+          # This branch is a binary OPKG package repo, not a website: tell GitHub Pages to
+          # skip the Jekyll builder and serve the files verbatim. Without it the legacy
+          # Pages build runs Jekyll over the branch, which can stall the deployment.
+          : > "${DEPLOY_DIR}/.nojekyll"
+
+          git -C "$DEPLOY_DIR" add packages/ .nojekyll
           git -C "$DEPLOY_DIR" commit \
             -m "chore: update OPKG repo [${{ github.ref_name }}]" || true
           git -C "$DEPLOY_DIR" push "$REPO_URL" HEAD:gh-pages
