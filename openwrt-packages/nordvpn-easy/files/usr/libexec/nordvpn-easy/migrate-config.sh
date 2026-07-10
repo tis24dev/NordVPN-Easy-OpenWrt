@@ -1,4 +1,7 @@
 #!/bin/sh
+# Copyright (C) 2026 tis24dev
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 
 # set -u catches unset-variable bugs, but deliberately NOT set -e: the migration
 # must never abort partway through and leave the live config half-written. The

@@ -1,4 +1,7 @@
 #!/bin/sh
+# Copyright (C) 2026 tis24dev
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 
 # S7 increment 7: the generated hotplug hook skips an interface event the supervisor
 # generated itself. The supervisor writes RUN_DIR/self-ifevent (iface + a wall-clock

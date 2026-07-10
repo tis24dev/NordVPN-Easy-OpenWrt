@@ -1,4 +1,7 @@
 #!/bin/sh
+# Copyright (C) 2026 tis24dev
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 
 # This module is sourced by core.sh. Some orchestration helpers remain provided
 # by core.sh (for example fetch_server_catalog, resolve_country_filter,

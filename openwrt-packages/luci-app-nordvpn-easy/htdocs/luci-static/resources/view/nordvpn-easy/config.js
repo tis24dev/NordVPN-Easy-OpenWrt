@@ -1,3 +1,8 @@
+/**
+ * Copyright (C) 2026 tis24dev
+ * SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+ */
+
 'use strict';
 /* global form, fs, managerActions, managerData, managerFormat, managerPolling, managerStore, managerUI, service, ui, uci, view, L, E, _ */
 'require form';

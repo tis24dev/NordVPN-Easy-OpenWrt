@@ -1,4 +1,6 @@
 #!/bin/sh
+# Copyright (C) 2026 tis24dev
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 INIT_SCRIPT="${NORDVPN_EASY_INIT_SCRIPT:-/etc/init.d/nordvpn-easy}"
 PUBLIC_IP_POLL_SCRIPT="${NORDVPN_EASY_PUBLIC_IP_POLL_SCRIPT:-/usr/libexec/nordvpn-easy/public-ip-poll.sh}"

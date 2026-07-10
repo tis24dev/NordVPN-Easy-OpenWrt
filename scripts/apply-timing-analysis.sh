@@ -1,4 +1,7 @@
 #!/bin/sh
+# Copyright (C) 2026 tis24dev
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 # Timestamped Save & Apply backend analysis (run on OpenWrt).
 set -eu
 

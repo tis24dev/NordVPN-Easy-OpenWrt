@@ -1,4 +1,7 @@
 #!/bin/sh
+# Copyright (C) 2026 tis24dev
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 
 # Lightweight public IP detection for LuCI polls and rpcd.
 # Always performs a live detect_public_ip() curl lookup; avoids init.d render_runtime_config.

@@ -1,4 +1,7 @@
 #!/bin/sh
+# Copyright (C) 2026 tis24dev
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 
 # Supervisor phase runner (S7). nordvpn_easy_run_phase drives every phase body of
 # the supervised apply state machine (nordvpn_easy_supervise, below).

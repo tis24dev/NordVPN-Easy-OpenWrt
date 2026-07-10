@@ -1,4 +1,7 @@
 #!/bin/sh
+# Copyright (C) 2026 tis24dev
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 
 # Guards nordvpn_easy_json_escape against the single-line regression: a
 # slurp-then-substitute sed leaves a lone line UNescaped (at EOF `N` auto-prints

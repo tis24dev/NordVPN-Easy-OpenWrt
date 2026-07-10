@@ -1,4 +1,7 @@
 #!/bin/sh
+# Copyright (C) 2026 tis24dev
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 
 # S7 increment 5a: nordvpn_easy_configure_vpn_interface was split into a
 # _no_bringup body + a wrapper that re-composes the legacy sequence. The legacy log

@@ -1,4 +1,7 @@
 #!/bin/sh
+# Copyright (C) 2026 tis24dev
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 
 # NordVPN-Easy recovery-hook installers (cron + hotplug), extracted from the init
 # script (S7 increment 5c) so both the init service and the supervisor state machine

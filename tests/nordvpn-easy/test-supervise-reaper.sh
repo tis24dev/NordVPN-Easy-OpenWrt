@@ -1,4 +1,7 @@
 #!/bin/sh
+# Copyright (C) 2026 tis24dev
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 
 # Journal-authoritative in-flight recovery. nordvpn_easy_check_once RE-DRIVES a crashed
 # apply -- a SAME-target, non-terminal journal record whose owner_pid is dead -- by

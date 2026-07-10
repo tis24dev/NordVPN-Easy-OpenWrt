@@ -1,3 +1,8 @@
+/**
+ * Copyright (C) 2026 tis24dev
+ * SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+ */
+
 'use strict';
 /* global service, ui, view, E, _ */
 'require nordvpn-easy/manager-actions as managerActions';
