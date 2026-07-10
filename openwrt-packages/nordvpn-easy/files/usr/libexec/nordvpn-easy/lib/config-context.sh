@@ -1,4 +1,7 @@
 #!/bin/sh
+# Copyright (C) 2026 tis24dev
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 
 CONFIG_CONTEXT_LIB_DIR="${NORDVPN_EASY_LIB_DIR:-/usr/libexec/nordvpn-easy/lib}"
 CONFIG_CONTEXT_SCHEMA_LIB="${CONFIG_CONTEXT_LIB_DIR}/schema.sh"

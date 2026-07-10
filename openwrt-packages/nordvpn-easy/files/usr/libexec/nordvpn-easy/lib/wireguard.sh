@@ -1,4 +1,7 @@
 #!/bin/sh
+# Copyright (C) 2026 tis24dev
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 # shellcheck disable=SC2153
 
 nordvpn_easy_vpn_interface_has_wireguard_proto() {

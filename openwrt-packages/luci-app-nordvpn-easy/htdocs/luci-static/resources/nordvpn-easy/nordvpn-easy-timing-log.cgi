@@ -1,4 +1,6 @@
 #!/bin/sh
+# Copyright (C) 2026 tis24dev
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # Append LuCI timing NDJSON lines (POST body) for debug sessions.
 # Must always emit HTTP headers (uhttpd returns 502 otherwise).
 

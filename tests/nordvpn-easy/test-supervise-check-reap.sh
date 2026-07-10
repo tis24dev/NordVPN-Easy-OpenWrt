@@ -1,4 +1,7 @@
 #!/bin/sh
+# Copyright (C) 2026 tis24dev
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 
 # nordvpn_easy_check_once reaps a FOREIGN stale supervise journal record at its head.
 # S9: the reap is unconditional (gated only on `command -v` of the reaper), the

@@ -1,4 +1,7 @@
 #!/bin/sh
+# Copyright (C) 2026 tis24dev
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 
 # S7 increment 5c: the supervised apply state machine (lib/supervise.sh
 # nordvpn_easy_supervise + open_txn + reap_stale + converge + phase bodies). Covers

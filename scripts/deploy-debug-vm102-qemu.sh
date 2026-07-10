@@ -1,4 +1,7 @@
 #!/bin/sh
+# Copyright (C) 2026 tis24dev
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 # Deploy the full NordVPN Easy development tree (backend + rpcd + LuCI) to a
 # running OpenWrt VM via the QEMU guest agent, for fast iteration on the VM 102
 # busybox-ash test bench without rebuilding packages.

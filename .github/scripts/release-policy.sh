@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (C) 2026 tis24dev
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 
 # Shared helpers for the release pipeline (release-intake / release-guard /
 # post-merge-release). This project derives its release version purely from the

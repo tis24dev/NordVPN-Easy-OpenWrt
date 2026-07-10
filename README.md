@@ -259,3 +259,14 @@ High-value validation work is:
 - If you edit files on another machine, keep Unix `LF` line endings.
 - Disabling IPv6 can help reduce leak risk in deployments that require stricter isolation, but actual leak prevention still depends on firewall, routing and failure-handling policy.
 - When the tunnel is healthy, IPv4 traffic is usually routed through the VPN; verify the effective routing, firewall rules and failure modes on your target system.
+
+## License
+
+Copyright (C) 2026 tis24dev
+
+Licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE). You may use,
+modify, and share this software for any noncommercial purpose, and contributions
+back via pull request are welcome. Any commercial use requires a separate license
+from the copyright holder. Previously released under the GNU GPLv3.
+
+See <https://polyformproject.org/licenses/noncommercial/1.0.0/> for the full terms.
