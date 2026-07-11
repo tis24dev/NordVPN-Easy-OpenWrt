@@ -587,4 +587,233 @@ assert_scenario_includes "$JSON" 'config.connect_blocked_credentials' 'stable-su
 assert_eq '2001:db8::1' "$(nordvpn_easy_diagnostics_endpoint_host '[2001:db8::1]:51820')" 'bracketed IPv6 endpoint host extraction'
 assert_eq 'hk270.nordvpn.com' "$(nordvpn_easy_diagnostics_endpoint_host 'hk270.nordvpn.com:51820')" 'host:port endpoint host extraction'
 
+# --- FIX 4: lan_dhcp_still_advertising flags only true advertising modes -------
+# A file-backed fake uci modelling a lan->wan forwarding topology with a single
+# dhcp.lan section, so the helper resolves wan zone -> lan zone -> dhcp.lan and
+# reads dhcp.lan.ra. Only server|relay|hybrid is "still advertising"; unset/empty
+# and disabled are NOT.
+RA_STORE="$DIAG_TMP/ra-uci-store"
+ra_seed() {
+	cat > "$RA_STORE" <<'EOF'
+firewall.z_lan=zone
+firewall.z_lan.name=lan
+firewall.z_lan.network=lan
+firewall.z_wan=zone
+firewall.z_wan.name=wan
+firewall.z_wan.network=wan
+firewall.fwd0=forwarding
+firewall.fwd0.src=lan
+firewall.fwd0.dest=wan
+dhcp.lan=dhcp
+dhcp.lan.interface=lan
+EOF
+	if [ -n "${1:-}" ]; then
+		printf 'dhcp.lan.ra=%s\n' "$1" >> "$RA_STORE"
+	fi
+}
+uci() {
+	[ "${1:-}" = '-q' ] && shift
+	ra_cmd="${1:-}"; shift 2>/dev/null || true
+	case "$ra_cmd" in
+		show)
+			ra_pkg="${1:-}"
+			if [ -z "$ra_pkg" ]; then cat "$RA_STORE"; return 0; fi
+			while IFS='=' read -r rk rv; do
+				case "$rk" in "$ra_pkg".*) printf '%s=%s\n' "$rk" "$rv" ;; esac
+			done < "$RA_STORE"
+			;;
+		get)
+			while IFS='=' read -r rk rv; do
+				[ "$rk" = "$1" ] && { printf '%s\n' "$rv"; return 0; }
+			done < "$RA_STORE"
+			return 1
+			;;
+		*) : ;;
+	esac
+	return 0
+}
+
+VPN_IF='wg0'; WAN_IF='wan'; DIAG_WAN_IF='wan'
+
+ra_seed 'relay'
+assert_eq 'lan' "$(nordvpn_easy_diagnostics_lan_dhcp_still_advertising wan || true)" \
+	'ra=relay is flagged as still advertising'
+ra_seed 'server'
+assert_eq 'lan' "$(nordvpn_easy_diagnostics_lan_dhcp_still_advertising wan || true)" \
+	'ra=server is flagged as still advertising'
+ra_seed 'hybrid'
+assert_eq 'lan' "$(nordvpn_easy_diagnostics_lan_dhcp_still_advertising wan || true)" \
+	'ra=hybrid is flagged as still advertising'
+ra_seed 'disabled'
+assert_eq '' "$(nordvpn_easy_diagnostics_lan_dhcp_still_advertising wan || true)" \
+	'ra=disabled is NOT flagged'
+# FIX 4: an UNSET/absent ra must NOT be treated as advertising.
+ra_seed ''
+assert_eq '' "$(nordvpn_easy_diagnostics_lan_dhcp_still_advertising wan || true)" \
+	'an unset ra is NOT treated as still advertising'
+
+# ANONYMOUS-SKIP: the withdrawal intentionally does NOT touch an @dhcp[N] pool (no
+# stable id to snapshot/restore against; it relies on the ks6 REJECT). The scan must
+# apply the SAME skip so it never persistently flags a pool the withdrawal skips --
+# even though its live ra is 'server' (an advertising mode). Model the REAL uci
+# extended @dhcp[N] form. A NAMED pool alongside it IS still flagged.
+cat > "$RA_STORE" <<'EOF'
+firewall.z_lan=zone
+firewall.z_lan.name=lan
+firewall.z_lan.network=lan
+firewall.z_wan=zone
+firewall.z_wan.name=wan
+firewall.z_wan.network=wan
+firewall.fwd0=forwarding
+firewall.fwd0.src=lan
+firewall.fwd0.dest=wan
+dhcp.@dhcp[0]=dhcp
+dhcp.@dhcp[0].interface=lan
+dhcp.@dhcp[0].ra=server
+EOF
+assert_eq '' "$(nordvpn_easy_diagnostics_lan_dhcp_still_advertising wan || true)" \
+	'an anonymous @dhcp[0] pool the withdrawal skips is NOT flagged as still advertising'
+# Add a NAMED advertising pool on the same interface: it IS flagged (the skip is
+# scoped to anonymous ids only, and never suppresses a real named finding).
+cat > "$RA_STORE" <<'EOF'
+firewall.z_lan=zone
+firewall.z_lan.name=lan
+firewall.z_lan.network=lan
+firewall.z_wan=zone
+firewall.z_wan.name=wan
+firewall.z_wan.network=wan
+firewall.fwd0=forwarding
+firewall.fwd0.src=lan
+firewall.fwd0.dest=wan
+dhcp.@dhcp[0]=dhcp
+dhcp.@dhcp[0].interface=lan
+dhcp.@dhcp[0].ra=server
+dhcp.lann=dhcp
+dhcp.lann.interface=lan
+dhcp.lann.ra=server
+EOF
+assert_eq 'lann' "$(nordvpn_easy_diagnostics_lan_dhcp_still_advertising wan || true)" \
+	'a NAMED advertising pool beside an anonymous one is still flagged (anonymous skip does not suppress it)'
+
+# FIX 3b: PURE CONFIG-STATE. ra=disabled clears the finding for EVERY mode -- the
+# snapshot orig_ra is NOT consulted anymore. Whether ra=disabled emitted a graceful
+# final RA is a runtime property of odhcpd (a hybrid resolves to server or relay
+# depending on the master, config.c 2206-2213) we cannot read from UCI, so keeping
+# the finding lit after ra=disabled produced a persistent false positive for hybrid
+# LANs that actually resolve to server. Append a snapshot with orig_ra to PROVE the
+# helper ignores it (the snapshot-name derivation matches
+# nordvpn_easy_ra_snapshot_section: 'lan' -> nordvpn_ra6_snap_lan).
+ra_seed_disabled_snap() {
+	ra_seed 'disabled'
+	{
+		printf 'nordvpn_easy.nordvpn_ra6_snap_lan=nordvpn_ra6_snapshot\n'
+		printf 'nordvpn_easy.nordvpn_ra6_snap_lan.dhcp_section=lan\n'
+		printf 'nordvpn_easy.nordvpn_ra6_snap_lan.orig_ra=%s\n' "$1"
+		printf 'nordvpn_easy.nordvpn_ra6_snap_lan.had_ra=1\n'
+	} >> "$RA_STORE"
+}
+ra_seed_disabled_snap 'relay'
+assert_eq '' "$(nordvpn_easy_diagnostics_lan_dhcp_still_advertising wan || true)" \
+	'ra=disabled clears the finding even when snapshot orig_ra=relay (pure config-state, FIX 3b)'
+ra_seed_disabled_snap 'hybrid'
+assert_eq '' "$(nordvpn_easy_diagnostics_lan_dhcp_still_advertising wan || true)" \
+	'ra=disabled clears the finding even when snapshot orig_ra=hybrid (hybrid may resolve to server at runtime)'
+ra_seed_disabled_snap 'server'
+assert_eq '' "$(nordvpn_easy_diagnostics_lan_dhcp_still_advertising wan || true)" \
+	'ra=disabled with snapshot orig_ra=server is a clean withdrawal and NOT flagged'
+
+# --- FIX 3: the native_ipv6_not_withdrawn finding honors the master toggle -----
+# With the tunnel up as a v4-only full-tunnel and a LAN still advertising, the
+# finding fires ONLY when the toggle is on; with ipv6_ra_withdraw=0 (operator
+# deliberately keeps native v6) it must NOT fire.
+nordvpn_easy_tunnel_is_v4_only_full() { return 0; }
+nordvpn_easy_wan_has_delegated_prefix() { return 0; }
+ra_seed 'relay'
+DIAG_FULL_TUNNEL_ROUTING='yes'
+DIAG_PEER_SECTION_FOUND='yes'
+DIAG_WG_CONNECTED='yes'
+DIAG_DEFAULT_ROUTE_VIA_VPN='yes'
+DIAG_LAN_DHCP_ADVERTISING_SECTION='lan'
+DIAG_VPN_IF='wg0'
+DIAG_DEFAULT_ROUTE_DEVICE6='br-lan'
+
+NORDVPN_EASY_RA_WITHDRAW_ENABLED='1' nordvpn_easy_diagnostics_compute_findings
+case "$DIAG_FINDINGS_CODES" in
+	*routing.native_ipv6_not_withdrawn*) : ;;
+	*) printf '%s\n' 'FAIL: native_ipv6_not_withdrawn should fire when the toggle is on' >&2; exit 1 ;;
+esac
+
+NORDVPN_EASY_RA_WITHDRAW_ENABLED='0' nordvpn_easy_diagnostics_compute_findings
+case "$DIAG_FINDINGS_CODES" in
+	*routing.native_ipv6_not_withdrawn*)
+		printf '%s\n' 'FAIL: native_ipv6_not_withdrawn must NOT fire when the master toggle is off' >&2
+		exit 1
+		;;
+	*) : ;;
+esac
+
+# --- FIX 2: the diagnostics Gate 2 is broadened -- the finding fires on a relay --
+# --- LAN even when wan_has_delegated_prefix is FALSE (no router-held PD) ---------
+# Stub the delegated-prefix gate to FALSE; the seed dhcp.lan.ra=relay makes the real
+# nordvpn_easy_lan_has_relayed_ipv6 (reached via the OR) return true, so the finding
+# must still fire (the round-5 gate would have suppressed it, leaving relay clients
+# on the v6 kill-switch with no diagnostic). Mirrors the runtime Gate-2 broadening.
+DIAG_FINDINGS_RECORDS=''
+nordvpn_easy_wan_has_delegated_prefix() { return 1; }
+ra_seed 'relay'
+NORDVPN_EASY_RA_WITHDRAW_ENABLED='1' nordvpn_easy_diagnostics_compute_findings
+case "$DIAG_FINDINGS_CODES" in
+	*routing.native_ipv6_not_withdrawn*) : ;;
+	*) printf '%s\n' 'FAIL: native_ipv6_not_withdrawn must fire on a relay LAN even without a delegated prefix (FIX 2)' >&2; exit 1 ;;
+esac
+# And with neither a delegated prefix NOR a relay/hybrid LAN, it must NOT fire even
+# though the live ra is server (still-advertising): the tunnel-side Gate 2 has no
+# native v6 to withdraw. Seed a server-mode LAN so lan_has_relayed_ipv6 is false too.
+DIAG_FINDINGS_RECORDS=''
+ra_seed 'server'
+NORDVPN_EASY_RA_WITHDRAW_ENABLED='1' nordvpn_easy_diagnostics_compute_findings
+case "$DIAG_FINDINGS_CODES" in
+	*routing.native_ipv6_not_withdrawn*)
+		printf '%s\n' 'FAIL: native_ipv6_not_withdrawn must NOT fire with no delegated prefix and no relay/hybrid LAN (server-mode GUA-only WAN)' >&2
+		exit 1
+		;;
+	*) : ;;
+esac
+# Restore the delegated-prefix stub to TRUE for the message-clause exercises below.
+nordvpn_easy_wan_has_delegated_prefix() { return 0; }
+ra_seed 'relay'
+
+# --- FIX 4: the finding message never renders a self-contradictory 'dev none' --
+# When a v6 default-route device WAS observed the message includes the clause;
+# when DIAG_DEFAULT_ROUTE_DEVICE6 is 'none' the clause is OMITTED (never 'dev none').
+# compute_findings does not reset DIAG_FINDINGS_RECORDS (collect does, via
+# reset_state), so clear it before each direct call here to avoid the finalize
+# step re-deriving the primary from a stale accumulated record.
+DIAG_FINDINGS_RECORDS=''
+DIAG_DEFAULT_ROUTE_DEVICE6='br-lan'
+NORDVPN_EASY_RA_WITHDRAW_ENABLED='1' nordvpn_easy_diagnostics_compute_findings
+assert_contains 'v6 default route dev br-lan' "$DIAG_PRIMARY_FINDING_MESSAGE" \
+	'finding message includes the v6-route clause when a device was observed'
+
+DIAG_FINDINGS_RECORDS=''
+DIAG_DEFAULT_ROUTE_DEVICE6='none'
+NORDVPN_EASY_RA_WITHDRAW_ENABLED='1' nordvpn_easy_diagnostics_compute_findings
+case "$DIAG_PRIMARY_FINDING_MESSAGE" in
+	*'dev none'*)
+		printf '%s\n' "FAIL: finding message must not render 'dev none' (self-contradictory)" >&2
+		exit 1
+		;;
+esac
+case "$DIAG_PRIMARY_FINDING_MESSAGE" in
+	*'v6 default route'*)
+		printf '%s\n' "FAIL: the v6-route clause must be omitted when no v6 default-route device was observed" >&2
+		exit 1
+		;;
+esac
+# The finding still fires (config-state based), just without the route clause.
+case "$DIAG_FINDINGS_CODES" in
+	*routing.native_ipv6_not_withdrawn*) : ;;
+	*) printf '%s\n' 'FAIL: the finding must still fire with device6=none' >&2; exit 1 ;;
+esac
+
 printf '%s\n' 'test-diagnostics.sh: ok'

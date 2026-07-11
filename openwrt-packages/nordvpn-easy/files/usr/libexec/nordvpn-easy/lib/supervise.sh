@@ -410,6 +410,13 @@ _supervise_converge() {
 	# Tunnel is up on this (the primary) apply path: reset the flows still pinned
 	# to the previous exit so they re-establish through it, matching the app.
 	nordvpn_easy_reset_forwarded_conntrack
+	# Tunnel is confirmed up with the committed peer: withdraw native LAN IPv6 if
+	# this is a v4-only full-tunnel (strictly gated + reversed on teardown), so
+	# clients stop preferring a v6 path that only dead-ends at the ks6 REJECT.
+	# Best-effort: a failure must never fail the apply (ks6 REJECT keeps v6 leak-safe).
+	if command -v nordvpn_easy_withdraw_lan_ipv6 >/dev/null 2>&1; then
+		nordvpn_easy_withdraw_lan_ipv6 || nordvpn_easy_log_phase 'supervise' 'WARNING: IPv6 RA withdrawal did not complete; ks6 REJECT still prevents v6 leaks'
+	fi
 	return 0
 }
 

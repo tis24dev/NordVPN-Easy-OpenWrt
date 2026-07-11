@@ -166,6 +166,16 @@ nordvpn_easy_remove_app_firewall_sections() {
 nordvpn_easy_teardown_vpn_firewall() {
 	# Tear the app's firewall objects down and reload, restoring plain LAN->WAN so
 	# a disabled VPN does not leave the kill switch blocking the user's internet.
+	#
+	# Restore native LAN IPv6 FIRST (before dropping the firewall) so the RA
+	# withdrawal never outlives the kill switch that justified it. Idempotent +
+	# crash-safe: a no-op when no RA snapshot exists, so it is safe on every
+	# disconnect, boot-disable and uninstall. command -v guarded because this
+	# dual-use teardown can be reached from callers that sourced only common.sh.
+	if command -v nordvpn_easy_restore_lan_ipv6 >/dev/null 2>&1; then
+		nordvpn_easy_restore_lan_ipv6 || nordvpn_easy_log_phase 'runtime' 'WARNING: could not restore native LAN IPv6 during VPN firewall teardown (RA snapshot kept for a later restore)'
+	fi
+
 	nordvpn_easy_remove_app_firewall_sections
 	# Fenced: reached both under the transaction lock (disconnect/reconcile) and
 	# lock-free (boot-disable / the disable_runtime verb). A superseded/reaped

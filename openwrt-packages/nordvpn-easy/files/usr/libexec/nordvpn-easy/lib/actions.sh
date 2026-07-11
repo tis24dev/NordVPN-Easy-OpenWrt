@@ -469,6 +469,16 @@ nordvpn_easy_stop_vpn_for_server_change() {
 	# The destructive UCI teardown now happens in the provision step AFTER a
 	# successful fetch (fetch -> teardown -> configure), so a failed fetch can
 	# never leave network.${VPN_IF} deleted.
+
+	# LuCI Save & Apply with 'enabled' unchecked dispatches the stop_vpn action
+	# HERE (not through teardown_vpn_firewall), so a DISABLE must restore native
+	# LAN IPv6 or dhcp.<lan>.ra stays 'disabled' until reboot (dual-stack LAN
+	# loses v6). DESIRED_ENABLED is in the runtime env on this path (see
+	# supervise.sh disable handling). Skip on a server change (DESIRED_ENABLED=1):
+	# the reconnect re-withdraws, and restore is idempotent anyway.
+	if [ "${DESIRED_ENABLED:-1}" != '1' ] && command -v nordvpn_easy_restore_lan_ipv6 >/dev/null 2>&1; then
+		nordvpn_easy_restore_lan_ipv6 || nordvpn_easy_log_phase 'runtime' 'WARNING: could not restore native LAN IPv6 on VPN disable (RA snapshot kept)'
+	fi
 	return 0
 }
 
@@ -513,6 +523,13 @@ nordvpn_easy_provision_vpn_connect_fresh() {
 	# exit so they re-establish through it instead of hanging with a stale NAT
 	# binding (the public-IP check below always does its own fresh detection).
 	nordvpn_easy_reset_forwarded_conntrack
+
+	# Tunnel confirmed up with the committed peer: withdraw native LAN IPv6 when
+	# this is a v4-only full-tunnel (strictly gated + reversed on teardown).
+	# Best-effort: a failure must never fail the apply (ks6 REJECT keeps v6 leak-safe).
+	if command -v nordvpn_easy_withdraw_lan_ipv6 >/dev/null 2>&1; then
+		nordvpn_easy_withdraw_lan_ipv6 || log 'WARNING: IPv6 RA WITHDRAWAL DID NOT COMPLETE; ks6 REJECT still prevents v6 leaks'
+	fi
 
 	verify_public_country_selection ||
 		log 'apply: public IP/country verification did not pass; leaving the tunnel up (status reflects the result)'
@@ -579,6 +596,12 @@ nordvpn_easy_provision_vpn() {
 		# Same tunnel-up reset as connect_fresh, for the rotate/reconcile/recovery
 		# path that reaches provisioning through this branch.
 		nordvpn_easy_reset_forwarded_conntrack
+
+		# Same tunnel-up native-LAN-IPv6 withdrawal as connect_fresh (v4-only
+		# full-tunnel gated + reversed on teardown). Best-effort, never fails apply.
+		if command -v nordvpn_easy_withdraw_lan_ipv6 >/dev/null 2>&1; then
+			nordvpn_easy_withdraw_lan_ipv6 || log 'WARNING: IPv6 RA WITHDRAWAL DID NOT COMPLETE; ks6 REJECT still prevents v6 leaks'
+		fi
 
 		verify_public_country_selection ||
 			log 'apply: public IP/country verification did not pass; leaving the tunnel up (status reflects the result)'
@@ -663,6 +686,15 @@ nordvpn_easy_check_once() {
 
 	if nordvpn_easy_ping_interface "$VPN_IF"; then
 		log "healthcheck: VPN health-check passed on interface $VPN_IF"
+		# Close the late-PD window: a DHCPv6-PD prefix can land seconds AFTER the
+		# tunnel came up, so the bring-up withdrawal (gated on wan_has_delegated_prefix)
+		# saw no prefix and skipped. This gated + idempotent best-effort call re-checks
+		# on each healthy cron tick and withdraws once the prefix appears; a
+		# steady-state healthy pass is a cheap no-op. (wireguard.sh is on the check
+		# path via core.) Never fails the health-check.
+		if command -v nordvpn_easy_withdraw_lan_ipv6 >/dev/null 2>&1; then
+			nordvpn_easy_withdraw_lan_ipv6 || true
+		fi
 		nordvpn_easy_check_once_finish
 		return 0
 	fi

@@ -45,6 +45,58 @@ luci_app_installed() {
 	return 1
 }
 
+nordvpn_easy_restore_lan_ipv6_before_removal() {
+	# Replay any native-LAN-IPv6 RA snapshot BEFORE nordvpn_easy_cleanup_files
+	# deletes the snapshot store (/etc/config/nordvpn_easy). If the VPN is connected
+	# at uninstall the RA withdrawal is still active; without this the LAN would be
+	# left with IPv6 permanently withdrawn (no snapshot left to restore from).
+	#
+	# SELF-CONTAINED: opkg/apk delete the package lib files (config-context.sh and
+	# wireguard.sh) BEFORE postrm runs, so sourcing them here would silently no-op
+	# and the withdrawal would persist while cleanup drops the only snapshot. We
+	# therefore restore inline with plain `uci` (always present), reading each
+	# nordvpn_ra6_snapshot section's .dhcp_section value and restoring the tracked
+	# options directly. Idempotent + tolerant of "no snapshots" (pure no-op), so a
+	# clean uninstall is unaffected. No lib dependency, no prerm (the lockstep test
+	# forbids a backend prerm).
+	command -v uci >/dev/null 2>&1 || return 0
+
+	restore_any=0
+	for snap in $$(uci show nordvpn_easy 2>/dev/null | \
+		sed -n 's/^nordvpn_easy\.\(nordvpn_ra6_snap_[A-Za-z0-9_]*\)=nordvpn_ra6_snapshot$$/\1/p'); do
+		[ -n "$$snap" ] || continue
+		dhcp_section="$$(uci -q get "nordvpn_easy.$${snap}.dhcp_section" 2>/dev/null || true)"
+		# Restore by the stored VERBATIM .dhcp_section id only. Only NAMED sections are
+		# ever snapshotted (the withdrawal skips anonymous @dhcp[N] pools), and a named
+		# id is stable, so verbatim restore is exactly 1:1: two named sections serving
+		# one interface each restore their own id, and a stale snapshot can never
+		# re-resolve onto an unrelated live section.
+		#
+		# RESTORE-TIME GC of an orphan snapshot: if the stored section was deleted while
+		# the VPN was up (its id no longer exists in the live dhcp config), do NOT
+		# recreate a phantom section -- drop the snapshot and move on.
+		if [ -z "$$dhcp_section" ] || ! uci -q get "dhcp.$${dhcp_section}" >/dev/null 2>&1; then
+			uci -q delete "nordvpn_easy.$${snap}" 2>/dev/null || true
+			continue
+		fi
+		for opt in ra dhcpv6 ra_default; do
+			had="$$(uci -q get "nordvpn_easy.$${snap}.had_$${opt}" 2>/dev/null || printf '0')"
+			if [ "$$had" = '1' ]; then
+				orig="$$(uci -q get "nordvpn_easy.$${snap}.orig_$${opt}" 2>/dev/null || printf '')"
+				uci set "dhcp.$${dhcp_section}.$${opt}=$${orig}" 2>/dev/null || true
+			else
+				uci -q delete "dhcp.$${dhcp_section}.$${opt}" 2>/dev/null || true
+			fi
+		done
+		uci -q delete "nordvpn_easy.$${snap}" 2>/dev/null || true
+		restore_any=1
+	done
+
+	[ "$$restore_any" = '1' ] || return 0
+	uci commit dhcp 2>/dev/null || true
+	/etc/init.d/odhcpd reload >/dev/null 2>&1 || true
+}
+
 nordvpn_easy_cleanup_files() {
 	rm -f /etc/config/nordvpn_easy /etc/config/nordvpn_easy-opkg
 	rm -f /etc/cron.d/nordvpn-easy /etc/hotplug.d/iface/95-nordvpn-easy
@@ -81,6 +133,7 @@ case "$${1:-remove}" in
 		if luci_app_installed; then
 			exit 0
 		fi
+		nordvpn_easy_restore_lan_ipv6_before_removal
 		nordvpn_easy_cleanup_files
 		;;
 esac

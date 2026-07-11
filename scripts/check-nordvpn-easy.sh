@@ -72,11 +72,13 @@ SH_FILES=(
 	"$ROOT_DIR/tests/nordvpn-easy/test-core-dispatch.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-uci-defaults-timeout.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-package-lockstep.sh"
+	"$ROOT_DIR/tests/nordvpn-easy/test-package-postrm-restore.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-migrate-config.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-runtime.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-public-ip-cache.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-wireguard.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-vpn-firewall.sh"
+	"$ROOT_DIR/tests/nordvpn-easy/test-ra-withdrawal.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-service-config.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-actions.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-configure-split.sh"
@@ -144,11 +146,13 @@ SHELL_TESTS=(
 	test-core-dispatch.sh
 	test-uci-defaults-timeout.sh
 	test-package-lockstep.sh
+	test-package-postrm-restore.sh
 	test-migrate-config.sh
 	test-runtime.sh
 	test-public-ip-cache.sh
 	test-wireguard.sh
 	test-vpn-firewall.sh
+	test-ra-withdrawal.sh
 	test-service-config.sh
 	test-actions.sh
 	test-configure-split.sh

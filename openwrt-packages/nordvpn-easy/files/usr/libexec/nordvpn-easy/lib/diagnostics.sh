@@ -50,6 +50,8 @@ DIAG_SERVICE_ENABLED_MISMATCH='no'
 DIAG_DEFAULT_ROUTE_DEVICE='none'
 DIAG_DEFAULT_ROUTE_VIA_VPN='no'
 DIAG_ROUTING_BLACKHOLE_RISK='no'
+DIAG_DEFAULT_ROUTE_DEVICE6='none'
+DIAG_LAN_DHCP_ADVERTISING_SECTION=''
 DIAG_WAN_IF='wan'
 DIAG_WAN_DEVICE=''
 DIAG_WAN_PING='skipped'
@@ -119,6 +121,8 @@ nordvpn_easy_diagnostics_reset_state() {
 	DIAG_DEFAULT_ROUTE_DEVICE='none'
 	DIAG_DEFAULT_ROUTE_VIA_VPN='no'
 	DIAG_ROUTING_BLACKHOLE_RISK='no'
+	DIAG_DEFAULT_ROUTE_DEVICE6='none'
+	DIAG_LAN_DHCP_ADVERTISING_SECTION=''
 	DIAG_WAN_IF='wan'
 	DIAG_WAN_DEVICE=''
 	DIAG_WAN_PING='skipped'
@@ -181,6 +185,87 @@ nordvpn_easy_diagnostics_peer_allowed_ips_contains_full_tunnel() {
 				;;
 		esac
 	done
+
+	return 1
+}
+
+# The device of the IPv6 default route (v6 twin of default_route_device). Empty
+# when the LAN has no v6 default route (e.g. it was withdrawn or the ISP is v4).
+nordvpn_easy_diagnostics_default_route_device6() {
+	ip -6 route show default 2>/dev/null | awk '
+		/^default / {
+			for (i = 1; i <= NF; i++) {
+				if ($i == "dev") {
+					print $(i + 1)
+					exit
+				}
+			}
+		}
+	'
+}
+
+# True when at least one WAN-forwarding LAN dhcp section is still advertising native
+# IPv6: its live ra is an advertising mode (server|relay|hybrid) -- the native-IPv6
+# withdrawal SHOULD have applied but did not (odhcpd is still advertising to that
+# LAN). An unset/empty ra (odhcpd default: no RA) or ra=disabled is NOT advertising
+# and is NOT flagged. FIX 3b: this is a PURE CONFIG-STATE signal keyed only on the
+# live dhcp.<sec>.ra -- once the withdrawal set ra=disabled the finding clears, for
+# ALL modes. We do NOT special-case a ra=disabled section whose snapshot orig_ra was
+# relay/hybrid: whether ra=disabled emitted a graceful final RA is a RUNTIME property
+# of odhcpd (a downstream ra=hybrid resolves to server or relay depending on the
+# master, config.c 2206-2213) that we cannot determine from the UCI config, so
+# keeping the finding lit after ra=disabled produced a persistent false positive for
+# hybrid LANs that actually resolve to server. Because it reads only ra, it has none
+# of the router-own-address / ULA false positives of an address scan. Reuses the same
+# zone->dhcp mapping as the runtime withdrawal, so the two cannot drift, and applies
+# the same ANONYMOUS-pool skip: the withdrawal never touches an @dhcp[N] pool (no
+# stable id to snapshot), so this scan must not persistently flag one either. Echoes
+# the still-advertising dhcp section name on stdout when it fires.
+nordvpn_easy_diagnostics_lan_dhcp_still_advertising() {
+	local wan_if="${1:-${DIAG_WAN_IF:-wan}}"
+	local wan_zone_section='' wan_zone_name='' lan_zone='' zone_section=''
+	local dhcp_section='' ra=''
+
+	command -v uci >/dev/null 2>&1 || return 1
+	command -v nordvpn_easy_lan_zones_forwarding_to >/dev/null 2>&1 || return 1
+
+	wan_zone_section="$(nordvpn_easy_find_firewall_zone_section "$wan_if" 2>/dev/null)" || return 1
+	wan_zone_name="$(uci -q get "${wan_zone_section}.name" 2>/dev/null)"
+	[ -n "$wan_zone_name" ] || return 1
+
+	# Disable globbing across the zone/dhcp iteration exactly like the runtime twin
+	# nordvpn_easy_withdraw_lan_ipv6: nordvpn_easy_dhcp_sections_for_zone can emit an
+	# ANONYMOUS id like @dhcp[0] whose '[' ']' would otherwise be pathname-expanded
+	# by the unquoted `$(...)` word-split. Restored on EVERY exit path below (the
+	# printf/return-0 hit, the loop-end return 1) so it never leaks to the caller.
+	set -f
+	for lan_zone in $(nordvpn_easy_lan_zones_forwarding_to "$wan_zone_name"); do
+		zone_section="$(nordvpn_easy_find_firewall_zone_section_by_name "$lan_zone" 2>/dev/null)" || continue
+		for dhcp_section in $(nordvpn_easy_dhcp_sections_for_zone "$zone_section"); do
+			# Skip ANONYMOUS @dhcp[N] pools exactly like the runtime withdrawal: it
+			# intentionally does NOT withdraw them (a positional id has no stable identity
+			# to snapshot/restore against; they rely on the ks6 REJECT). Flagging one here
+			# would persistently report an un-withdrawn pool the withdrawal deliberately
+			# skips. Mirrors nordvpn_easy_ra_dhcp_section_is_anonymous.
+			case "$dhcp_section" in
+				@*|*'['*) continue ;;
+			esac
+			ra="$(uci -q get "dhcp.${dhcp_section}.ra" 2>/dev/null || printf '')"
+			# Only an actual advertising mode is "still advertising". An unset/empty ra
+			# (odhcpd default is no RA) or ra=disabled must NOT be flagged, so the finding
+			# never fires on a LAN that was never advertising v6 and clears the moment the
+			# withdrawal sets ra=disabled -- for every mode.
+			case "$ra" in
+				server|relay|hybrid)
+					set +f
+					printf '%s\n' "$dhcp_section"
+					return 0
+					;;
+				*) : ;;
+			esac
+		done
+	done
+	set +f
 
 	return 1
 }
@@ -266,6 +351,7 @@ nordvpn_easy_diagnostics_finding_priority() {
 		connectivity.wan_down) printf '%s\n' '20' ;;
 		connectivity.dns_failure) printf '%s\n' '30' ;;
 		operational.kill_switch_active) printf '%s\n' '40' ;;
+		routing.native_ipv6_not_withdrawn) printf '%s\n' '45' ;;
 		runtime.endpoint_unreachable) printf '%s\n' '50' ;;
 		operational.apply_incomplete) printf '%s\n' '55' ;;
 		runtime.link_down) printf '%s\n' '60' ;;
@@ -759,6 +845,20 @@ nordvpn_easy_diagnostics_collect_routing() {
 	if [ "$DIAG_DEFAULT_ROUTE_VIA_VPN" = 'yes' ] && [ "$DIAG_WG_CONNECTED" != 'yes' ]; then
 		DIAG_ROUTING_BLACKHOLE_RISK='yes'
 	fi
+
+	# IPv6 awareness: the v4-only default_route_device check above cannot see the
+	# native v6 default route that survives on the LAN when the exit is a v4-only
+	# full-tunnel. Capture the v6 default-route device (for the finding message)
+	# and, via a pure config-state check, whether any WAN-forwarding LAN dhcp
+	# section still advertises (ra != disabled) -- i.e. the RA withdrawal should
+	# have applied but did not. This has none of the router-address / ULA false
+	# positives of an address scan and clears cleanly once withdrawal takes effect.
+	DIAG_DEFAULT_ROUTE_DEVICE6="$(nordvpn_easy_diagnostics_default_route_device6)"
+	[ -n "$DIAG_DEFAULT_ROUTE_DEVICE6" ] || DIAG_DEFAULT_ROUTE_DEVICE6='none'
+	if command -v nordvpn_easy_diagnostics_lan_dhcp_still_advertising >/dev/null 2>&1; then
+		DIAG_LAN_DHCP_ADVERTISING_SECTION="$(nordvpn_easy_diagnostics_lan_dhcp_still_advertising "$DIAG_WAN_IF" 2>/dev/null || true)"
+	fi
+	[ -n "$DIAG_LAN_DHCP_ADVERTISING_SECTION" ] || DIAG_LAN_DHCP_ADVERTISING_SECTION=''
 }
 
 nordvpn_easy_diagnostics_collect_caches() {
@@ -922,6 +1022,9 @@ nordvpn_easy_diagnostics_last_error_is_credentials_blocker() {
 }
 
 nordvpn_easy_diagnostics_compute_findings() {
+	local diag_ra_withdraw_enabled=''
+	local diag_native_v6_route_clause=''
+	local diag_ipv6_finding_message='' diag_ipv6_finding_action=''
 	DIAG_PRIMARY_FINDING_CODE='none'
 	DIAG_PRIMARY_FINDING_MESSAGE='none detected'
 	DIAG_PRIMARY_FINDING_ACTION=''
@@ -990,6 +1093,59 @@ nordvpn_easy_diagnostics_compute_findings() {
 			'operational.kill_switch_active' \
 			'Kill switch is blocking LAN internet traffic because the VPN tunnel is down' \
 			'Restore VPN connectivity, or turn off the kill switch to allow the LAN to fall back to the unprotected WAN'
+	fi
+
+	# Native IPv6 NOT withdrawn on the LAN while the exit is a v4-only full-tunnel
+	# that is actually UP: odhcpd still routes native v6 to the LAN, clients prefer
+	# v6 per RFC6724, and dead-end at the ks6 block. FIX 3b: signal is pure
+	# config-state (a WAN-forwarding LAN dhcp section whose live ra is still an
+	# advertising mode server|relay|hybrid, flagged by
+	# nordvpn_easy_diagnostics_lan_dhcp_still_advertising), so no router-address / ULA
+	# false positives and no per-mode runtime guessing -- the finding clears the moment
+	# ra=disabled is applied, for every mode. The Gate-2 condition mirrors the runtime
+	# withdrawal (FIX 2): wan_has_delegated_prefix OR a relay/hybrid LAN, reusing the
+	# runtime gate nordvpn_easy_tunnel_is_v4_only_full so the classifier cannot drift
+	# from what actually triggers the withdrawal. Gated on the tunnel being connected
+	# (v4 default route via VPN) so it never double-reports with
+	# routing.blackhole_default_via_vpn (which fires only when the tunnel is DOWN).
+	#
+	# Honor the master toggle: when the operator set ipv6_ra_withdraw=0 (or the env
+	# override) they DELIBERATELY keep native v6, so this is expected and must not be
+	# flagged (otherwise the finding fires forever). '|| true' keeps a set -e caller
+	# from aborting on the absent-option exit status of uci -q get.
+	diag_ra_withdraw_enabled="${NORDVPN_EASY_RA_WITHDRAW_ENABLED:-$(uci -q get nordvpn_easy.main.ipv6_ra_withdraw 2>/dev/null || true)}"
+	if [ "$DIAG_FULL_TUNNEL_ROUTING" = 'yes' ] &&
+		[ "$DIAG_PEER_SECTION_FOUND" = 'yes' ] &&
+		[ "$DIAG_WG_CONNECTED" = 'yes' ] &&
+		[ "$DIAG_DEFAULT_ROUTE_VIA_VPN" = 'yes' ] &&
+		[ -n "$DIAG_LAN_DHCP_ADVERTISING_SECTION" ] &&
+		[ "${diag_ra_withdraw_enabled:-1}" != '0' ] &&
+		command -v nordvpn_easy_tunnel_is_v4_only_full >/dev/null 2>&1 &&
+		nordvpn_easy_tunnel_is_v4_only_full "$DIAG_VPN_IF" &&
+		{ WAN_IF="$DIAG_WAN_IF" nordvpn_easy_wan_has_delegated_prefix ||
+			WAN_IF="$DIAG_WAN_IF" nordvpn_easy_lan_has_relayed_ipv6; }; then
+		# Only phrase the v6-default-route clause when we actually observed a v6
+		# default-route device; DIAG_DEFAULT_ROUTE_DEVICE6 is 'none' when the LAN has
+		# no v6 default route (or `ip` could not read one), and embedding 'dev none'
+		# reads as self-contradictory. The finding stays purely config-state based
+		# (the flagged dhcp section), so omitting the clause loses no signal.
+		if [ "$DIAG_DEFAULT_ROUTE_DEVICE6" != 'none' ]; then
+			diag_native_v6_route_clause=", v6 default route dev ${DIAG_DEFAULT_ROUTE_DEVICE6}"
+		else
+			diag_native_v6_route_clause=''
+		fi
+		# FIX 3b: single, mode-agnostic form. The flagged section has ra still in an
+		# advertising mode (server|relay|hybrid) -- native v6 was NOT withdrawn. We make
+		# no per-mode claim (whether ra=disabled would emit a graceful final RA is a
+		# runtime property of odhcpd we do not introspect: config.c 2206-2213); the
+		# finding simply reports the withdrawal has not applied and clears once ra is
+		# disabled for that section, for every mode. Reconnect re-applies the withdrawal.
+		diag_ipv6_finding_message="LAN dhcp section '${DIAG_LAN_DHCP_ADVERTISING_SECTION}' still advertises native IPv6 (ra != disabled${diag_native_v6_route_clause}) while ${DIAG_VPN_IF} is a v4-only full-tunnel; clients prefer IPv6 and stall on the v6 block"
+		diag_ipv6_finding_action="Reconnect to re-apply the IPv6 RA withdrawal; if it persists, check odhcpd is running and reloadable, that dhcp.${DIAG_LAN_DHCP_ADVERTISING_SECTION}.ra was set to disabled, and that the master toggle nordvpn_easy.main.ipv6_ra_withdraw is not 0 (the section is restored automatically on disconnect)"
+		nordvpn_easy_diagnostics_add_finding \
+			'routing.native_ipv6_not_withdrawn' \
+			"$diag_ipv6_finding_message" \
+			"$diag_ipv6_finding_action"
 	fi
 
 	if [ "$DIAG_DESIRED_ENABLED" = '1' ] && [ "$DIAG_WAN_PING" = 'no' ]; then
