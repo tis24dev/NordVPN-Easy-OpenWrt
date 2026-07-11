@@ -753,7 +753,7 @@ nordvpn_easy_wan_has_delegated_prefix() {
 # is a server-mode LAN on a GUA-only WAN, where no LAN section is relay/hybrid.
 nordvpn_easy_lan_has_relayed_ipv6() {
 	local wan_if="${WAN_IF:-wan}" wan_zone_section='' wan_zone_name=''
-	local lan_zone='' zone_section='' dhcp_section='' ra=''
+	local lan_zone='' zone_section='' dhcp_section='' ra='' had_noglob='no'
 
 	command -v uci >/dev/null 2>&1 || return 1
 	command -v nordvpn_easy_lan_zones_forwarding_to >/dev/null 2>&1 || return 1
@@ -765,8 +765,11 @@ nordvpn_easy_lan_has_relayed_ipv6() {
 	# Disable globbing across the zone/dhcp iteration exactly like the runtime twin
 	# nordvpn_easy_withdraw_lan_ipv6: nordvpn_easy_dhcp_sections_for_zone can emit an
 	# ANONYMOUS id like @dhcp[0] whose '[' ']' would otherwise be pathname-expanded by
-	# the unquoted `$(...)` word-split. Restored on EVERY exit path below (the
-	# relay/hybrid hit and the loop-end return 1) so it never leaks to the caller.
+	# the unquoted `$(...)` word-split. Capture the caller's noglob state first so
+	# every exit path below (the relay/hybrid hit and the loop-end return 1) restores
+	# it exactly, instead of unconditionally re-enabling globbing under the caller
+	# (this helper is called directly, not only in a `$(...)` subshell).
+	case "$-" in *f*) had_noglob='yes' ;; esac
 	set -f
 	for lan_zone in $(nordvpn_easy_lan_zones_forwarding_to "$wan_zone_name"); do
 		zone_section="$(nordvpn_easy_find_firewall_zone_section_by_name "$lan_zone" 2>/dev/null)" || continue
@@ -774,13 +777,13 @@ nordvpn_easy_lan_has_relayed_ipv6() {
 			ra="$(uci -q get "dhcp.${dhcp_section}.ra" 2>/dev/null || printf '')"
 			case "$ra" in
 				relay|hybrid)
-					set +f
+					[ "$had_noglob" = 'yes' ] || set +f
 					return 0
 					;;
 			esac
 		done
 	done
-	set +f
+	[ "$had_noglob" = 'yes' ] || set +f
 
 	return 1
 }
@@ -971,6 +974,22 @@ nordvpn_easy_withdraw_lan_ipv6() {
 		return 0
 	fi
 
+	# FIX 3: retry a previously-failed odhcpd reload BEFORE the gates. A committed
+	# withdrawal whose reload failed sets the marker but leaves RA_CHANGED=0 on the
+	# next pass; a later gate can then return early -- notably Gate 2 flips closed
+	# once a relay/hybrid LAN we set to ra=disabled no longer reads as relay/hybrid,
+	# and a relay-only ISP has no delegated prefix either -- stranding the marker
+	# until the next teardown. Retrying here, right after the master toggle, lets
+	# every healthy tick re-sync odhcpd; clear the marker only on success.
+	if [ -e "${NORDVPN_EASY_RA_RELOAD_PENDING}" ]; then
+		if "${NORDVPN_EASY_ODHCPD_INIT:-/etc/init.d/odhcpd}" reload >/dev/null 2>&1; then
+			rm -f "${NORDVPN_EASY_RA_RELOAD_PENDING}" 2>/dev/null || true
+			log "runtime: retried a previously-failed odhcpd reload for the IPv6 RA withdrawal; odhcpd is now in sync"
+		else
+			log 'WARNING: ODHCPD RELOAD RETRY FAILED AFTER IPv6 RA WITHDRAWAL (will retry on the next healthy pass)'
+		fi
+	fi
+
 	# Gate 1: only for a v4-only full-tunnel exit.
 	if ! nordvpn_easy_tunnel_is_v4_only_full "$VPN_IF"; then
 		log "runtime: IPv6 RA withdrawal skipped for ${VPN_IF} (exit is not a v4-only full-tunnel)"
@@ -1030,20 +1049,6 @@ nordvpn_easy_withdraw_lan_ipv6() {
 		return 0
 	}
 
-	# Retry a previously-failed reload: a withdraw whose odhcpd reload failed leaves
-	# the config at ra=disabled (RA_CHANGED=0 on the next pass) but odhcpd still
-	# advertising. This runs BEFORE the RA_CHANGED no-op so a healthy steady-state
-	# tick re-attempts the reload; on success it clears the marker (and logs
-	# recovery), on the success path there is no per-tick churn.
-	if [ -e "${NORDVPN_EASY_RA_RELOAD_PENDING}" ]; then
-		if "${NORDVPN_EASY_ODHCPD_INIT:-/etc/init.d/odhcpd}" reload >/dev/null 2>&1; then
-			rm -f "${NORDVPN_EASY_RA_RELOAD_PENDING}" 2>/dev/null || true
-			log "runtime: retried a previously-failed odhcpd reload for the IPv6 RA withdrawal; odhcpd is now in sync"
-		else
-			log 'WARNING: ODHCPD RELOAD RETRY FAILED AFTER IPv6 RA WITHDRAWAL (will retry on the next healthy pass)'
-		fi
-	fi
-
 	[ "${NORDVPN_EASY_RA_CHANGED:-0}" = '1' ] || {
 		log "runtime: IPv6 RA withdrawal already applied for ${VPN_IF} (idempotent no-op)"
 		return 0
@@ -1084,6 +1089,25 @@ nordvpn_easy_withdraw_lan_ipv6() {
 	# per-section claim: state both outcomes that CAN apply and let the reader map it.
 	log "runtime: withdrew native LAN IPv6 (ra=disabled) while ${VPN_IF} carries a v4-only full-tunnel: server-mode LANs get a final RA with router lifetime 0 + deprecated prefixes; relay/hybrid LANs stop relaying and rely on the ks6 REJECT plus upstream RA-lifetime expiry"
 	return 0
+}
+
+# FIX 7: true when the IPv6 RA withdrawal has SETTLED for the current session: a
+# snapshot exists (a withdrawal was applied) AND no odhcpd reload is pending. The
+# periodic health-check uses this to skip the per-tick gate probes (the uci zone
+# loops and the Gate-2 ubus/jq / `ip -6` forks) once steady state is reached,
+# WITHOUT ever stranding a pending reload -- a pending marker keeps the health-check
+# calling withdraw so FIX 3's retry fires every tick until odhcpd is back in sync.
+# Not settled during the late-PD window (no snapshot yet) or on a v4-only ISP, so
+# those keep re-probing; a LAN reconfigured mid-session is re-withdrawn on the next
+# apply (the ks6 REJECT keeps it leak-safe until then). One `uci show | grep` beats
+# re-running the full gate machinery on every healthy tick.
+nordvpn_easy_ra_withdrawal_is_settled() {
+	[ -e "${NORDVPN_EASY_RA_RELOAD_PENDING}" ] && return 1
+	command -v uci >/dev/null 2>&1 || return 1
+	# Anchor to the section-TYPE line (uci show prints `pkg.sec=type` unquoted),
+	# mirroring the postrm restore sed, so no option value could ever false-match.
+	uci -q show nordvpn_easy 2>/dev/null | grep -q '=nordvpn_ra6_snapshot$' && return 0
+	return 1
 }
 
 # Restore entry point (down/teardown path): replay every RA snapshot back onto

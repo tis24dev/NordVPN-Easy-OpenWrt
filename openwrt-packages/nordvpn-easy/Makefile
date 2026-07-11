@@ -83,7 +83,14 @@ nordvpn_easy_restore_lan_ipv6_before_removal() {
 			had="$$(uci -q get "nordvpn_easy.$${snap}.had_$${opt}" 2>/dev/null || printf '0')"
 			if [ "$$had" = '1' ]; then
 				orig="$$(uci -q get "nordvpn_easy.$${snap}.orig_$${opt}" 2>/dev/null || printf '')"
-				uci set "dhcp.$${dhcp_section}.$${opt}=$${orig}" 2>/dev/null || true
+				uci set "dhcp.$${dhcp_section}.$${opt}=$${orig}" 2>/dev/null || {
+					# Restore failed mid-transaction: revert the staged dhcp + snapshot
+					# edits so nothing partial persists, and KEEP the snapshot on flash so
+					# the next removal can retry (return 1 skips the cleanup below).
+					uci -q revert dhcp 2>/dev/null || true
+					uci -q revert nordvpn_easy 2>/dev/null || true
+					return 1
+				}
 			else
 				uci -q delete "dhcp.$${dhcp_section}.$${opt}" 2>/dev/null || true
 			fi
@@ -93,7 +100,16 @@ nordvpn_easy_restore_lan_ipv6_before_removal() {
 	done
 
 	[ "$$restore_any" = '1' ] || return 0
-	uci commit dhcp 2>/dev/null || true
+	# The commit is the only real data-loss point: if it fails the dhcp restore is
+	# NOT persisted, so revert and keep the snapshot (return 1 so the caller skips
+	# nordvpn_easy_cleanup_files and the snapshot survives for a retry). A failed
+	# odhcpd reload is post-commit (config already restored on flash), so it must
+	# NOT block cleanup; the running daemon re-syncs on the next reload/boot.
+	uci commit dhcp 2>/dev/null || {
+		uci -q revert dhcp 2>/dev/null || true
+		uci -q revert nordvpn_easy 2>/dev/null || true
+		return 1
+	}
 	/etc/init.d/odhcpd reload >/dev/null 2>&1 || true
 }
 
@@ -133,8 +149,12 @@ case "$${1:-remove}" in
 		if luci_app_installed; then
 			exit 0
 		fi
-		nordvpn_easy_restore_lan_ipv6_before_removal
-		nordvpn_easy_cleanup_files
+		if nordvpn_easy_restore_lan_ipv6_before_removal; then
+			nordvpn_easy_cleanup_files
+		else
+			printf '%s\n' 'nordvpn-easy: could not restore native LAN IPv6; keeping config for a later retry' >&2
+			exit 1
+		fi
 		;;
 esac
 

@@ -55,6 +55,22 @@ nordvpn_easy_log_blocker() {
 	nordvpn_easy_log_phase "$phase" "BLOCKER: $message"
 }
 
+# Shared post-tunnel-up sequence: reset the forwarded conntrack still pinned to the
+# old exit, then best-effort withdraw native LAN IPv6 on a v4-only full-tunnel. The
+# two provisioning paths in actions.sh and supervise's converge all run this exact
+# pair, so keeping it here means the three former inline copies cannot drift. Each
+# step is command -v guarded so a context that did not source wireguard.sh (isolated
+# unit tests) skips it, exactly like the inlined blocks did. `log` carries the
+# caller's LOG_PHASE, so supervise still tags the warning with its own phase.
+nordvpn_easy_post_tunnel_up_withdraw_ipv6() {
+	if command -v nordvpn_easy_reset_forwarded_conntrack >/dev/null 2>&1; then
+		nordvpn_easy_reset_forwarded_conntrack
+	fi
+	if command -v nordvpn_easy_withdraw_lan_ipv6 >/dev/null 2>&1; then
+		nordvpn_easy_withdraw_lan_ipv6 || log 'WARNING: IPv6 RA WITHDRAWAL DID NOT COMPLETE; ks6 REJECT still prevents v6 leaks'
+	fi
+}
+
 nordvpn_easy_handshake_epoch_indicates_connection() {
 	local epoch="$1"
 	local now diff

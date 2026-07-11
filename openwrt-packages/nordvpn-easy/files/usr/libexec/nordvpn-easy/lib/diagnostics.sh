@@ -224,7 +224,7 @@ nordvpn_easy_diagnostics_default_route_device6() {
 nordvpn_easy_diagnostics_lan_dhcp_still_advertising() {
 	local wan_if="${1:-${DIAG_WAN_IF:-wan}}"
 	local wan_zone_section='' wan_zone_name='' lan_zone='' zone_section=''
-	local dhcp_section='' ra=''
+	local dhcp_section='' ra='' had_noglob='no'
 
 	command -v uci >/dev/null 2>&1 || return 1
 	command -v nordvpn_easy_lan_zones_forwarding_to >/dev/null 2>&1 || return 1
@@ -236,8 +236,10 @@ nordvpn_easy_diagnostics_lan_dhcp_still_advertising() {
 	# Disable globbing across the zone/dhcp iteration exactly like the runtime twin
 	# nordvpn_easy_withdraw_lan_ipv6: nordvpn_easy_dhcp_sections_for_zone can emit an
 	# ANONYMOUS id like @dhcp[0] whose '[' ']' would otherwise be pathname-expanded
-	# by the unquoted `$(...)` word-split. Restored on EVERY exit path below (the
-	# printf/return-0 hit, the loop-end return 1) so it never leaks to the caller.
+	# by the unquoted `$(...)` word-split. Capture the caller's noglob state first so
+	# every exit path below (the printf/return-0 hit, the loop-end return 1) restores
+	# it exactly, instead of unconditionally re-enabling globbing under the caller.
+	case "$-" in *f*) had_noglob='yes' ;; esac
 	set -f
 	for lan_zone in $(nordvpn_easy_lan_zones_forwarding_to "$wan_zone_name"); do
 		zone_section="$(nordvpn_easy_find_firewall_zone_section_by_name "$lan_zone" 2>/dev/null)" || continue
@@ -257,7 +259,7 @@ nordvpn_easy_diagnostics_lan_dhcp_still_advertising() {
 			# withdrawal sets ra=disabled -- for every mode.
 			case "$ra" in
 				server|relay|hybrid)
-					set +f
+					[ "$had_noglob" = 'yes' ] || set +f
 					printf '%s\n' "$dhcp_section"
 					return 0
 					;;
@@ -265,7 +267,7 @@ nordvpn_easy_diagnostics_lan_dhcp_still_advertising() {
 			esac
 		done
 	done
-	set +f
+	[ "$had_noglob" = 'yes' ] || set +f
 
 	return 1
 }

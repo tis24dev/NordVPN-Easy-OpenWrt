@@ -270,6 +270,85 @@ grep -q 'reload' "$RELOAD_MARK" || { echo 'FAIL: the retry pass must reload odhc
 [ -e "$PENDING_MARK" ] && { echo 'FAIL: a successful retry reload must clear the pending-reload marker' >&2; exit 1; }
 rm -f "$PENDING_MARK"
 
+# --- FIX 3 (regression): the reload retry fires even when Gate 2 flips closed ---
+# Reproduce the relay-only ISP case the top-of-file stub masks. With NO delegated
+# prefix (wan_has_delegated_prefix=false) but a ra=relay LAN, the FIRST withdraw
+# passes Gate 2 via lan_has_relayed_ipv6, commits ra=disabled and -- with a flaky
+# odhcpd -- leaves the pending marker. On the NEXT tick the LAN now reads ra=disabled
+# so lan_has_relayed_ipv6 is false and, with no PD, Gate 2 returns EARLY. The retry
+# (now BEFORE the gates) must still reload odhcpd and clear the marker; the old
+# post-gate placement would strand it. This test FAILS on the pre-fix ordering.
+RELAY_PENDING="$TMP_DIR/ra-reload-pending-relayflip"
+rm -f "$RELAY_PENDING"
+printf '1' > "$FAIL_COUNTER"
+: > "$RELOAD_MARK"
+cat > "$STORE" <<'EOF'
+firewall.z_lan=zone
+firewall.z_lan.name=lan
+firewall.z_lan.network=lan
+firewall.z_wan=zone
+firewall.z_wan.name=wan
+firewall.z_wan.network=wan
+firewall.fwd0=forwarding
+firewall.fwd0.src=lan
+firewall.fwd0.dest=wan
+dhcp.lan=dhcp
+dhcp.lan.interface=lan
+dhcp.lan.ra=relay
+dhcp.lan.dhcpv6=server
+EOF
+cp "$STORE" "$SNAPSHOT"
+# Relay-only ISP: no router-held PD. The REAL lan_has_relayed_ipv6 reads the fake uci.
+nordvpn_easy_wan_has_delegated_prefix() { return 1; }
+VPN_IF='wg0' WAN_IF='wan' \
+	NORDVPN_EASY_ODHCPD_INIT="$TMP_DIR/odhcpd-init-flaky" \
+	NORDVPN_EASY_RA_RELOAD_PENDING="$RELAY_PENDING" \
+	nordvpn_easy_withdraw_lan_ipv6
+[ "$(get dhcp.lan.ra)" = 'disabled' ] || { echo 'FAIL(relay-flip): first withdraw must commit ra=disabled on a relay-only ISP (Gate 2 via lan_has_relayed_ipv6)' >&2; exit 1; }
+[ -e "$RELAY_PENDING" ] || { echo 'FAIL(relay-flip): a failed reload must leave the pending marker' >&2; exit 1; }
+# Second tick: ra is now 'disabled' so lan_has_relayed_ipv6 is false and Gate 2
+# returns early -- the retry must run BEFORE the gate to un-strand the marker.
+: > "$RELOAD_MARK"
+cp "$STORE" "$SNAPSHOT"
+VPN_IF='wg0' WAN_IF='wan' \
+	NORDVPN_EASY_ODHCPD_INIT="$TMP_DIR/odhcpd-init-flaky" \
+	NORDVPN_EASY_RA_RELOAD_PENDING="$RELAY_PENDING" \
+	nordvpn_easy_withdraw_lan_ipv6
+grep -q 'reload' "$RELOAD_MARK" || { echo 'FAIL(relay-flip): the retry must reload odhcpd even though Gate 2 now returns early (relay LAN flipped to disabled)' >&2; exit 1; }
+[ -e "$RELAY_PENDING" ] && { echo 'FAIL(relay-flip): a successful retry must clear the pending marker' >&2; exit 1; }
+# Restore the ambient delegated-prefix stub for the tests that follow.
+nordvpn_easy_wan_has_delegated_prefix() { return 0; }
+rm -f "$RELAY_PENDING"
+
+# --- FIX 7: nordvpn_easy_ra_withdrawal_is_settled gates the per-tick probe -------
+# Settled iff a snapshot exists AND no reload is pending. The health-check throttle
+# skips the withdraw probes only while settled.
+SETTLED_PENDING="$TMP_DIR/ra-reload-pending-settled"
+rm -f "$SETTLED_PENDING"
+# No snapshot yet (late-PD window / v4-only ISP): NOT settled -> keep probing.
+cat > "$STORE" <<'EOF'
+dhcp.lan=dhcp
+dhcp.lan.ra=relay
+EOF
+if NORDVPN_EASY_RA_RELOAD_PENDING="$SETTLED_PENDING" nordvpn_easy_ra_withdrawal_is_settled; then
+	echo 'FAIL(settled): with no snapshot the withdrawal is NOT settled (must keep probing)' >&2; exit 1
+fi
+# Snapshot present and no pending reload: SETTLED -> skip the per-tick probes.
+cat >> "$STORE" <<'EOF'
+nordvpn_easy.nordvpn_ra6_snap_lan=nordvpn_ra6_snapshot
+nordvpn_easy.nordvpn_ra6_snap_lan.dhcp_section=lan
+EOF
+NORDVPN_EASY_RA_RELOAD_PENDING="$SETTLED_PENDING" nordvpn_easy_ra_withdrawal_is_settled || { echo 'FAIL(settled): a snapshot with no pending reload must be settled (skip probes)' >&2; exit 1; }
+# A pending reload must UN-settle it so FIX 3's retry keeps firing every tick.
+: > "$SETTLED_PENDING"
+if NORDVPN_EASY_RA_RELOAD_PENDING="$SETTLED_PENDING" nordvpn_easy_ra_withdrawal_is_settled; then
+	echo 'FAIL(settled): a pending reload must keep it UN-settled so the retry runs each tick' >&2; exit 1
+fi
+rm -f "$SETTLED_PENDING"
+# Restore the ambient pending-marker path for the tests that follow.
+NORDVPN_EASY_RA_RELOAD_PENDING="$TMP_DIR/ra-reload-pending-default"
+export NORDVPN_EASY_RA_RELOAD_PENDING
+
 # --- superseded/reaped writer cannot leave LAN v6 permanently off -------------
 # A withdraw whose fenced commit is refused (superseded owner) must revert BOTH
 # the snapshot and the dhcp mutation, leaving the LAN untouched (no orphan

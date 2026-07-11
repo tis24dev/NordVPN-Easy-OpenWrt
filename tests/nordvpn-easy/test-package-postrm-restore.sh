@@ -62,7 +62,7 @@ uci() {
 			done < "$STORE"; } > "$STORE.t"
 			mv "$STORE.t" "$STORE"
 			;;
-		commit) : ;;
+		commit) [ "${FAIL_COMMIT:-0}" = '1' ] && return 1; : ;;
 		*) : ;;
 	esac
 	return 0
@@ -136,6 +136,30 @@ dhcp.lan.ra=server
 EOF
 nordvpn_easy_restore_lan_ipv6_before_removal
 [ "$(get dhcp.lan.ra)" = 'server' ] || { echo 'FAIL: a no-snapshot uninstall must not touch dhcp.lan.ra' >&2; exit 1; }
+
+# --- FIX 1: a failed commit makes the restore return non-zero (postrm skips cleanup) --
+# The postrm case block runs `if restore; then cleanup; else exit 1; fi`, so a
+# non-zero restore is exactly what keeps cleanup (and its snapshot rm -f) from
+# running on a transient commit failure. Arm the fake uci to fail `uci commit dhcp`
+# and assert the restore reports failure.
+cat > "$STORE" <<'EOF'
+dhcp.lan=dhcp
+dhcp.lan.ra=disabled
+dhcp.lan.dhcpv6=disabled
+dhcp.lan.ra_default=0
+nordvpn_easy.nordvpn_ra6_snap_lan=nordvpn_ra6_snapshot
+nordvpn_easy.nordvpn_ra6_snap_lan.dhcp_section=lan
+nordvpn_easy.nordvpn_ra6_snap_lan.orig_ra=relay
+nordvpn_easy.nordvpn_ra6_snap_lan.had_ra=1
+nordvpn_easy.nordvpn_ra6_snap_lan.orig_dhcpv6=server
+nordvpn_easy.nordvpn_ra6_snap_lan.had_dhcpv6=1
+nordvpn_easy.nordvpn_ra6_snap_lan.had_ra_default=0
+EOF
+FAIL_COMMIT=1
+commit_fail_rc=0
+nordvpn_easy_restore_lan_ipv6_before_removal || commit_fail_rc=$?
+FAIL_COMMIT=0
+[ "$commit_fail_rc" -ne 0 ] || { echo 'FAIL(F1): a failed uci commit must make the restore return non-zero so the postrm skips cleanup and keeps the snapshot' >&2; exit 1; }
 
 # =============================================================================
 # FIX 1: model the TWO mutual guards + the luci-app cleanup_files across removal
