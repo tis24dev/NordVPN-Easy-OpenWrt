@@ -407,9 +407,11 @@ _supervise_converge() {
 		nordvpn_easy_supervise_record_error 'network.connectivity' 'timed out waiting for vpn connectivity'
 		return 1
 	fi
-	# Tunnel is up on this (the primary) apply path: reset the flows still pinned
-	# to the previous exit so they re-establish through it, matching the app.
-	nordvpn_easy_reset_forwarded_conntrack
+	# Tunnel is up on this (the primary) apply path: reset the flows still pinned to
+	# the previous exit so they re-establish through it, then withdraw native LAN
+	# IPv6 on a v4-only full-tunnel (strictly gated + reversed on teardown), matching
+	# the app. Best-effort: neither may fail the apply (ks6 REJECT keeps v6 leak-safe).
+	nordvpn_easy_post_tunnel_up_withdraw_ipv6
 	return 0
 }
 

@@ -55,6 +55,22 @@ nordvpn_easy_log_blocker() {
 	nordvpn_easy_log_phase "$phase" "BLOCKER: $message"
 }
 
+# Shared post-tunnel-up sequence: reset the forwarded conntrack still pinned to the
+# old exit, then best-effort withdraw native LAN IPv6 on a v4-only full-tunnel. The
+# two provisioning paths in actions.sh and supervise's converge all run this exact
+# pair, so keeping it here means the three former inline copies cannot drift. Each
+# step is command -v guarded so a context that did not source wireguard.sh (isolated
+# unit tests) skips it, exactly like the inlined blocks did. `log` carries the
+# caller's LOG_PHASE, so supervise still tags the warning with its own phase.
+nordvpn_easy_post_tunnel_up_withdraw_ipv6() {
+	if command -v nordvpn_easy_reset_forwarded_conntrack >/dev/null 2>&1; then
+		nordvpn_easy_reset_forwarded_conntrack
+	fi
+	if command -v nordvpn_easy_withdraw_lan_ipv6 >/dev/null 2>&1; then
+		nordvpn_easy_withdraw_lan_ipv6 || log 'WARNING: IPv6 RA WITHDRAWAL DID NOT COMPLETE; ks6 REJECT still prevents v6 leaks'
+	fi
+}
+
 nordvpn_easy_handshake_epoch_indicates_connection() {
 	local epoch="$1"
 	local now diff
@@ -166,6 +182,16 @@ nordvpn_easy_remove_app_firewall_sections() {
 nordvpn_easy_teardown_vpn_firewall() {
 	# Tear the app's firewall objects down and reload, restoring plain LAN->WAN so
 	# a disabled VPN does not leave the kill switch blocking the user's internet.
+	#
+	# Restore native LAN IPv6 FIRST (before dropping the firewall) so the RA
+	# withdrawal never outlives the kill switch that justified it. Idempotent +
+	# crash-safe: a no-op when no RA snapshot exists, so it is safe on every
+	# disconnect, boot-disable and uninstall. command -v guarded because this
+	# dual-use teardown can be reached from callers that sourced only common.sh.
+	if command -v nordvpn_easy_restore_lan_ipv6 >/dev/null 2>&1; then
+		nordvpn_easy_restore_lan_ipv6 || nordvpn_easy_log_phase 'runtime' 'WARNING: could not restore native LAN IPv6 during VPN firewall teardown (RA snapshot kept for a later restore)'
+	fi
+
 	nordvpn_easy_remove_app_firewall_sections
 	# Fenced: reached both under the transaction lock (disconnect/reconcile) and
 	# lock-free (boot-disable / the disable_runtime verb). A superseded/reaped

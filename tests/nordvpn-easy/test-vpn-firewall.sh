@@ -122,7 +122,7 @@ case " $(fwget firewall.@zone[1].network) " in
 esac
 [ "$(fwget firewall.nordvpn_fwd_1.dest)" = 'nordvpn' ] || { echo 'FAIL: lan->vpn forwarding missing' >&2; exit 1; }
 [ "$(fwget firewall.nordvpn_fwd_1.src)" = 'lan' ] || { echo 'FAIL: lan->vpn forwarding src' >&2; exit 1; }
-[ "$(fwget firewall.nordvpn_ks6_1.target)" = 'DROP' ] && [ "$(fwget firewall.nordvpn_ks6_1.family)" = 'ipv6' ] || { echo 'FAIL: IPv6 drop rule missing' >&2; exit 1; }
+[ "$(fwget firewall.nordvpn_ks6_1.target)" = 'REJECT' ] && [ "$(fwget firewall.nordvpn_ks6_1.family)" = 'ipv6' ] || { echo 'FAIL: IPv6 reject rule missing' >&2; exit 1; }
 [ "$(fwget firewall.nordvpn_ks4_1.target)" = 'DROP' ] && [ "$(fwget firewall.nordvpn_ks4_1.family)" = 'ipv4' ] || { echo 'FAIL: IPv4 kill-switch rule missing when strict' >&2; exit 1; }
 [ "$(fwget firewall.nordvpn_ks4_1.dest)" = 'wan' ] || { echo 'FAIL: kill-switch rule must target the wan zone' >&2; exit 1; }
 grep -q 'reload' "$RELOAD_MARK" || { echo 'FAIL: firewall was not reloaded' >&2; exit 1; }
@@ -131,7 +131,7 @@ grep -q 'reload' "$RELOAD_MARK" || { echo 'FAIL: firewall was not reloaded' >&2;
 seed_firewall
 run_ensure 0
 
-[ "$(fwget firewall.nordvpn_ks6_1.target)" = 'DROP' ] || { echo 'FAIL: IPv6 must be blocked even with the kill switch off' >&2; exit 1; }
+[ "$(fwget firewall.nordvpn_ks6_1.target)" = 'REJECT' ] || { echo 'FAIL: IPv6 must be blocked even with the kill switch off' >&2; exit 1; }
 [ "$(fwget firewall.nordvpn_ks4_1.target)" = '<none>' ] || { echo 'FAIL: IPv4 kill-switch rule must be absent when fallback is allowed' >&2; exit 1; }
 
 # --- teardown commit failure reverts staged app-owned deletes ------------------

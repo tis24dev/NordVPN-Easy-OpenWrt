@@ -7,6 +7,11 @@ CONFIG_CONTEXT_LIB_DIR="${NORDVPN_EASY_LIB_DIR:-/usr/libexec/nordvpn-easy/lib}"
 CONFIG_CONTEXT_SCHEMA_LIB="${CONFIG_CONTEXT_LIB_DIR}/schema.sh"
 CONFIG_CONTEXT_SERVICE_CONFIG_LIB="${CONFIG_CONTEXT_LIB_DIR}/service-config.sh"
 CONFIG_CONTEXT_COMMON_LIB="${CONFIG_CONTEXT_LIB_DIR}/common.sh"
+# wireguard.sh defines the IPv6 RA restore helpers (nordvpn_easy_restore_lan_ipv6)
+# that the init.d disable/disconnect teardown must reach even though it does not
+# load core.sh. wireguard.sh has no runtime side effects at source time (only a
+# few default-value assignments), so it is safe to source here.
+CONFIG_CONTEXT_WIREGUARD_LIB="${CONFIG_CONTEXT_LIB_DIR}/wireguard.sh"
 CONFIG_CONTEXT_GENERATION_LIB="${CONFIG_CONTEXT_LIB_DIR}/generation.sh"
 CONFIG_CONTEXT_JOURNAL_LIB="${CONFIG_CONTEXT_LIB_DIR}/journal.sh"
 CONFIG_CONTEXT_SUPERVISE_LIB="${CONFIG_CONTEXT_LIB_DIR}/supervise.sh"
@@ -17,6 +22,8 @@ CONFIG_CONTEXT_SUPERVISE_LIB="${CONFIG_CONTEXT_LIB_DIR}/supervise.sh"
 . "$CONFIG_CONTEXT_SERVICE_CONFIG_LIB" || exit 1
 # shellcheck disable=SC1090
 . "$CONFIG_CONTEXT_COMMON_LIB" || exit 1
+# shellcheck disable=SC1090
+. "$CONFIG_CONTEXT_WIREGUARD_LIB" || exit 1
 # shellcheck disable=SC1090
 . "$CONFIG_CONTEXT_GENERATION_LIB" || exit 1
 # shellcheck disable=SC1090

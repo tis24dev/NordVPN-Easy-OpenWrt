@@ -1,6 +1,6 @@
 include $(TOPDIR)/rules.mk
 
-NORDVPN_EASY_DEFAULT_VERSION:=1.1.1
+NORDVPN_EASY_DEFAULT_VERSION:=1.2.0
 NORDVPN_EASY_DEFAULT_RELEASE:=1
 NORDVPN_EASY_PACKAGE_MAINTAINER?=tis24dev
 NORDVPN_EASY_PACKAGE_URL?=https://github.com/tis24dev/NordVPN-Easy-OpenWrt
@@ -38,6 +38,70 @@ nordvpn_easy_backend_installed() {
 	return 1
 }
 
+nordvpn_easy_restore_lan_ipv6_before_removal() {
+	# FIX 1: MIRROR of the backend postrm's restore. The two packages carry mutual
+	# early-exit guards (this luci-app postrm exits when the backend is still
+	# installed, and the backend postrm exits when this luci-app is still installed),
+	# so ONLY the last-removed package runs real cleanup. If the RA restore lived only
+	# in the backend, removing the backend FIRST would early-exit before restoring;
+	# later this luci-app postrm would nordvpn_easy_cleanup_files (rm -f
+	# /etc/config/nordvpn_easy) with the snapshot still un-replayed, leaving LAN IPv6
+	# permanently withdrawn. So we replay any RA snapshot here too, BEFORE cleanup
+	# deletes the snapshot store. It is self-contained (no lib sourcing: opkg/apk
+	# delete the package lib files before postrm runs), idempotent, and a pure no-op
+	# when no snapshot exists, so running it in both postrms is safe -- whichever
+	# package is removed last performs the restore before deleting the config.
+	command -v uci >/dev/null 2>&1 || return 0
+
+	restore_any=0
+	for snap in $$(uci show nordvpn_easy 2>/dev/null | \
+		sed -n 's/^nordvpn_easy\.\(nordvpn_ra6_snap_[A-Za-z0-9_]*\)=nordvpn_ra6_snapshot$$/\1/p'); do
+		[ -n "$$snap" ] || continue
+		dhcp_section="$$(uci -q get "nordvpn_easy.$${snap}.dhcp_section" 2>/dev/null || true)"
+		# MIRROR of the backend postrm: restore by the stored VERBATIM .dhcp_section id
+		# only. Only NAMED sections are ever snapshotted (the withdrawal skips anonymous
+		# @dhcp[N] pools), and a named id is stable, so verbatim restore is exactly 1:1.
+		# RESTORE-TIME GC of an orphan snapshot: if the stored section was deleted while
+		# the VPN was up (its id no longer exists in the live dhcp config), do NOT
+		# recreate a phantom section -- drop the snapshot and move on.
+		if [ -z "$$dhcp_section" ] || ! uci -q get "dhcp.$${dhcp_section}" >/dev/null 2>&1; then
+			uci -q delete "nordvpn_easy.$${snap}" 2>/dev/null || true
+			continue
+		fi
+		for opt in ra dhcpv6 ra_default; do
+			had="$$(uci -q get "nordvpn_easy.$${snap}.had_$${opt}" 2>/dev/null || printf '0')"
+			if [ "$$had" = '1' ]; then
+				orig="$$(uci -q get "nordvpn_easy.$${snap}.orig_$${opt}" 2>/dev/null || printf '')"
+				uci set "dhcp.$${dhcp_section}.$${opt}=$${orig}" 2>/dev/null || {
+					# Restore failed mid-transaction: revert the staged dhcp + snapshot
+					# edits so nothing partial persists, and KEEP the snapshot on flash so
+					# the next removal can retry (return 1 skips the cleanup below).
+					uci -q revert dhcp 2>/dev/null || true
+					uci -q revert nordvpn_easy 2>/dev/null || true
+					return 1
+				}
+			else
+				uci -q delete "dhcp.$${dhcp_section}.$${opt}" 2>/dev/null || true
+			fi
+		done
+		uci -q delete "nordvpn_easy.$${snap}" 2>/dev/null || true
+		restore_any=1
+	done
+
+	[ "$$restore_any" = '1' ] || return 0
+	# The commit is the only real data-loss point: if it fails the dhcp restore is
+	# NOT persisted, so revert and keep the snapshot (return 1 so the caller skips
+	# nordvpn_easy_cleanup_files and the snapshot survives for a retry). A failed
+	# odhcpd reload is post-commit (config already restored on flash), so it must
+	# NOT block cleanup; the running daemon re-syncs on the next reload/boot.
+	uci commit dhcp 2>/dev/null || {
+		uci -q revert dhcp 2>/dev/null || true
+		uci -q revert nordvpn_easy 2>/dev/null || true
+		return 1
+	}
+	/etc/init.d/odhcpd reload >/dev/null 2>&1 || true
+}
+
 nordvpn_easy_cleanup_files() {
 	rm -f /etc/config/nordvpn_easy /etc/config/nordvpn_easy-opkg
 	rm -f /etc/cron.d/nordvpn-easy /etc/hotplug.d/iface/95-nordvpn-easy
@@ -61,7 +125,12 @@ case "$${1:-remove}" in
 		if nordvpn_easy_backend_installed; then
 			exit 0
 		fi
-		nordvpn_easy_cleanup_files
+		if nordvpn_easy_restore_lan_ipv6_before_removal; then
+			nordvpn_easy_cleanup_files
+		else
+			printf '%s\n' 'nordvpn-easy: could not restore native LAN IPv6; keeping config for a later retry' >&2
+			exit 1
+		fi
 		;;
 esac
 
