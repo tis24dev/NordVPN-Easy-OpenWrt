@@ -178,6 +178,13 @@ return view.extend({
 		o.rmempty = false;
 		o.description = _('Enable TCP MSS clamping on the firewall zone that carries the WireGuard tunnel. This reduces MTU blackhole problems on long-lived streams.');
 
+		o = s.option(form.ListValue, 'routing_mode', _('Routing Mode'));
+		o.value('full_tunnel', _('Full tunnel (default) - the VPN becomes the default route'));
+		o.value('policy', _('Policy routing - leave routing to the pbr package'));
+		o.default = 'full_tunnel';
+		o.rmempty = false;
+		o.description = _('Full tunnel routes every LAN client through the VPN. Policy routing installs no default route and does not demote the WAN metric, so the Policy-Based Routing (pbr) package decides which traffic uses the tunnel; the kill switch is then left off, because it blocks LAN-to-WAN traffic by zone and would drop the very traffic pbr steers around the tunnel (pbr\'s own strict_enforcement covers the tunnel side). IPv6 stays blocked in both modes, since the tunnel is IPv4-only. The configured VPN resolvers are pinned into the tunnel with host routes so DNS keeps working.');
+
 		o = s.option(form.ListValue, 'dns_mode', _('DNS / Threat Protection'));
 		o.value('standard', _('Standard (NordVPN DNS)'));
 		o.value('threat_protection', _('Threat Protection (block malware, ads and trackers)'));
@@ -310,7 +317,7 @@ return view.extend({
 		o = s.option(form.Flag, 'kill_switch_enabled', _('Kill Switch'));
 		o.default = '1';
 		o.rmempty = false;
-		o.description = _('On (default): while the VPN is enabled, LAN traffic is forced through the tunnel and is blocked if the tunnel drops, so nothing leaks to the bare WAN (IPv6 is always blocked, since NordLynx is IPv4-only). Turn off to allow the LAN to fall back to the unprotected WAN when the tunnel is down.');
+		o.description = _('On (default): while the VPN is enabled, LAN traffic is forced through the tunnel and is blocked if the tunnel drops, so nothing leaks to the bare WAN (IPv6 is always blocked, since NordLynx is IPv4-only). Turn off to allow the LAN to fall back to the unprotected WAN when the tunnel is down. Ignored when Routing Mode is set to policy routing.');
 
 		o = s.option(form.Value, 'failure_retry_delay', _('Failure Retry Delay'));
 		o.placeholder = '6';

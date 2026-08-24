@@ -193,6 +193,7 @@ assert_file_has_line "	option config_schema_version '$NORDVPN_EASY_SCHEMA_VERSIO
 assert_file_has_line "	option check_cron_schedule '*/15 * * * *'" "$FAKE_UCI_CONFIG_FILE" 'first install seeds the recovery cron floor'
 assert_file_has_line "	option dns_mode 'custom'" "$FAKE_UCI_CONFIG_FILE" 'first install defaults dns_mode to custom (Threat Protection is opt-in)'
 assert_file_has_line "	option wireguard_mtu '1280'" "$FAKE_UCI_CONFIG_FILE" 'first install seeds the NordVPN default MTU 1280'
+assert_file_has_line "	option routing_mode 'full_tunnel'" "$FAKE_UCI_CONFIG_FILE" 'first install defaults routing_mode to the full tunnel'
 
 reset_fake_uci
 cat > "$FAKE_UCI_CONFIG_FILE" <<'EOF'
@@ -246,6 +247,7 @@ assert_file_has_line "	option vpn_dns2 '9.9.9.9'" "$FAKE_UCI_CONFIG_FILE" 'upgra
 assert_file_has_line "	option kill_switch_enabled '1'" "$FAKE_UCI_CONFIG_FILE" 'upgrade normalizes kill switch flag'
 assert_file_has_line "	option post_restart_delay '30'" "$FAKE_UCI_CONFIG_FILE" 'upgrade migrates legacy post restart delay from 60 to 30'
 assert_file_has_line "	option fallback_server_station ''" "$FAKE_UCI_CONFIG_FILE" 'upgrade adds new fallback option from template/schema'
+assert_file_has_line "	option routing_mode 'full_tunnel'" "$FAKE_UCI_CONFIG_FILE" 'upgrade backfills routing_mode without changing behaviour'
 assert_file_has_line "	option config_schema_version '$NORDVPN_EASY_SCHEMA_VERSION'" "$FAKE_UCI_CONFIG_FILE" 'upgrade writes current schema version'
 assert_file_missing_line "	option nordvpn_basic_token 'legacy-token'" "$FAKE_UCI_CONFIG_FILE" 'upgrade removes legacy basic token option'
 

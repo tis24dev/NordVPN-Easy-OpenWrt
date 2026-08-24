@@ -46,6 +46,13 @@ assert_eq 'standard' "$(nordvpn_easy_normalize_value dns_mode standard)" 'standa
 assert_eq 'threat_protection' "$(nordvpn_easy_normalize_value dns_mode threat_protection)" 'threat_protection dns_mode preserved'
 assert_eq 'threat_protection_family' "$(nordvpn_easy_normalize_value dns_mode threat_protection_family)" 'threat_protection_family dns_mode preserved'
 assert_eq 'custom' "$(nordvpn_easy_normalize_value dns_mode nonsense)" 'invalid dns_mode falls back to custom'
+# routing_mode defaults to full_tunnel: existing installs must keep the historical
+# behaviour (the tunnel owns the default route) without touching their config.
+assert_eq 'full_tunnel' "$(nordvpn_easy_default routing_mode)" 'default routing_mode keeps the full tunnel'
+assert_eq 'policy' "$(nordvpn_easy_normalize_value routing_mode policy)" 'policy routing_mode preserved'
+assert_eq 'full_tunnel' "$(nordvpn_easy_normalize_value routing_mode full_tunnel)" 'full_tunnel routing_mode preserved'
+assert_eq 'full_tunnel' "$(nordvpn_easy_normalize_value routing_mode nonsense)" 'invalid routing_mode falls back to full_tunnel'
+assert_eq 'full_tunnel' "$(nordvpn_easy_normalize_value routing_mode '')" 'empty routing_mode falls back to full_tunnel'
 assert_eq '86400' "$(nordvpn_easy_normalize_value server_cache_ttl not-a-number)" 'invalid ttl normalization'
 assert_eq '15' "$(nordvpn_easy_normalize_value wireguard_persistent_keepalive not-a-number)" 'invalid keepalive normalization'
 assert_eq '0' "$(nordvpn_easy_normalize_value wireguard_persistent_keepalive 0)" 'zero keepalive disables keepalive'
@@ -105,6 +112,7 @@ assert_eq 'FALLBACK_SERVER_STATION' "$(nordvpn_easy_env_name fallback_server_sta
 assert_eq 'WIREGUARD_PERSISTENT_KEEPALIVE' "$(nordvpn_easy_env_name wireguard_persistent_keepalive)" 'runtime binding maps keepalive env name'
 assert_eq 'WIREGUARD_MTU' "$(nordvpn_easy_env_name wireguard_mtu)" 'runtime binding maps MTU env name'
 assert_eq 'FIREWALL_MTU_FIX' "$(nordvpn_easy_env_name firewall_mtu_fix)" 'runtime binding maps firewall MTU fix env name'
+assert_eq 'ROUTING_MODE' "$(nordvpn_easy_env_name routing_mode)" 'runtime binding maps routing mode env name'
 assert_eq "$NORDVPN_EASY_BACKEND_PAYLOAD_SIGNATURE" "$(nordvpn_easy_backend_payload_signature)" 'backend payload signature helper'
 assert_eq "wan'\\''vpn" "$(nordvpn_easy_shell_quote "wan'vpn")" 'shell quote escapes single quotes'
 eval "SHELL_QUOTE_ROUNDTRIP='$(nordvpn_easy_shell_quote "wan'vpn")'"
@@ -151,3 +159,34 @@ case "$(nordvpn_easy_rpc_contract_level)" in
 esac
 
 printf '%s\n' 'test-schema.sh: ok'
+
+# The schema is a set of PARALLEL lists (uci_options / runtime_options /
+# runtime_env_keys / runtime_bindings) plus two case dispatchers. Nothing enforced
+# that they stayed in sync, so a forgotten entry only surfaced at runtime. Assert it.
+for schema_opt in $(nordvpn_easy_runtime_options); do
+	nordvpn_easy_uci_options | grep -qx "$schema_opt" || {
+		printf '%s\n' "FAIL: runtime option '$schema_opt' is missing from nordvpn_easy_uci_options" >&2
+		exit 1
+	}
+	schema_env="$(nordvpn_easy_env_name "$schema_opt")" || {
+		printf '%s\n' "FAIL: runtime option '$schema_opt' has no env name mapping" >&2
+		exit 1
+	}
+	nordvpn_easy_runtime_env_keys | grep -qx "$schema_env" || {
+		printf '%s\n' "FAIL: env key '$schema_env' is missing from nordvpn_easy_runtime_env_keys" >&2
+		exit 1
+	}
+	nordvpn_easy_runtime_bindings | grep -qx "$schema_opt $schema_env" || {
+		printf '%s\n' "FAIL: binding '$schema_opt $schema_env' is missing from nordvpn_easy_runtime_bindings" >&2
+		exit 1
+	}
+done
+
+for schema_opt in $(nordvpn_easy_uci_options); do
+	nordvpn_easy_default "$schema_opt" >/dev/null 2>&1 || {
+		printf '%s\n' "FAIL: option '$schema_opt' has no schema default" >&2
+		exit 1
+	}
+done
+
+printf '%s\n' 'test-schema.sh: schema lists are mutually consistent'

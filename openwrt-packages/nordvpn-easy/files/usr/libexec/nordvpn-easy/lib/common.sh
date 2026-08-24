@@ -55,6 +55,36 @@ nordvpn_easy_log_blocker() {
 	nordvpn_easy_log_phase "$phase" "BLOCKER: $message"
 }
 
+# Routing ownership, the single source of truth for both predicates below.
+#
+# 'full_tunnel' (default) is the historical behaviour: the peer carries
+# route_allowed_ips=1 so netifd installs `default dev <vpn_if>` in the MAIN table,
+# and WAN is demoted to metric 1024 so the tunnel wins. Every LAN client egresses
+# through the tunnel.
+#
+# 'policy' leaves the main routing table alone: the peer keeps AllowedIPs
+# 0.0.0.0/0 (WireGuard cryptokey routing still has to accept every destination or
+# it drops the packets) but route_allowed_ips=0, so no route is installed and WAN
+# keeps its own metric. Which traffic enters the tunnel is then entirely decided by
+# an external policy-based routing package (pbr), which selects the tunnel with its
+# own fwmark rules and per-interface routing tables.
+nordvpn_easy_routing_mode_is_policy() {
+	[ "${ROUTING_MODE:-full_tunnel}" = 'policy' ]
+}
+
+# The kill switch is a ZONE match (lan -> WAN IPv4 DROP), not a route match: it
+# cannot tell traffic that leaked from traffic pbr deliberately steered out of the
+# tunnel, so in policy mode it would drop exactly what policy routing exists to
+# allow. It is therefore inert there, and pbr's own strict_enforcement (which
+# installs `unreachable default` in its table while the interface is down) provides
+# the equivalent fail-closed guard for the traffic it owns. The ks6 REJECT is NOT
+# covered by this: the tunnel is IPv4-only in both modes, so IPv6 can only ever
+# leak, and it stays blocked regardless of routing mode.
+nordvpn_easy_kill_switch_is_effective() {
+	[ "${KILL_SWITCH_ENABLED:-1}" = '1' ] || return 1
+	! nordvpn_easy_routing_mode_is_policy
+}
+
 # Shared post-tunnel-up sequence: reset the forwarded conntrack still pinned to the
 # old exit, then best-effort withdraw native LAN IPv6 on a v4-only full-tunnel. The
 # two provisioning paths in actions.sh and supervise's converge all run this exact

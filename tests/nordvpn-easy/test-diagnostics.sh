@@ -340,6 +340,43 @@ assert_eq 'true' \
 assert_contains 'operational.kill_switch_active' "$(findings_codes "$KILL_SWITCH_JSON")" \
 	'kill switch scenario lists kill switch finding when tunnel is down'
 
+# Policy routing mode: the kill switch is configured but never installed (it would
+# drop the traffic pbr steers around the tunnel), so reporting it as active would be
+# a permanent false positive on a tunnel that is legitimately not the default route.
+uci_policy_mode() {
+	case "$*" in
+		'get nordvpn_easy.main.kill_switch_enabled') printf '%s\n' '1' ;;
+		'get nordvpn_easy.main.routing_mode') printf '%s\n' 'policy' ;;
+		*) uci_complete "$@" ;;
+	esac
+}
+uci() {
+	if [ "$1" = '-q' ]; then
+		shift
+	fi
+	uci_policy_mode "$@"
+}
+POLICY_JSON="$(emit_scenario_json)"
+assert_eq 'policy' \
+	"$(printf '%s' "$POLICY_JSON" | jq -r '.health.routing_mode')" \
+	'summary json exposes the policy routing mode'
+assert_eq 'false' \
+	"$(printf '%s' "$POLICY_JSON" | jq -r '.health.kill_switch_enabled')" \
+	'policy routing mode reports the kill switch as not in effect'
+case "$(findings_codes "$POLICY_JSON")" in
+	*operational.kill_switch_active*)
+		printf '%s\n' 'FAIL: policy routing mode must not raise the kill switch finding' >&2
+		exit 1
+		;;
+esac
+
+uci() {
+	if [ "$1" = '-q' ]; then
+		shift
+	fi
+	uci_kill_switch "$@"
+}
+
 uci() {
 	if [ "$1" = '-q' ]; then
 		shift

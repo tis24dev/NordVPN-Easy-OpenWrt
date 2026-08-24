@@ -30,6 +30,7 @@ DIAG_ROUTES_VIA_VPN='unknown'
 DIAG_WG_PEER_COUNT='unknown'
 DIAG_ROUTE_ALLOWED_IPS=''
 DIAG_FULL_TUNNEL_ROUTING='no'
+DIAG_ROUTING_MODE='full_tunnel'
 
 # Runtime layer
 DIAG_WG_ENDPOINT='N/A'
@@ -105,6 +106,7 @@ nordvpn_easy_diagnostics_reset_state() {
 	DIAG_WG_PEER_COUNT='unknown'
 	DIAG_ROUTE_ALLOWED_IPS=''
 	DIAG_FULL_TUNNEL_ROUTING='no'
+	DIAG_ROUTING_MODE='full_tunnel'
 	DIAG_WG_ENDPOINT='N/A'
 	DIAG_WG_HANDSHAKE_EPOCH='0'
 	DIAG_WG_HANDSHAKE='Never'
@@ -582,6 +584,7 @@ nordvpn_easy_emit_diagnostics_summary_json() {
 		--arg default_route_device "$DIAG_DEFAULT_ROUTE_DEVICE" \
 		--arg default_route_via_vpn "$DIAG_DEFAULT_ROUTE_VIA_VPN" \
 		--arg full_tunnel_routing "$DIAG_FULL_TUNNEL_ROUTING" \
+		--arg routing_mode "$DIAG_ROUTING_MODE" \
 		--arg transfer_asymmetry "$DIAG_TRANSFER_ASYMMETRY" \
 		--argjson transfer_rx_bytes "${DIAG_TRANSFER_RX_BYTES:-0}" \
 		--argjson transfer_tx_bytes "${DIAG_TRANSFER_TX_BYTES:-0}" \
@@ -624,6 +627,7 @@ nordvpn_easy_emit_diagnostics_summary_json() {
 				default_route_device: $default_route_device,
 				default_route_via_vpn: $default_route_via_vpn,
 				full_tunnel_routing: $full_tunnel_routing,
+				routing_mode: $routing_mode,
 				transfer_asymmetry: $transfer_asymmetry,
 				transfer_rx_bytes: $transfer_rx_bytes,
 				transfer_tx_bytes: $transfer_tx_bytes,
@@ -758,6 +762,17 @@ nordvpn_easy_diagnostics_collect_config() {
 			DIAG_KILL_SWITCH_ENABLED='0'
 			;;
 	esac
+	DIAG_ROUTING_MODE="$(uci -q get 'nordvpn_easy.main.routing_mode' 2>/dev/null || printf '%s' 'full_tunnel')"
+	case "$DIAG_ROUTING_MODE" in
+		policy) ;;
+		*) DIAG_ROUTING_MODE='full_tunnel' ;;
+	esac
+	# In policy mode the kill switch is not installed (see
+	# nordvpn_easy_kill_switch_is_effective), so reporting it as enabled would raise
+	# a permanent false 'kill switch is blocking the LAN' finding.
+	if [ "$DIAG_ROUTING_MODE" = 'policy' ]; then
+		DIAG_KILL_SWITCH_ENABLED='0'
+	fi
 
 	if [ "$DIAG_SELECTION_MODE" = 'manual' ]; then
 		if [ -n "$DIAG_PREFERRED_STATION" ] && [ -n "$DIAG_CURRENT_STATION" ] &&
@@ -1116,10 +1131,16 @@ nordvpn_easy_diagnostics_compute_findings() {
 	# flagged (otherwise the finding fires forever). '|| true' keeps a set -e caller
 	# from aborting on the absent-option exit status of uci -q get.
 	diag_ra_withdraw_enabled="${NORDVPN_EASY_RA_WITHDRAW_ENABLED:-$(uci -q get nordvpn_easy.main.ipv6_ra_withdraw 2>/dev/null || true)}"
-	if [ "$DIAG_FULL_TUNNEL_ROUTING" = 'yes' ] &&
+	# The full_tunnel_routing / default_route_via_vpn pair is how we recognise a live
+	# full-tunnel exit, and it is deliberately false in policy mode (no route in the
+	# main table). The withdrawal itself is NOT mode-gated -- it keys on
+	# nordvpn_easy_tunnel_is_v4_only_full, which only reads AllowedIPs and the
+	# interface addresses -- so policy mode must satisfy this gate through its own
+	# branch or the finding could never fire there while the runtime kept withdrawing.
+	if { { [ "$DIAG_FULL_TUNNEL_ROUTING" = 'yes' ] && [ "$DIAG_DEFAULT_ROUTE_VIA_VPN" = 'yes' ]; } ||
+		[ "$DIAG_ROUTING_MODE" = 'policy' ]; } &&
 		[ "$DIAG_PEER_SECTION_FOUND" = 'yes' ] &&
 		[ "$DIAG_WG_CONNECTED" = 'yes' ] &&
-		[ "$DIAG_DEFAULT_ROUTE_VIA_VPN" = 'yes' ] &&
 		[ -n "$DIAG_LAN_DHCP_ADVERTISING_SECTION" ] &&
 		[ "${diag_ra_withdraw_enabled:-1}" != '0' ] &&
 		command -v nordvpn_easy_tunnel_is_v4_only_full >/dev/null 2>&1 &&
@@ -1142,7 +1163,7 @@ nordvpn_easy_diagnostics_compute_findings() {
 		# runtime property of odhcpd we do not introspect: config.c 2206-2213); the
 		# finding simply reports the withdrawal has not applied and clears once ra is
 		# disabled for that section, for every mode. Reconnect re-applies the withdrawal.
-		diag_ipv6_finding_message="LAN dhcp section '${DIAG_LAN_DHCP_ADVERTISING_SECTION}' still advertises native IPv6 (ra != disabled${diag_native_v6_route_clause}) while ${DIAG_VPN_IF} is a v4-only full-tunnel; clients prefer IPv6 and stall on the v6 block"
+		diag_ipv6_finding_message="LAN dhcp section '${DIAG_LAN_DHCP_ADVERTISING_SECTION}' still advertises native IPv6 (ra != disabled${diag_native_v6_route_clause}) while ${DIAG_VPN_IF} is a v4-only exit; clients prefer IPv6 and stall on the v6 block"
 		diag_ipv6_finding_action="Reconnect to re-apply the IPv6 RA withdrawal; if it persists, check odhcpd is running and reloadable, that dhcp.${DIAG_LAN_DHCP_ADVERTISING_SECTION}.ra was set to disabled, and that the master toggle nordvpn_easy.main.ipv6_ra_withdraw is not 0 (the section is restored automatically on disconnect)"
 		nordvpn_easy_diagnostics_add_finding \
 			'routing.native_ipv6_not_withdrawn' \
@@ -1312,6 +1333,7 @@ nordvpn_easy_diagnostics_print_health_summary() {
 	printf 'default_route_via_vpn=%s\n' "$DIAG_DEFAULT_ROUTE_VIA_VPN"
 	printf 'route_allowed_ips=%s\n' "${DIAG_ROUTE_ALLOWED_IPS:-unset}"
 	printf 'full_tunnel_routing=%s\n' "$DIAG_FULL_TUNNEL_ROUTING"
+	printf 'routing_mode=%s\n' "$DIAG_ROUTING_MODE"
 	printf 'routing_blackhole_risk=%s\n' "$DIAG_ROUTING_BLACKHOLE_RISK"
 	printf 'transfer_rx_bytes=%s\n' "$DIAG_TRANSFER_RX_BYTES"
 	printf 'transfer_tx_bytes=%s\n' "$DIAG_TRANSFER_TX_BYTES"

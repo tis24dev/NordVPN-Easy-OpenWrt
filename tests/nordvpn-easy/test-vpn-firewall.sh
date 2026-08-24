@@ -97,6 +97,7 @@ run_ensure() {
 	: > "$RELOAD_MARK"
 	VPN_IF='wg0' WAN_IF='wan' FIREWALL_MTU_FIX='1' \
 		KILL_SWITCH_ENABLED="$1" \
+		ROUTING_MODE="${2:-full_tunnel}" \
 		NORDVPN_EASY_FIREWALL_INIT="$TMP_DIR/fw-init" \
 		nordvpn_easy_ensure_vpn_firewall
 }
@@ -133,6 +134,25 @@ run_ensure 0
 
 [ "$(fwget firewall.nordvpn_ks6_1.target)" = 'REJECT' ] || { echo 'FAIL: IPv6 must be blocked even with the kill switch off' >&2; exit 1; }
 [ "$(fwget firewall.nordvpn_ks4_1.target)" = '<none>' ] || { echo 'FAIL: IPv4 kill-switch rule must be absent when fallback is allowed' >&2; exit 1; }
+
+# --- policy routing mode: kill switch inert, everything else unchanged --------
+# The ks4 rule matches lan->wan by ZONE, so in policy mode it would drop exactly
+# the traffic pbr steers around the tunnel. It must not be installed even though
+# the user left kill_switch_enabled=1. ks6 is NOT mode-gated: the tunnel is v4-only
+# in both modes, so IPv6 can only ever leak.
+seed_firewall
+run_ensure 1 policy
+
+[ "$(fwget firewall.nordvpn_ks4_1.target)" = '<none>' ] || { echo 'FAIL: kill-switch v4 rule must NOT be installed in policy routing mode' >&2; exit 1; }
+[ "$(fwget firewall.nordvpn_ks6_1.target)" = 'REJECT' ] || { echo 'FAIL: IPv6 must stay blocked in policy routing mode' >&2; exit 1; }
+[ "$(fwget firewall.nordvpn_vpn.network)" = 'wg0' ] || { echo 'FAIL: vpn zone must still carry the tunnel in policy routing mode' >&2; exit 1; }
+[ "$(fwget firewall.nordvpn_fwd_1.dest)" = 'nordvpn' ] || { echo 'FAIL: lan->vpn forwarding is required in policy routing mode too' >&2; exit 1; }
+grep -q 'reload' "$RELOAD_MARK" || { echo 'FAIL: firewall was not reloaded in policy routing mode' >&2; exit 1; }
+
+# An explicit kill_switch_enabled=0 in policy mode behaves the same way.
+seed_firewall
+run_ensure 0 policy
+[ "$(fwget firewall.nordvpn_ks4_1.target)" = '<none>' ] || { echo 'FAIL: kill-switch v4 rule must be absent with the switch off in policy mode' >&2; exit 1; }
 
 # --- teardown commit failure reverts staged app-owned deletes ------------------
 cp "$FW_STORE" "$FW_SNAPSHOT"

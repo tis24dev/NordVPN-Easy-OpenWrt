@@ -135,11 +135,50 @@ files and NordVPN Easy runtime/cache residues. Key settings include:
 - `wireguard_persistent_keepalive` (default `15`)
 - `wireguard_mtu` (empty means automatic)
 - `firewall_mtu_fix` (default `1`)
+- `routing_mode` (`full_tunnel` default, or `policy` -- see below)
 - health-check timing values (`failure_retry_delay`, `post_restart_delay`, and related delays)
 
 Country filtering is supported. The backend resolves the requested country and
 then asks NordVPN for recommended WireGuard servers inside that country. City
 selection is not implemented.
+
+### Routing mode: full tunnel or policy-based routing
+
+`routing_mode` decides who owns the system routing table.
+
+`full_tunnel` (the default, and the historical behaviour) sets
+`route_allowed_ips=1` on the WireGuard peer, so netifd installs
+`default dev wg0` in the main routing table, and demotes the WAN interface to
+`metric 1024` so the tunnel wins. Every LAN client egresses through the VPN.
+
+`policy` leaves the main routing table untouched: no default route is installed
+and the WAN metric is not demoted, so the
+[Policy-Based Routing](https://docs.mossdef.org/pbr/) (`pbr`) package decides
+which traffic uses the tunnel through its own fwmark rules and routing tables.
+The peer keeps `allowed_ips=0.0.0.0/0` in this mode too -- that list is
+WireGuard's cryptokey routing table, and narrowing it would make the tunnel drop
+the very traffic pbr steers into it.
+
+Three consequences are worth knowing before switching:
+
+- **The kill switch is left off.** It blocks LAN-to-WAN IPv4 by firewall *zone*,
+  not by route, so it cannot distinguish a leak from traffic pbr deliberately
+  sent around the tunnel. pbr's own `strict_enforcement` (which installs
+  `unreachable default` in its table while the interface is down) is the
+  equivalent guard for the traffic it owns. pbr also
+  [documents](https://docs.mossdef.org/pbr/) that it does not support a
+  killswitch router topology.
+- **IPv6 stays blocked**, exactly as in full tunnel mode. The tunnel is
+  IPv4-only, so IPv6 could only ever leave outside it.
+- **The VPN resolvers are pinned into the tunnel** with `/32` host routes
+  (app-owned `nordvpn_dnsroute_*` sections in `/etc/config/network`), because
+  without a default route they would otherwise be unreachable and DNS would fail
+  for the whole router. Resolvers on RFC1918, loopback or link-local addresses
+  are skipped, so a LAN resolver set as a custom DNS keeps working.
+
+pbr needs no extra configuration to pick the tunnel up: the interface is a
+`proto wireguard` client with no `listen_port`, which is what pbr's `is_wg`
+detection requires.
 
 ## WireGuard stability troubleshooting
 
