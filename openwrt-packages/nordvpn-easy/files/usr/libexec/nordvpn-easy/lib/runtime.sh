@@ -751,6 +751,8 @@ nordvpn_easy_emit_status_json() {
   "runtime_configured": $runtime_configured,
   "server_selection_mode": "$(nordvpn_easy_json_escape "${SERVER_SELECTION_MODE:-auto}")",
   "kill_switch_enabled": $([ "${KILL_SWITCH_ENABLED:-0}" = '1' ] && printf '%s' 'true' || printf '%s' 'false'),
+  "kill_switch_effective": $(nordvpn_easy_kill_switch_is_effective && printf '%s' 'true' || printf '%s' 'false'),
+  "routing_mode": "$(nordvpn_easy_json_escape "${ROUTING_MODE:-full_tunnel}")",
   "recovery_cron_installed": $recovery_cron_installed,
   "config_fingerprint": "$(nordvpn_easy_json_escape "$config_fingerprint")",
   "applied_fingerprint": "$(nordvpn_easy_json_escape "$applied_fingerprint")",

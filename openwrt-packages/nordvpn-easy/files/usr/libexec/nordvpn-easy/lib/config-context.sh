@@ -161,7 +161,7 @@ nordvpn_easy_debug_value_or_default() {
 
 nordvpn_easy_service_debug_summary() {
 	local prefix="${1:-cfg_}"
-	local enabled mode country preferred_station preferred_hostname fallback_station wan_if vpn_if keepalive mtu mtu_fix token
+	local enabled mode country preferred_station preferred_hostname fallback_station wan_if vpn_if keepalive mtu mtu_fix routing_mode token
 
 	eval "enabled=\${${prefix}enabled-0}"
 	eval "mode=\${${prefix}server_selection_mode-}"
@@ -174,6 +174,7 @@ nordvpn_easy_service_debug_summary() {
 	eval "keepalive=\${${prefix}wireguard_persistent_keepalive-}"
 	eval "mtu=\${${prefix}wireguard_mtu-}"
 	eval "mtu_fix=\${${prefix}firewall_mtu_fix-}"
+	eval "routing_mode=\${${prefix}routing_mode-}"
 	eval "token=\${${prefix}nordvpn_token-}"
 
 	printf '%s' "enabled=${enabled:-0} ($(nordvpn_easy_enabled_flag_label "${enabled:-0}")), "
@@ -187,6 +188,7 @@ nordvpn_easy_service_debug_summary() {
 	printf '%s' "wg_keepalive=$(nordvpn_easy_debug_value_or_default "${keepalive:-}" '15'), "
 	printf '%s' "wg_mtu=$(nordvpn_easy_debug_value_or_default "${mtu:-}" 'auto'), "
 	printf '%s' "mtu_fix=$(nordvpn_easy_debug_value_or_default "${mtu_fix:-}" '1'), "
+	printf '%s' "routing_mode=$(nordvpn_easy_debug_value_or_default "${routing_mode:-}" 'full_tunnel'), "
 	printf '%s' "token=$([ -n "${token:-}" ] && printf '%s' 'present' || printf '%s' 'missing')"
 }
 
@@ -204,6 +206,7 @@ nordvpn_easy_runtime_env_debug_summary() {
 	printf '%s' "wg_keepalive=$(nordvpn_easy_debug_value_or_default "${WIREGUARD_PERSISTENT_KEEPALIVE:-}" '15'), "
 	printf '%s' "wg_mtu=$(nordvpn_easy_debug_value_or_default "${WIREGUARD_MTU:-}" 'auto'), "
 	printf '%s' "mtu_fix=$(nordvpn_easy_debug_value_or_default "${FIREWALL_MTU_FIX:-}" '1'), "
+	printf '%s' "routing_mode=$(nordvpn_easy_debug_value_or_default "${ROUTING_MODE:-}" 'full_tunnel'), "
 	printf '%s' "token=$([ -n "${NORDVPN_TOKEN:-}" ] && printf '%s' 'present' || printf '%s' 'missing')"
 }
 

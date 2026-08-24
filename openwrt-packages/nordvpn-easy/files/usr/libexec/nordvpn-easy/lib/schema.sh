@@ -51,6 +51,7 @@ nordvpn_easy_uci_options() {
 		'enable_hotplug' \
 		'hotplug_debounce_seconds' \
 		'kill_switch_enabled' \
+		'routing_mode' \
 		'failure_retry_delay' \
 		'interface_restart_delay' \
 		'post_restart_delay' \
@@ -85,6 +86,7 @@ nordvpn_easy_runtime_bindings() {
 		'enable_hotplug ENABLE_HOTPLUG' \
 		'hotplug_debounce_seconds HOTPLUG_DEBOUNCE_SECONDS' \
 		'kill_switch_enabled KILL_SWITCH_ENABLED' \
+		'routing_mode ROUTING_MODE' \
 		'failure_retry_delay FAILURE_RETRY_DELAY' \
 		'interface_restart_delay INTERFACE_RESTART_DELAY' \
 		'post_restart_delay POST_RESTART_DELAY'
@@ -114,6 +116,7 @@ nordvpn_easy_runtime_options() {
 		'enable_hotplug' \
 		'hotplug_debounce_seconds' \
 		'kill_switch_enabled' \
+		'routing_mode' \
 		'failure_retry_delay' \
 		'interface_restart_delay' \
 		'post_restart_delay'
@@ -143,6 +146,7 @@ nordvpn_easy_runtime_env_keys() {
 		'ENABLE_HOTPLUG' \
 		'HOTPLUG_DEBOUNCE_SECONDS' \
 		'KILL_SWITCH_ENABLED' \
+		'ROUTING_MODE' \
 		'FAILURE_RETRY_DELAY' \
 		'INTERFACE_RESTART_DELAY' \
 		'POST_RESTART_DELAY'
@@ -198,6 +202,11 @@ nordvpn_easy_default() {
 		enable_hotplug) printf '%s\n' '1' ;;
 		hotplug_debounce_seconds) printf '%s\n' '30' ;;
 		kill_switch_enabled) printf '%s\n' '1' ;;
+		# routing_mode selects who owns the system routing table:
+		# 'full_tunnel' (default, the historical behaviour) makes the tunnel the
+		# default route; 'policy' leaves system routing untouched so an external
+		# policy-based routing package (pbr) decides what enters the tunnel.
+		routing_mode) printf '%s\n' 'full_tunnel' ;;
 		failure_retry_delay) printf '%s\n' '6' ;;
 		interface_restart_delay) printf '%s\n' '10' ;;
 		post_restart_delay) printf '%s\n' '30' ;;
@@ -254,6 +263,7 @@ nordvpn_easy_env_name() {
 		enable_hotplug) printf '%s\n' 'ENABLE_HOTPLUG' ;;
 		hotplug_debounce_seconds) printf '%s\n' 'HOTPLUG_DEBOUNCE_SECONDS' ;;
 		kill_switch_enabled) printf '%s\n' 'KILL_SWITCH_ENABLED' ;;
+		routing_mode) printf '%s\n' 'ROUTING_MODE' ;;
 		failure_retry_delay) printf '%s\n' 'FAILURE_RETRY_DELAY' ;;
 		interface_restart_delay) printf '%s\n' 'INTERFACE_RESTART_DELAY' ;;
 		post_restart_delay) printf '%s\n' 'POST_RESTART_DELAY' ;;
@@ -479,6 +489,19 @@ nordvpn_easy_normalize_value() {
 			# vpn_dns1/vpn_dns2. Anything else falls back to the safe default.
 			case "$value" in
 				standard|threat_protection|threat_protection_family|custom)
+					printf '%s\n' "$value"
+					;;
+				*)
+					printf '%s\n' "$default_value"
+					;;
+			esac
+			;;
+		routing_mode)
+			# full_tunnel keeps the historical behaviour (the tunnel becomes the
+			# default route); policy hands routing to an external pbr install.
+			# Anything else falls back to the safe default.
+			case "$value" in
+				full_tunnel|policy)
 					printf '%s\n' "$value"
 					;;
 				*)

@@ -340,7 +340,16 @@ nordvpn_easy_build_wireguard_peer_section() {
 	uci -q delete "network.${peer_section}" || true
 	uci set "network.${peer_section}"="wireguard_${VPN_IF}" || return 1
 	nordvpn_easy_apply_wireguard_transport_settings "$peer_section" || return 1
-	uci set "network.${peer_section}.route_allowed_ips"='1' || return 1
+	# route_allowed_ips is what makes netifd install a route per AllowedIPs entry.
+	# In policy mode we want NO route in the main table (pbr installs its own in a
+	# dedicated table), so it is 0 -- but allowed_ips stays 0.0.0.0/0 in BOTH modes:
+	# that list is WireGuard's cryptokey routing table, and anything it does not
+	# cover is dropped inside the tunnel no matter how the packet got there.
+	if nordvpn_easy_routing_mode_is_policy; then
+		uci set "network.${peer_section}.route_allowed_ips"='0' || return 1
+	else
+		uci set "network.${peer_section}.route_allowed_ips"='1' || return 1
+	fi
 	uci add_list "network.${peer_section}.allowed_ips"='0.0.0.0/0' || return 1
 
 	if nordvpn_easy_server_selection_is_manual; then
@@ -440,7 +449,19 @@ nordvpn_easy_configure_vpn_interface_no_bringup() {
 
 	nordvpn_easy_build_wireguard_peer_section || return 1
 
-	uci set "network.${WAN_IF}.metric"='1024'
+	nordvpn_easy_remove_dns_routes
+	if nordvpn_easy_routing_mode_is_policy; then
+		# Demoting WAN exists only to let the tunnel's metric-0 default route win.
+		# With no such route the demotion would just penalise WAN for nothing, so
+		# drop it -- and clear a stale one left behind by a previous full_tunnel run
+		# (teardown only removes it on disconnect, not on a mode switch).
+		if [ "$(uci -q get "network.${WAN_IF}.metric" 2>/dev/null || true)" = '1024' ]; then
+			uci -q delete "network.${WAN_IF}.metric" >/dev/null 2>&1 || true
+		fi
+		nordvpn_easy_apply_policy_dns_routes || return 1
+	else
+		uci set "network.${WAN_IF}.metric"='1024'
+	fi
 	log "apply: committing network configuration for $VPN_IF"
 	nordvpn_easy_fenced_uci_commit network || {
 		# Discard the staged interface/peer edits so a superseded (reaped) writer

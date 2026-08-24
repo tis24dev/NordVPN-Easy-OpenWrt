@@ -75,6 +75,7 @@ DESIRED_ENABLED=1
 VPN_IF='wg0'
 SERVER_SELECTION_MODE='auto'
 KILL_SWITCH_ENABLED='1'
+ROUTING_MODE='full_tunnel'
 WIREGUARD_PERSISTENT_KEEPALIVE='15'
 WIREGUARD_MTU=''
 FIREWALL_MTU_FIX='1'
@@ -155,6 +156,17 @@ assert_eq "$$" "$(printf '%s' "$STATUS_JSON" | jq -r '.operation_lock_pid')" 'st
 assert_eq 'check' "$(printf '%s' "$STATUS_JSON" | jq -r '.operation_lock_action')" 'status json exposes lock action'
 assert_eq 'recovering' "$(printf '%s' "$STATUS_JSON" | jq -r '.state')" 'status json derives enterprise state from busy check'
 assert_eq 'true' "$(printf '%s' "$STATUS_JSON" | jq -r '.kill_switch_enabled')" 'status json exposes kill switch flag'
+assert_eq 'full_tunnel' "$(printf '%s' "$STATUS_JSON" | jq -r '.routing_mode')" 'status json exposes the routing mode'
+assert_eq 'true' "$(printf '%s' "$STATUS_JSON" | jq -r '.kill_switch_effective')" 'status json reports the kill switch as effective in full_tunnel mode'
+
+# In policy mode the kill switch is configured but never installed, so the status
+# must report the effective state alongside the configured one.
+ROUTING_MODE='policy'
+STATUS_JSON_POLICY="$(nordvpn_easy_emit_status_json)"
+ROUTING_MODE='full_tunnel'
+assert_eq 'policy' "$(printf '%s' "$STATUS_JSON_POLICY" | jq -r '.routing_mode')" 'status json exposes policy routing mode'
+assert_eq 'true' "$(printf '%s' "$STATUS_JSON_POLICY" | jq -r '.kill_switch_enabled')" 'policy mode keeps the configured kill switch flag visible'
+assert_eq 'false' "$(printf '%s' "$STATUS_JSON_POLICY" | jq -r '.kill_switch_effective')" 'policy mode reports the kill switch as not effective'
 assert_eq '51820' "$(printf '%s' "$STATUS_JSON" | jq -r '.endpoint_port')" 'status json exposes endpoint port'
 assert_eq '15' "$(printf '%s' "$STATUS_JSON" | jq -r '.wireguard_persistent_keepalive')" 'status json exposes WireGuard keepalive'
 assert_eq '1420' "$(printf '%s' "$STATUS_JSON" | jq -r '.wireguard_mtu')" 'status json exposes WireGuard MTU'

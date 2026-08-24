@@ -437,6 +437,15 @@ async function testWireGuardTransportControlsValidateOperationalRanges() {
 	assert.match(String(mtuOption.validate('main', '1501')), /between 1280 and 1500/, 'high MTU is rejected');
 	assert.equal(mtuFixOption.default, '1', 'MSS clamping defaults on');
 
+	const routingModeOption = harness.formHarness.findOption('routing_mode');
+	assert.equal(routingModeOption.default, 'full_tunnel', 'routing_mode defaults to the historical full tunnel');
+	assert.deepEqual(
+		routingModeOption.values.map(function(v) { return v.value; }),
+		['full_tunnel', 'policy'],
+		'routing_mode offers the full tunnel and the pbr-friendly policy mode'
+	);
+	assert.equal(routingModeOption.rmempty, false, 'routing_mode must stay materialized in UCI');
+
 	const dnsModeOption = harness.formHarness.findOption('dns_mode');
 	assert.equal(dnsModeOption.default, 'custom', 'dns_mode defaults to custom so an upgrade keeps the saved DNS');
 	assert.deepEqual(

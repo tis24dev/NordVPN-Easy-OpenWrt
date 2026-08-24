@@ -62,6 +62,67 @@ nordvpn_easy_immediate_vpn_shutdown() {
 	return 0
 }
 
+# Prefix of the app-owned `config route` sections used in policy mode. Anything
+# matching it is ours and is rebuilt from scratch on every provision.
+NORDVPN_EASY_DNS_ROUTE_PREFIX="${NORDVPN_EASY_DNS_ROUTE_PREFIX:-nordvpn_dnsroute_}"
+
+# True for addresses that must never be pinned into the tunnel: RFC1918, loopback
+# and link-local. A user whose custom DNS is the LAN resolver (192.168.x.x) would
+# otherwise lose name resolution the moment policy mode routed it through wg.
+nordvpn_easy_ipv4_is_local() {
+	case "$1" in
+		10.*|127.*|169.254.*|192.168.*) return 0 ;;
+		172.1[6-9].*|172.2[0-9].*|172.3[01].*) return 0 ;;
+	esac
+	return 1
+}
+
+# Drop every app-owned DNS route section (staged, not committed: the caller owns
+# the fenced commit). Idempotent, and safe in full_tunnel mode where there are none.
+nordvpn_easy_remove_dns_routes() {
+	local section=''
+
+	while IFS= read -r section; do
+		[ -n "$section" ] || continue
+		uci -q delete "network.${section}" || true
+	done <<EOF
+$(uci show network 2>/dev/null | awk -F '[.=]' -v prefix="$NORDVPN_EASY_DNS_ROUTE_PREFIX" '
+	$1 == "network" && $3 == "route" && index($2, prefix) == 1 {
+		print $2
+	}
+')
+EOF
+}
+
+# Policy mode installs no default route, so the NordVPN resolvers configured on the
+# interface (103.86.96.100 & co.) would have no path at all and DNS would fail for
+# the whole router. Pin them into the tunnel with host routes -- the same technique
+# the official NordVPN client uses when its LAN carve-out would otherwise strand the
+# VPN resolvers (TunnelBuilder adds a /32 route per DNS server). These land in the
+# main table on purpose: DNS for every client then resolves through the tunnel,
+# which is the leak-safe side to err on. Staged only; the caller commits.
+nordvpn_easy_apply_policy_dns_routes() {
+	local dns='' idx=0 section=''
+
+	# The provisioning caller has already resolved the pair (it needs it for the
+	# interface `dns` list); re-resolve only when the helper is actually loaded, so
+	# a context that sourced wireguard.sh alone still works off the caller's values.
+	if command -v nordvpn_easy_resolve_dns_pair >/dev/null 2>&1; then
+		nordvpn_easy_resolve_dns_pair
+	fi
+	for dns in "${NORDVPN_EASY_DNS1:-}" "${NORDVPN_EASY_DNS2:-}"; do
+		[ -n "$dns" ] || continue
+		nordvpn_easy_ipv4_is_local "$dns" && continue
+		idx=$((idx + 1))
+		section="${NORDVPN_EASY_DNS_ROUTE_PREFIX}${idx}"
+		uci set "network.${section}"='route' || return 1
+		uci set "network.${section}.interface"="$VPN_IF" || return 1
+		uci set "network.${section}.target"="${dns}/32" || return 1
+	done
+
+	log "apply: policy mode pinned ${idx} VPN resolver host route(s) through $VPN_IF"
+}
+
 nordvpn_easy_teardown_vpn() {
 	local peer_section="${VPN_IF}server"
 	local wan_metric=''
@@ -89,6 +150,7 @@ EOF
 
 	uci -q delete "network.${VPN_IF}" || true
 	uci -q delete "network.${peer_section}" || true
+	nordvpn_easy_remove_dns_routes
 
 	wan_metric="$(uci -q get "network.${WAN_IF}.metric" 2>/dev/null || true)"
 	[ "$wan_metric" = '1024' ] && uci -q delete "network.${WAN_IF}.metric" || true
@@ -1210,7 +1272,12 @@ nordvpn_easy_ensure_vpn_firewall() {
 	}
 
 	kill_switch=0
-	[ "${KILL_SWITCH_ENABLED:-1}" = '1' ] && kill_switch=1
+	if nordvpn_easy_kill_switch_is_effective; then
+		kill_switch=1
+	fi
+	if [ "${KILL_SWITCH_ENABLED:-1}" = '1' ] && [ "$kill_switch" = '0' ]; then
+		log 'apply: kill switch left OFF in policy routing mode (it would drop the very traffic pbr steers out of the tunnel; pbr strict_enforcement covers the tunnel side)'
+	fi
 	mtu_fix_value=0
 	[ "${FIREWALL_MTU_FIX:-1}" = '1' ] && mtu_fix_value=1
 
@@ -1290,7 +1357,7 @@ nordvpn_easy_ensure_vpn_firewall() {
 		return 1
 	}
 
-	log "runtime: VPN firewall zone ${NORDVPN_EASY_FW_ZONE_NAME} ready for ${VPN_IF} (kill_switch=${kill_switch}, mtu_fix=${mtu_fix_value})"
+	log "runtime: VPN firewall zone ${NORDVPN_EASY_FW_ZONE_NAME} ready for ${VPN_IF} (routing_mode=${ROUTING_MODE:-full_tunnel}, kill_switch=${kill_switch}, mtu_fix=${mtu_fix_value})"
 
 	# NOTE: native LAN IPv6 withdrawal is NOT done here. ensure_vpn_firewall runs
 	# BEFORE the v4-only peer is committed and the tunnel is brought up, so the

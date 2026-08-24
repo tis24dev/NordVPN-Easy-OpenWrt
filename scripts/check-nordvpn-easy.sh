@@ -78,6 +78,7 @@ SH_FILES=(
 	"$ROOT_DIR/tests/nordvpn-easy/test-public-ip-cache.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-wireguard.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-vpn-firewall.sh"
+	"$ROOT_DIR/tests/nordvpn-easy/test-routing-mode.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-ra-withdrawal.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-service-config.sh"
 	"$ROOT_DIR/tests/nordvpn-easy/test-actions.sh"
@@ -152,6 +153,7 @@ SHELL_TESTS=(
 	test-public-ip-cache.sh
 	test-wireguard.sh
 	test-vpn-firewall.sh
+	test-routing-mode.sh
 	test-ra-withdrawal.sh
 	test-service-config.sh
 	test-actions.sh

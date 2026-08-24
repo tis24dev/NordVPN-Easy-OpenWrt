@@ -44,6 +44,11 @@ nordvpn_easy_require_core_action_helpers() { return 0; }
 nordvpn_easy_fetch_provision_prerequisites() { return 0; }
 nordvpn_easy_ensure_vpn_firewall() { return 0; }
 nordvpn_easy_build_wireguard_peer_section() { return 0; }
+# Cross-lib helpers this isolated harness does not source (common.sh / wireguard.sh);
+# full_tunnel is the mode under test here, policy mode has its own suite.
+nordvpn_easy_routing_mode_is_policy() { return 1; }
+nordvpn_easy_remove_dns_routes() { return 0; }
+nordvpn_easy_apply_policy_dns_routes() { return 0; }
 nordvpn_easy_fenced_uci_commit() { return 0; }
 nordvpn_easy_harden_secret_config_perms() { return 0; }
 uci() { return 0; }
